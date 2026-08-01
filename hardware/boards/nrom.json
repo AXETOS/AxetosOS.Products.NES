@@ -1,0 +1,17 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.nrom",
+  "name": "NROM",
+  "mapper": 0,
+  "components": [
+    { "id": "prg", "type": "Rom", "source": "PrgRom" },
+    { "id": "chr", "type": "RomOrRam", "source": "ChrRom", "fallbackSize": 8192 }
+  ],
+  "connections": [
+    "Cpu.Address[0..14] -> prg.Address[0..14]",
+    "Cpu.Read & Cpu.Address>=0x8000 -> prg.OutputEnable",
+    "Ppu.Address[0..12] -> chr.Address[0..12]",
+    "Ppu.Read & Ppu.Address<0x2000 -> chr.OutputEnable"
+  ],
+  "notes": "Initial declarative board definition. Hardware assembly is implemented in a later milestone."
+}

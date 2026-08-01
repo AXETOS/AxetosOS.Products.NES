@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AxetosOS NES cartridge board definition",
+  "type": "object",
+  "required": ["id", "name", "mapper", "components", "connections"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "mapper": { "type": "integer", "minimum": 0 },
+    "components": { "type": "array" },
+    "connections": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": "string" }
+  },
+  "additionalProperties": true
+}

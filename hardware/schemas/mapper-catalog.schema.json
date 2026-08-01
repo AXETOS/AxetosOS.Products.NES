@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AxetosOS NES mapper catalog",
+  "type": "object",
+  "required": ["definitions"],
+  "properties": {
+    "definitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["mapper", "name", "definition"],
+        "properties": {
+          "mapper": { "type": "integer", "minimum": 0 },
+          "submapper": { "type": ["integer", "null"], "minimum": 0 },
+          "name": { "type": "string", "minLength": 1 },
+          "definition": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

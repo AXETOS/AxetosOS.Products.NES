@@ -1,0 +1,11 @@
+{
+  "$schema": "schemas/mapper-catalog.schema.json",
+  "definitions": [
+    {
+      "mapper": 0,
+      "submapper": null,
+      "name": "NROM",
+      "definition": "boards/nrom.json"
+    }
+  ]
+}

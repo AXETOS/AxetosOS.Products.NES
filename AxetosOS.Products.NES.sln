@@ -1,0 +1,36 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.Abstractions", "src\Products\NES\AxetosOS.Products.NES.Abstractions\AxetosOS.Products.NES.Abstractions.csproj", "{97CA84B5-ED19-426D-A39D-34BB9E430ADB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.Cartridges", "src\Products\NES\AxetosOS.Products.NES.Cartridges\AxetosOS.Products.NES.Cartridges.csproj", "{C614854A-4454-4D22-9A8C-66D0A782669A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.HeadlessHost", "src\Products\NES\AxetosOS.Products.NES.HeadlessHost\AxetosOS.Products.NES.HeadlessHost.csproj", "{8C791ED6-650E-4BC0-8C2D-42419CBE8B99}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.Tests", "tests\AxetosOS.Products.NES.Tests\AxetosOS.Products.NES.Tests.csproj", "{11C513E5-24B4-4501-AD77-780591EF1151}"
+EndProject
+Global
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|Any CPU = Debug|Any CPU
+        Release|Any CPU = Release|Any CPU
+    EndGlobalSection
+    GlobalSection(ProjectConfigurationPlatforms) = postSolution
+        {97CA84B5-ED19-426D-A39D-34BB9E430ADB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {97CA84B5-ED19-426D-A39D-34BB9E430ADB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {97CA84B5-ED19-426D-A39D-34BB9E430ADB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {97CA84B5-ED19-426D-A39D-34BB9E430ADB}.Release|Any CPU.Build.0 = Release|Any CPU
+        {C614854A-4454-4D22-9A8C-66D0A782669A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {C614854A-4454-4D22-9A8C-66D0A782669A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {C614854A-4454-4D22-9A8C-66D0A782669A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {C614854A-4454-4D22-9A8C-66D0A782669A}.Release|Any CPU.Build.0 = Release|Any CPU
+        {8C791ED6-650E-4BC0-8C2D-42419CBE8B99}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {8C791ED6-650E-4BC0-8C2D-42419CBE8B99}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {8C791ED6-650E-4BC0-8C2D-42419CBE8B99}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {8C791ED6-650E-4BC0-8C2D-42419CBE8B99}.Release|Any CPU.Build.0 = Release|Any CPU
+        {11C513E5-24B4-4501-AD77-780591EF1151}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {11C513E5-24B4-4501-AD77-780591EF1151}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {11C513E5-24B4-4501-AD77-780591EF1151}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {11C513E5-24B4-4501-AD77-780591EF1151}.Release|Any CPU.Build.0 = Release|Any CPU
+    EndGlobalSection
+EndGlobal

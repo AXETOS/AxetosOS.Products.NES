@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AxetosOS.Products.NES.Cartridges\AxetosOS.Products.NES.Cartridges.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\..\..\hardware\**\*" Link="hardware\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

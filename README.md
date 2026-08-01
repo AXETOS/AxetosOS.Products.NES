@@ -2,14 +2,14 @@
 
 > A modular, cycle-driven NES hardware emulator implemented as a native AxetosOS product.
 
-[![Status](https://img.shields.io/badge/status-planning-blue)](#project-status)
+[![Status](https://img.shields.io/badge/status-foundation-orange)](#project-status)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Project status
 
-This repository currently contains the initial architecture and development roadmap.
+This repository now contains the initial architecture, development roadmap, and first executable product foundation.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -17,14 +17,35 @@ This repository currently contains the initial architecture and development road
 - [x] Define the modular virtual-hardware architecture
 - [x] Define the data-driven cartridge and mapper strategy
 - [x] Define the initial audio architecture
-- [ ] Create the AxetosOS product project structure
-- [ ] Implement the first executable host
-- [ ] Load and inspect the first NES ROM
+- [x] Create the AxetosOS product project structure
+- [x] Implement the first executable host scaffold
+- [x] Implement ROM header loading and inspection
 - [ ] Execute the first CPU instructions
 - [ ] Render the first PPU frame
 - [ ] Produce the first correct APU audio sample
 - [ ] Run the first playable game
 - [ ] Publish the first working release
+
+## Current foundation
+
+The first implementation slice establishes:
+
+- .NET 8 solution and product project structure;
+- generic NES hardware-module and bus contracts;
+- iNES and NES 2.0 header parsing;
+- mapper/submapper catalog resolution;
+- initial declarative NROM board definition;
+- AxetosOS product manifest;
+- headless ROM inspection host;
+- initial unit tests for ROM parsing.
+
+The headless host currently inspects ROM metadata and resolves the required cartridge-board definition. It does not yet execute CPU instructions.
+
+```powershell
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"
+```
+
+Commercial ROM files are not included and must never be committed.
 
 ## Vision
 
