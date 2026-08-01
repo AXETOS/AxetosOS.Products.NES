@@ -28,7 +28,7 @@ This repository now contains the initial architecture, development roadmap, and 
 
 ## Current foundation
 
-The v0.2.0 hardware foundation establishes:
+The v0.3.0 CPU foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -42,17 +42,23 @@ The v0.2.0 hardware foundation establishes:
 - mirrored 2 KiB CPU work RAM;
 - NROM-128 and NROM-256 PRG-ROM mapping;
 - RP2A03 CPU reset-vector loading;
-- initial CPU opcodes: `LDA #immediate`, `STA absolute`, `JMP absolute`, and `NOP`;
+- an expanded RP2A03 CPU core with status flags, stack operations, subroutines, relative branches, arithmetic, BRK/RTI, IRQ and NMI entry;
+- initial load/store/transfer instructions for A, X and Y;
 - a 3:1 PPU-to-CPU master-clock scheduler;
-- hardware tests covering RAM mirroring, NROM mapping, reset, instruction execution, and clock ratios.
+- hardware tests covering RAM mirroring, NROM mapping, reset, instruction execution, clock ratios, stack/subroutine behavior, arithmetic flags, branches and NMI/RTI;
+- an original legal NROM smoke-test ROM under `samples/`.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles. The CPU instruction set is intentionally incomplete at this stage.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles. The CPU instruction set and cycle model remain intentionally incomplete at this stage; v0.3.0 establishes the state, stack and interrupt foundations needed for full instruction coverage.
 
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"
 
 # Boot mapper 0 and execute a bounded number of CPU cycles
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes" --cycles 1000
+
+
+# Run the repository-owned legal CPU smoke ROM
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-cpu-smoke.nes --cycles 1000
 ```
 
 Commercial ROM files are not included and must never be committed.

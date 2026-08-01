@@ -99,12 +99,136 @@ public sealed class HardwareFoundationTests
         Assert.Equal(4, cpu.ClockCount);
     }
 
+
+    [Fact]
+    public void CpuSupportsStackSubroutinesAndTransfers()
+    {
+        var image = CreateNromImage(16 * 1024);
+        var program = new byte[]
+        {
+            0xA2, 0x05,       // LDX #$05
+            0x9A,             // TXS
+            0x20, 0x09, 0x80, // JSR $8009
+            0x8E, 0x04, 0x00, // STX $0004
+            0xE8,             // INX
+            0x60              // RTS
+        };
+        program.CopyTo(image.PrgRom, 0);
+        SetVectors(image, reset: 0x8000, nmi: 0x8000, irq: 0x8000);
+
+        var ram = new CpuWorkRam();
+        ram.PowerOn();
+        var cpu = CreateCpu(image, ram);
+        RunInstructions(cpu, 6);
+
+        Assert.Equal(0x06, cpu.X);
+        Assert.Equal(0x06, ram.CpuRead(0x0004));
+        Assert.Equal(0x05, cpu.StackPointer);
+    }
+
+    [Fact]
+    public void CpuAdcAndSbcUpdateArithmeticFlags()
+    {
+        var image = CreateNromImage(16 * 1024);
+        var program = new byte[]
+        {
+            0x18,       // CLC
+            0xA9, 0x50, // LDA #$50
+            0x69, 0x50, // ADC #$50 => $A0, overflow
+            0x38,       // SEC
+            0xE9, 0x20  // SBC #$20 => $80
+        };
+        program.CopyTo(image.PrgRom, 0);
+        SetVectors(image, reset: 0x8000, nmi: 0x8000, irq: 0x8000);
+        var cpu = CreateCpu(image);
+
+        RunInstructions(cpu, 5);
+
+        Assert.Equal(0x80, cpu.Accumulator);
+        Assert.True(cpu.IsFlagSet(Rp2A03Cpu.CarryFlag));
+        Assert.True(cpu.IsFlagSet(Rp2A03Cpu.NegativeFlag));
+    }
+
+    [Fact]
+    public void CpuBranchesWithSignedRelativeOffsets()
+    {
+        var image = CreateNromImage(16 * 1024);
+        var program = new byte[]
+        {
+            0xA2, 0x03, // LDX #$03
+            0xCA,       // DEX
+            0xD0, 0xFD, // BNE $8002
+            0x8E, 0x05, 0x00
+        };
+        program.CopyTo(image.PrgRom, 0);
+        SetVectors(image, reset: 0x8000, nmi: 0x8000, irq: 0x8000);
+        var ram = new CpuWorkRam();
+        ram.PowerOn();
+        var cpu = CreateCpu(image, ram);
+
+        RunInstructions(cpu, 8);
+
+        Assert.Equal(0, cpu.X);
+        Assert.Equal(0, ram.CpuRead(0x0005));
+        Assert.True(cpu.IsFlagSet(Rp2A03Cpu.ZeroFlag));
+    }
+
+    [Fact]
+    public void CpuServicesNmiAndReturnsWithRti()
+    {
+        var image = CreateNromImage(16 * 1024);
+        image.PrgRom[0x0000] = 0xEA; // main NOP
+        image.PrgRom[0x1000] = 0xE8; // NMI: INX
+        image.PrgRom[0x1001] = 0x40; // RTI
+        SetVectors(image, reset: 0x8000, nmi: 0x9000, irq: 0x8000);
+        var cpu = CreateCpu(image);
+
+        RunInstructions(cpu, 1);
+        cpu.RequestNmi();
+        RunInstructions(cpu, 2);
+
+        Assert.Equal(1, cpu.X);
+        Assert.Equal(0x8001, cpu.ProgramCounter);
+    }
+
     private static CpuBus CreateBus(NesRomImage image)
     {
         var bus = new CpuBus();
         bus.Attach(new CpuWorkRam());
         bus.Attach(new NromPrgRom(image));
         return bus;
+    }
+
+
+    private static Rp2A03Cpu CreateCpu(NesRomImage image, CpuWorkRam? ram = null)
+    {
+        ram ??= new CpuWorkRam();
+        ram.PowerOn();
+        var bus = new CpuBus();
+        bus.Attach(ram);
+        bus.Attach(new NromPrgRom(image));
+        var cpu = new Rp2A03Cpu(bus);
+        cpu.PowerOn();
+        return cpu;
+    }
+
+    private static void RunInstructions(Rp2A03Cpu cpu, int instructionCount)
+    {
+        var target = cpu.InstructionsExecuted + (ulong)instructionCount;
+        while (cpu.InstructionsExecuted < target || !cpu.IsInstructionBoundary)
+        {
+            cpu.Clock();
+        }
+    }
+
+    private static void SetVectors(NesRomImage image, ushort reset, ushort nmi, ushort irq)
+    {
+        image.PrgRom[0x3FFA] = (byte)nmi;
+        image.PrgRom[0x3FFB] = (byte)(nmi >> 8);
+        image.PrgRom[0x3FFC] = (byte)reset;
+        image.PrgRom[0x3FFD] = (byte)(reset >> 8);
+        image.PrgRom[0x3FFE] = (byte)irq;
+        image.PrgRom[0x3FFF] = (byte)(irq >> 8);
     }
 
     private static NesRomImage CreateNromImage(int prgSize) => new(

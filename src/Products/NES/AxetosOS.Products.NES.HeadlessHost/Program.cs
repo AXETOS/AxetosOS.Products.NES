@@ -88,6 +88,7 @@ return 0;
 static void PrintCpuState(Rp2A03Cpu cpu)
 {
     Console.WriteLine($"CPU cycles:  {cpu.TotalCycles:N0}");
+    Console.WriteLine($"Instructions:{cpu.InstructionsExecuted,12:N0}");
     Console.WriteLine($"PC:          ${cpu.ProgramCounter:X4}");
     Console.WriteLine($"A:           ${cpu.Accumulator:X2}");
     Console.WriteLine($"X:           ${cpu.X:X2}");

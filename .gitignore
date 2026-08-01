@@ -31,3 +31,7 @@ appsettings.Local.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Repository-owned legal smoke-test ROMs
+!samples/
+!samples/**/*.nes
