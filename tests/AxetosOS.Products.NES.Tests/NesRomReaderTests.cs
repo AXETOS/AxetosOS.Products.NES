@@ -1,5 +1,5 @@
-using AxetosOS.Products.NES.Cartridges;
 using Xunit;
+using AxetosOS.Products.NES.Cartridges;
 
 namespace AxetosOS.Products.NES.Tests;
 

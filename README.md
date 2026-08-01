@@ -2,7 +2,7 @@
 
 > A modular, cycle-driven NES hardware emulator implemented as a native AxetosOS product.
 
-[![Status](https://img.shields.io/badge/status-foundation-orange)](#project-status)
+[![Status](https://img.shields.io/badge/status-hardware%20foundation-orange)](#project-status)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -20,7 +20,7 @@ This repository now contains the initial architecture, development roadmap, and 
 - [x] Create the AxetosOS product project structure
 - [x] Implement the first executable host scaffold
 - [x] Implement ROM header loading and inspection
-- [ ] Execute the first CPU instructions
+- [x] Execute the first CPU instructions
 - [ ] Render the first PPU frame
 - [ ] Produce the first correct APU audio sample
 - [ ] Run the first playable game
@@ -28,7 +28,7 @@ This repository now contains the initial architecture, development roadmap, and 
 
 ## Current foundation
 
-The first implementation slice establishes:
+The v0.2.0 hardware foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -37,12 +37,22 @@ The first implementation slice establishes:
 - initial declarative NROM board definition;
 - AxetosOS product manifest;
 - headless ROM inspection host;
-- initial unit tests for ROM parsing.
+- initial unit tests for ROM parsing;
+- a CPU bus with open-bus state;
+- mirrored 2 KiB CPU work RAM;
+- NROM-128 and NROM-256 PRG-ROM mapping;
+- RP2A03 CPU reset-vector loading;
+- initial CPU opcodes: `LDA #immediate`, `STA absolute`, `JMP absolute`, and `NOP`;
+- a 3:1 PPU-to-CPU master-clock scheduler;
+- hardware tests covering RAM mirroring, NROM mapping, reset, instruction execution, and clock ratios.
 
-The headless host currently inspects ROM metadata and resolves the required cartridge-board definition. It does not yet execute CPU instructions.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles. The CPU instruction set is intentionally incomplete at this stage.
 
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"
+
+# Boot mapper 0 and execute a bounded number of CPU cycles
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes" --cycles 1000
 ```
 
 Commercial ROM files are not included and must never be committed.
