@@ -1,0 +1,54 @@
+# .NET
+bin/
+obj/
+artifacts/
+TestResults/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# IDE
+.vs/
+.vscode/
+.idea/
+
+# Build/package output
+[Bb]uild/
+[Dd]ist/
+[Pp]ublish/
+*.nupkg
+*.snupkg
+
+# Runtime and emulator files
+*.nes
+*.unf
+*.unif
+*.fds
+*.nsf
+*.sav
+*.state
+*.trace
+*.wav
+roms/
+saves/
+traces/
+runtime/
+
+# Secrets and local configuration
+.env
+.env.*
+secrets.json
+appsettings.Local.json
+appsettings.Development.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.log
