@@ -1,0 +1,7 @@
+[
+  { "cycle": 0, "controller1": "None" },
+  { "cycle": 40000, "controller1": "Right" },
+  { "cycle": 220000, "controller1": "None" },
+  { "cycle": 260000, "controller1": "Left" },
+  { "cycle": 380000, "controller1": "None" }
+]

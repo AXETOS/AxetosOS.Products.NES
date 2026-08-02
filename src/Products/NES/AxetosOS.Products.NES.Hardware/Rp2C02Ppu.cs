@@ -149,14 +149,27 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
             _nmi.Release();
         }
 
-        if (Scanline == 261 && Dot == 304 && RenderingEnabled)
+        if (RenderingEnabled && (Scanline is >= 0 and < 240 || Scanline == 261))
         {
-            _vramAddress = _temporaryAddress;
-        }
+            if ((Dot is >= 8 and <= 256 || Dot is 328 or 336) && Dot % 8 == 0)
+            {
+                IncrementCoarseX();
+            }
 
-        if (Scanline is >= 0 and < 240 && Dot == 257 && RenderingEnabled)
-        {
-            _vramAddress = (ushort)((_vramAddress & 0xFBE0) | (_temporaryAddress & 0x041F));
+            if (Dot == 256)
+            {
+                IncrementVerticalAddress();
+            }
+
+            if (Dot == 257)
+            {
+                CopyHorizontalAddress();
+            }
+
+            if (Scanline == 261 && Dot is >= 280 and <= 304)
+            {
+                CopyVerticalAddress();
+            }
         }
 
         Dot++;
@@ -420,6 +433,55 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
     private void IncrementVramAddress()
     {
         _vramAddress = (ushort)((_vramAddress + ((_control & 0x04) != 0 ? 32 : 1)) & 0x7FFF);
+    }
+
+    private void IncrementCoarseX()
+    {
+        if ((_vramAddress & 0x001F) == 31)
+        {
+            _vramAddress &= 0x7FE0;
+            _vramAddress ^= 0x0400;
+            return;
+        }
+
+        _vramAddress++;
+    }
+
+    private void IncrementVerticalAddress()
+    {
+        if ((_vramAddress & 0x7000) != 0x7000)
+        {
+            _vramAddress += 0x1000;
+            return;
+        }
+
+        _vramAddress &= 0x0FFF;
+        var coarseY = (_vramAddress & 0x03E0) >> 5;
+        if (coarseY == 29)
+        {
+            coarseY = 0;
+            _vramAddress ^= 0x0800;
+        }
+        else if (coarseY == 31)
+        {
+            coarseY = 0;
+        }
+        else
+        {
+            coarseY++;
+        }
+
+        _vramAddress = (ushort)((_vramAddress & 0x7C1F) | (coarseY << 5));
+    }
+
+    private void CopyHorizontalAddress()
+    {
+        _vramAddress = (ushort)((_vramAddress & 0x7BE0) | (_temporaryAddress & 0x041F));
+    }
+
+    private void CopyVerticalAddress()
+    {
+        _vramAddress = (ushort)((_vramAddress & 0x041F) | (_temporaryAddress & 0x7BE0));
     }
 
     private void UpdateNmiLine()

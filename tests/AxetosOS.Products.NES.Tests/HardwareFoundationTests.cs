@@ -745,6 +745,65 @@ public sealed class HardwareFoundationTests
         Assert.Equal(1, controllers.CpuRead(0x4017) & 1); // Left
     }
 
+
+    [Fact]
+    public void ScriptedControllerInputAppliesEventsAtRequestedCpuCycles()
+    {
+        var input = new ScriptedNesControllerInput(
+        [
+            new NesInputEvent(10, NesButtons.Right, NesButtons.None),
+            new NesInputEvent(20, NesButtons.A | NesButtons.Start, NesButtons.Left)
+        ]);
+
+        Assert.Equal(NesButtons.None, input.ReadButtons(0));
+        input.AdvanceTo(9);
+        Assert.Equal(NesButtons.None, input.ReadButtons(0));
+        input.AdvanceTo(10);
+        Assert.Equal(NesButtons.Right, input.ReadButtons(0));
+        input.AdvanceTo(20);
+        Assert.Equal(NesButtons.A | NesButtons.Start, input.ReadButtons(0));
+        Assert.Equal(NesButtons.Left, input.ReadButtons(1));
+    }
+
+    [Fact]
+    public void PpuCoarseXIncrementWrapsAndSwitchesHorizontalNametable()
+    {
+        var (ppu, _, _) = CreatePpu();
+        ppu.CpuWrite(0x2006, 0x00);
+        ppu.CpuWrite(0x2006, 0x1F);
+        ppu.CpuWrite(0x2001, 0x08);
+
+        for (var dot = 0; dot <= 8; dot++)
+        {
+            ppu.Clock();
+        }
+
+        Assert.Equal((ushort)0, (ushort)(ppu.VramAddress & 0x001F));
+        Assert.Equal((ushort)0x0400, (ushort)(ppu.VramAddress & 0x0400));
+    }
+
+    [Fact]
+    public void PpuVerticalIncrementWrapsFineAndCoarseYAndSwitchesNametable()
+    {
+        var (ppu, _, _) = CreatePpu();
+        ppu.CpuWrite(0x2006, 0x73);
+        ppu.CpuWrite(0x2006, 0xA0);
+        ppu.CpuWrite(0x2001, 0x08);
+
+        // PPUADDR can set only the 14-bit external VRAM address, so this starts
+        // at fine Y = 3. Five scanline increments advance 3 -> 4 -> 5 -> 6 -> 7
+        // and then wrap to 0 while coarse Y 29 switches the vertical nametable.
+        const int clocksThroughFifthScanlineDot256 = (4 * 341) + 257;
+        for (var clock = 0; clock < clocksThroughFifthScanlineDot256; clock++)
+        {
+            ppu.Clock();
+        }
+
+        Assert.Equal((ushort)0, (ushort)(ppu.VramAddress & 0x7000));
+        Assert.Equal((ushort)0, (ushort)(ppu.VramAddress & 0x03E0));
+        Assert.Equal((ushort)0x0800, (ushort)(ppu.VramAddress & 0x0800));
+    }
+
     private static (Rp2C02Ppu Ppu, PpuBus Bus, SignalLine Nmi) CreatePpu()
     {
         var image = CreateNromImage(16 * 1024);

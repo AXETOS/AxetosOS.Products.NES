@@ -16,3 +16,12 @@ Original AXETOS NROM test cartridge that initializes a checkerboard CHR tile, na
 ## `axetos-ppu-sprites.nes`
 
 Original NROM visual test cartridge for background rendering, primary OAM, sprite priority/flipping and `$4014` OAM DMA. It contains no commercial code or assets.
+
+
+## `axetos-controller-motion.nes`
+
+Original NROM test cartridge that polls controller port 1 once per VBlank and moves sprite 0 left or right through OAM DMA. `axetos-controller-motion.input.json` supplies a deterministic cycle-based input timeline for the headless host.
+
+```powershell
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-controller-motion.nes --cycles 420000 --input-script .\samples\axetos-controller-motion.input.json --frame .\output\controller-motion.ppm
+```

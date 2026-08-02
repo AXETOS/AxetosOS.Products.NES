@@ -18,6 +18,7 @@ var requestedCycles = 0;
 string? framePath = null;
 var controller1Buttons = NesButtons.None;
 var controller2Buttons = NesButtons.None;
+string? inputScriptPath = null;
 for (var index = 1; index < args.Length; index++)
 {
     if (string.Equals(args[index], "--cycles", StringComparison.OrdinalIgnoreCase) &&
@@ -42,6 +43,12 @@ for (var index = 1; index < args.Length; index++)
     if (string.Equals(args[index], "--controller2", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
     {
         controller2Buttons = ParseButtons(args[++index]);
+        continue;
+    }
+
+    if (string.Equals(args[index], "--input-script", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
+    {
+        inputScriptPath = Path.GetFullPath(args[++index]);
         continue;
     }
 
@@ -100,9 +107,28 @@ var bus = new CpuBus();
 bus.Attach(ram);
 bus.Attach(ppu);
 bus.Attach(new NromPrgRom(image));
-var input = new MutableNesControllerInput();
-input.SetButtons(0, controller1Buttons);
-input.SetButtons(1, controller2Buttons);
+ScriptedNesControllerInput? scriptedInput = null;
+INesControllerInput input;
+if (inputScriptPath is not null)
+{
+    if (!File.Exists(inputScriptPath))
+    {
+        Console.Error.WriteLine($"Input script not found: {inputScriptPath}");
+        return 6;
+    }
+
+    var events = LoadInputScript(inputScriptPath, controller1Buttons, controller2Buttons);
+    scriptedInput = new ScriptedNesControllerInput(events);
+    input = scriptedInput;
+}
+else
+{
+    var mutableInput = new MutableNesControllerInput();
+    mutableInput.SetButtons(0, controller1Buttons);
+    mutableInput.SetButtons(1, controller2Buttons);
+    input = mutableInput;
+}
+
 var controllers = new NesControllerPorts(input);
 controllers.PowerOn();
 bus.Attach(controllers);
@@ -123,6 +149,7 @@ try
 {
     while (clock.CpuCycles < targetCycles)
     {
+        scriptedInput?.AdvanceTo(clock.CpuCycles);
         clock.Tick();
     }
 }
@@ -136,6 +163,7 @@ catch (UnsupportedCpuOpcodeException exception)
 
 PrintCpuState(cpu);
 PrintPpuState(ppu, clock);
+Console.WriteLine($"Sprite 0:    x={ppu.ReadOamByte(3),3}, y={unchecked((byte)(ppu.ReadOamByte(0) + 1)),3}");
 
 if (framePath is not null)
 {
@@ -143,8 +171,14 @@ if (framePath is not null)
     Console.WriteLine($"Frame image:  {framePath}");
 }
 
-Console.WriteLine($"Controller 1:{FormatButtons(controller1Buttons),12}");
-Console.WriteLine($"Controller 2:{FormatButtons(controller2Buttons),12}");
+var finalController1 = input.ReadButtons(0);
+var finalController2 = input.ReadButtons(1);
+Console.WriteLine($"Controller 1:{FormatButtons(finalController1),12}");
+Console.WriteLine($"Controller 2:{FormatButtons(finalController2),12}");
+if (inputScriptPath is not null)
+{
+    Console.WriteLine($"Input script: {inputScriptPath}");
+}
 
 return 0;
 
@@ -188,6 +222,44 @@ static void WritePpm(string path, IReadOnlyList<uint> framebuffer)
     }
 }
 
+static IReadOnlyList<NesInputEvent> LoadInputScript(string path, NesButtons initialController1, NesButtons initialController2)
+{
+    using var stream = File.OpenRead(path);
+    using var document = System.Text.Json.JsonDocument.Parse(stream);
+    if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+    {
+        throw new InvalidDataException("Input script root must be a JSON array.");
+    }
+
+    var events = new List<NesInputEvent>
+    {
+        new(0, initialController1, initialController2)
+    };
+    var controller1 = initialController1;
+    var controller2 = initialController2;
+    foreach (var element in document.RootElement.EnumerateArray())
+    {
+        if (!element.TryGetProperty("cycle", out var cycleElement) || !cycleElement.TryGetUInt64(out var cycle))
+        {
+            throw new InvalidDataException("Every input event requires an unsigned 'cycle' value.");
+        }
+
+        if (element.TryGetProperty("controller1", out var controller1Element))
+        {
+            controller1 = ParseButtons(controller1Element.GetString() ?? "None");
+        }
+
+        if (element.TryGetProperty("controller2", out var controller2Element))
+        {
+            controller2 = ParseButtons(controller2Element.GetString() ?? "None");
+        }
+
+        events.Add(new NesInputEvent(cycle, controller1, controller2));
+    }
+
+    return events;
+}
+
 static NesButtons ParseButtons(string value)
 {
     if (string.IsNullOrWhiteSpace(value) || string.Equals(value, "none", StringComparison.OrdinalIgnoreCase))
@@ -215,6 +287,6 @@ static void WriteUsage()
 {
     Console.Error.WriteLine("Usage:");
     Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes>");
-    Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes> [--cycles <count>] [--frame <output.ppm>] [--controller1 <buttons>] [--controller2 <buttons>]");
+    Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes> [--cycles <count>] [--frame <output.ppm>] [--controller1 <buttons>] [--controller2 <buttons>] [--input-script <events.json>]");
     Console.Error.WriteLine("  Buttons are comma-separated: A,B,Select,Start,Up,Down,Left,Right");
 }

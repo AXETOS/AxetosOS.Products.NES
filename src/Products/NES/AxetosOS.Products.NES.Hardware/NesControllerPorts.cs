@@ -38,6 +38,41 @@ public sealed class MutableNesControllerInput : INesControllerInput
     }
 }
 
+
+public sealed record NesInputEvent(ulong CpuCycle, NesButtons Controller1, NesButtons Controller2);
+
+public sealed class ScriptedNesControllerInput : INesControllerInput
+{
+    private readonly NesInputEvent[] _events;
+    private int _nextEventIndex;
+    private NesButtons _controller1;
+    private NesButtons _controller2;
+
+    public ScriptedNesControllerInput(IEnumerable<NesInputEvent> events)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+        _events = events.OrderBy(static item => item.CpuCycle).ToArray();
+        AdvanceTo(0);
+    }
+
+    public NesButtons ReadButtons(int port) => port switch
+    {
+        0 => _controller1,
+        1 => _controller2,
+        _ => NesButtons.None
+    };
+
+    public void AdvanceTo(ulong cpuCycle)
+    {
+        while (_nextEventIndex < _events.Length && _events[_nextEventIndex].CpuCycle <= cpuCycle)
+        {
+            var inputEvent = _events[_nextEventIndex++];
+            _controller1 = inputEvent.Controller1;
+            _controller2 = inputEvent.Controller2;
+        }
+    }
+}
+
 public sealed class NesControllerPorts : INesHardwareModule, ICpuBusDevice
 {
     private readonly INesControllerInput _input;
