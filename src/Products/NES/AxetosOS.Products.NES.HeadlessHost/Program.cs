@@ -16,6 +16,8 @@ if (!File.Exists(romPath))
 
 var requestedCycles = 0;
 string? framePath = null;
+var controller1Buttons = NesButtons.None;
+var controller2Buttons = NesButtons.None;
 for (var index = 1; index < args.Length; index++)
 {
     if (string.Equals(args[index], "--cycles", StringComparison.OrdinalIgnoreCase) &&
@@ -28,6 +30,18 @@ for (var index = 1; index < args.Length; index++)
     if (string.Equals(args[index], "--frame", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
     {
         framePath = Path.GetFullPath(args[++index]);
+        continue;
+    }
+
+    if (string.Equals(args[index], "--controller1", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
+    {
+        controller1Buttons = ParseButtons(args[++index]);
+        continue;
+    }
+
+    if (string.Equals(args[index], "--controller2", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
+    {
+        controller2Buttons = ParseButtons(args[++index]);
         continue;
     }
 
@@ -86,6 +100,12 @@ var bus = new CpuBus();
 bus.Attach(ram);
 bus.Attach(ppu);
 bus.Attach(new NromPrgRom(image));
+var input = new MutableNesControllerInput();
+input.SetButtons(0, controller1Buttons);
+input.SetButtons(1, controller2Buttons);
+var controllers = new NesControllerPorts(input);
+controllers.PowerOn();
+bus.Attach(controllers);
 var cpu = new Rp2A03Cpu(bus);
 var oamDma = new OamDmaController(bus, ppu, cpu);
 bus.Attach(oamDma);
@@ -122,6 +142,9 @@ if (framePath is not null)
     WritePpm(framePath, ppu.Framebuffer);
     Console.WriteLine($"Frame image:  {framePath}");
 }
+
+Console.WriteLine($"Controller 1:{FormatButtons(controller1Buttons),12}");
+Console.WriteLine($"Controller 2:{FormatButtons(controller2Buttons),12}");
 
 return 0;
 
@@ -165,9 +188,33 @@ static void WritePpm(string path, IReadOnlyList<uint> framebuffer)
     }
 }
 
+static NesButtons ParseButtons(string value)
+{
+    if (string.IsNullOrWhiteSpace(value) || string.Equals(value, "none", StringComparison.OrdinalIgnoreCase))
+    {
+        return NesButtons.None;
+    }
+
+    var buttons = NesButtons.None;
+    foreach (var token in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        if (!Enum.TryParse<NesButtons>(token, ignoreCase: true, out var parsed) || parsed == NesButtons.None)
+        {
+            throw new ArgumentException($"Unknown NES button '{token}'.");
+        }
+
+        buttons |= parsed;
+    }
+
+    return buttons;
+}
+
+static string FormatButtons(NesButtons buttons) => buttons == NesButtons.None ? "None" : buttons.ToString();
+
 static void WriteUsage()
 {
     Console.Error.WriteLine("Usage:");
     Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes>");
-    Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes> [--cycles <count>] [--frame <output.ppm>]");
+    Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes> [--cycles <count>] [--frame <output.ppm>] [--controller1 <buttons>] [--controller2 <buttons>]");
+    Console.Error.WriteLine("  Buttons are comma-separated: A,B,Select,Start,Up,Down,Left,Right");
 }

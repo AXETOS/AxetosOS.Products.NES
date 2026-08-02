@@ -2,14 +2,14 @@
 
 > A modular, cycle-driven NES hardware emulator implemented as a native AxetosOS product.
 
-[![Status](https://img.shields.io/badge/status-background%20rendering-yellow)](#project-status)
+[![Status](https://img.shields.io/badge/status-controller%20input-yellow)](#project-status)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Project status
 
-The repository is currently at **v0.7.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
+The repository is currently at **v0.8.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -30,7 +30,7 @@ The repository is currently at **v0.7.0**. The CPU executes all 151 official 650
 
 ## Current foundation
 
-The v0.7.0 sprite and DMA foundation establishes:
+The v0.8.0 controller and scrolling-register foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -60,10 +60,14 @@ The v0.7.0 sprite and DMA foundation establishes:
 - a 256×240 framebuffer with visible background tiles, nametable lookup, attribute decoding, palette selection and basic scroll offsets;
 - primary OAM storage, 8×8 and 8×16 sprite pattern addressing, sprite flipping, priority, sprite-zero hit and overflow groundwork;
 - `$4014` OAM DMA transfers from CPU memory with 513/514-cycle CPU stalls;
+- controller ports at `$4016/$4017` with strobe, latch and serial shift-register behavior;
+- independent controller 1 and controller 2 state supplied through a host-neutral input abstraction;
+- inspectable PPU current/temporary VRAM address, fine-X scroll and first/second-write latch state;
+- rendering-time horizontal and pre-render vertical VRAM-address transfer groundwork;
 - PPM framebuffer export from the headless host;
 - an original legal PPU background test ROM under `samples/`.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.7.0 adds primary OAM, sprite rendering, sprite priority and flipping, sprite-zero hit, sprite-overflow groundwork, and `$4014` OAM DMA with CPU stalls. Secondary OAM, exact per-dot sprite evaluation, exact scrolling transfers and cycle-level DMA sequencing remain future milestones.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.8.0 adds both NES controller ports, `$4016` strobe/latch behavior, serial A/B/Select/Start/Up/Down/Left/Right reads, host-supplied controller states, inspectable PPU `v`, `t`, `x`, and `w` state, and initial rendering-time horizontal/vertical address transfers. Exact per-dot scrolling increments, secondary OAM, exact sprite evaluation, and cycle-level DMA sequencing remain future milestones.
 
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"
@@ -74,6 +78,9 @@ dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C
 
 # Run the repository-owned legal CPU smoke ROM
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-cpu-smoke.nes --cycles 1000
+
+# Run with a deterministic controller state
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-ppu-sprites.nes --cycles 120000 --controller1 A,Start,Right --frame .\output\ppu-sprites-input.ppm
 
 # Render the repository-owned sprite and DMA test ROM
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-ppu-sprites.nes --cycles 120000 --frame .\output\ppu-sprites.ppm
@@ -718,10 +725,10 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [x] Implement OAM DMA request
 - [x] Implement OAM DMA CPU stalls
 - [ ] Implement DMA bus transfer sequencing
-- [ ] Implement controller port 1
-- [ ] Implement controller port 2
-- [ ] Implement controller strobe behaviour
-- [ ] Implement serial controller shift registers
+- [x] Implement controller port 1
+- [x] Implement controller port 2
+- [x] Implement controller strobe behaviour
+- [x] Implement serial controller shift registers
 - [ ] Add keyboard input adapter
 - [ ] Add gamepad input adapter
 - [ ] Validate input timing

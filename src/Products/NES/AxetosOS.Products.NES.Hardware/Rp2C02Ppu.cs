@@ -49,6 +49,9 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
     public byte Mask => _mask;
     public byte Status => _status;
     public ushort VramAddress => _vramAddress;
+    public ushort TemporaryVramAddress => _temporaryAddress;
+    public byte FineXScroll => _fineX;
+    public bool WriteToggle => _writeToggle;
     public uint[] Framebuffer { get; }
     public byte OamAddress => _oamAddress;
 
@@ -146,6 +149,16 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
             _nmi.Release();
         }
 
+        if (Scanline == 261 && Dot == 304 && RenderingEnabled)
+        {
+            _vramAddress = _temporaryAddress;
+        }
+
+        if (Scanline is >= 0 and < 240 && Dot == 257 && RenderingEnabled)
+        {
+            _vramAddress = (ushort)((_vramAddress & 0xFBE0) | (_temporaryAddress & 0x041F));
+        }
+
         Dot++;
         if (Dot <= 340)
         {
@@ -163,6 +176,8 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         Frame++;
         FrameCompleted = true;
     }
+
+    private bool RenderingEnabled => (_mask & 0x18) != 0;
 
     private void RenderVisiblePixel(int screenX, int screenY)
     {

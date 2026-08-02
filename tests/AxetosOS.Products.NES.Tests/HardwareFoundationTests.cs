@@ -665,6 +665,86 @@ public sealed class HardwareFoundationTests
         Assert.Equal(expectedBackground, ppu.Framebuffer[0]);
     }
 
+
+
+    [Fact]
+    public void PpuScrollWritesPopulateTemporaryAddressAndFineX()
+    {
+        var (ppu, _, _) = CreatePpu();
+        ppu.CpuWrite(0x2005, 0x2D);
+        Assert.Equal((byte)5, ppu.FineXScroll);
+        Assert.True(ppu.WriteToggle);
+        Assert.Equal((ushort)5, (ushort)(ppu.TemporaryVramAddress & 0x001F));
+
+        ppu.CpuWrite(0x2005, 0x3A);
+        Assert.False(ppu.WriteToggle);
+        Assert.Equal((ushort)2, (ushort)((ppu.TemporaryVramAddress >> 12) & 0x07));
+        Assert.Equal((ushort)7, (ushort)((ppu.TemporaryVramAddress >> 5) & 0x1F));
+    }
+
+    [Fact]
+    public void PpuAddressWritesCopyTemporaryAddressIntoCurrentAddress()
+    {
+        var (ppu, _, _) = CreatePpu();
+        ppu.CpuWrite(0x2006, 0x23);
+        Assert.True(ppu.WriteToggle);
+        ppu.CpuWrite(0x2006, 0x45);
+        Assert.False(ppu.WriteToggle);
+        Assert.Equal((ushort)0x2345, ppu.TemporaryVramAddress);
+        Assert.Equal((ushort)0x2345, ppu.VramAddress);
+    }
+
+    [Fact]
+    public void ControllerPortsShiftButtonsInNesOrder()
+    {
+        var input = new MutableNesControllerInput();
+        input.SetButtons(0, NesButtons.A | NesButtons.Start | NesButtons.Right);
+        var controllers = new NesControllerPorts(input);
+        controllers.PowerOn();
+
+        controllers.CpuWrite(0x4016, 1);
+        controllers.CpuWrite(0x4016, 0);
+
+        var bits = Enumerable.Range(0, 8).Select(_ => controllers.CpuRead(0x4016) & 1).ToArray();
+        Assert.Equal(new[] { 1, 0, 0, 1, 0, 0, 0, 1 }, bits);
+        Assert.Equal(1, controllers.CpuRead(0x4016) & 1);
+    }
+
+    [Fact]
+    public void ControllerStrobeReadsLiveAButtonAndRelatchesOnRelease()
+    {
+        var input = new MutableNesControllerInput();
+        var controllers = new NesControllerPorts(input);
+        controllers.PowerOn();
+
+        controllers.CpuWrite(0x4016, 1);
+        Assert.Equal(0, controllers.CpuRead(0x4016) & 1);
+        input.SetButtons(0, NesButtons.A);
+        Assert.Equal(1, controllers.CpuRead(0x4016) & 1);
+
+        controllers.CpuWrite(0x4016, 0);
+        Assert.Equal(1, controllers.CpuRead(0x4016) & 1);
+    }
+
+    [Fact]
+    public void ControllerPortsExposeIndependentSecondController()
+    {
+        var input = new MutableNesControllerInput();
+        input.SetButtons(1, NesButtons.B | NesButtons.Left);
+        var controllers = new NesControllerPorts(input);
+        controllers.PowerOn();
+        controllers.CpuWrite(0x4016, 1);
+        controllers.CpuWrite(0x4016, 0);
+
+        Assert.Equal(0, controllers.CpuRead(0x4017) & 1); // A
+        Assert.Equal(1, controllers.CpuRead(0x4017) & 1); // B
+        for (var index = 0; index < 4; index++)
+        {
+            _ = controllers.CpuRead(0x4017);
+        }
+        Assert.Equal(1, controllers.CpuRead(0x4017) & 1); // Left
+    }
+
     private static (Rp2C02Ppu Ppu, PpuBus Bus, SignalLine Nmi) CreatePpu()
     {
         var image = CreateNromImage(16 * 1024);
