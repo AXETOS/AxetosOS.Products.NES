@@ -9,7 +9,7 @@
 
 ## Project status
 
-The repository is currently at **v0.12.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
+The repository is currently at **v0.13.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -33,7 +33,7 @@ The repository is currently at **v0.12.0**. The CPU executes all 151 official 65
 
 ## Current foundation
 
-The v0.12.0 data-driven cartridge foundation establishes:
+The v0.13.0 native desktop milestone establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -78,7 +78,7 @@ The v0.12.0 data-driven cartridge foundation establishes:
 - WAV export from the headless host;
 - original legal APU tone and DMC sample ROMs under `samples/`.
 
-The headless host can inspect ROM metadata or boot supported NROM and UxROM cartridges for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.12.0 extends the RP2A03 APU with frame-counter IRQs, DMC sample reads through the CPU bus, four-cycle DMC CPU stalls, looping and IRQ behavior, nonlinear DMC mixing, deterministic PCM generation, NES-style output filtering and WAV export. Secondary OAM, exact sprite evaluation, the full background fetch/shift-register pipeline, and cycle-level DMA sequencing remain future milestones.
+The native desktop host can now run supported NROM and UxROM cartridges in an AxetosOS-owned Win32 framebuffer window with live keyboard input. The headless host can inspect ROM metadata or boot supported NROM and UxROM cartridges for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.12.0 extends the RP2A03 APU with frame-counter IRQs, DMC sample reads through the CPU bus, four-cycle DMC CPU stalls, looping and IRQ behavior, nonlinear DMC mixing, deterministic PCM generation, NES-style output filtering and WAV export. Secondary OAM, exact sprite evaluation, the full background fetch/shift-register pipeline, and cycle-level DMA sequencing remain future milestones.
 
 ```powershell
 
@@ -438,11 +438,13 @@ The normal local application host will open its own emulator window and provide:
 - ROM selection;
 - debugging and hardware-inspection panels.
 
-Expected development command:
+Development command:
 
 ```powershell
-dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- "C:\\ROMs\\game.nes"
 ```
+
+Controls: arrows for the D-pad, `Z` for A, `X` for B, Enter for Start, Right Shift for Select, and Escape to close. The host uses the private AxetosOS native framebuffer presenter; no external rendering framework is used.
 
 ### Web host
 
@@ -601,7 +603,7 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [ ] Confirm existing AxetosOS product contracts
 - [ ] Confirm existing module lifecycle contracts
 - [ ] Confirm project loading and Run Project integration
-- [ ] Select the desktop-host technology
+- [x] Select the desktop-host technology
 - [ ] Finalize public/private package boundaries
 
 ### Phase 1 — Product foundation
@@ -610,7 +612,7 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [ ] Add AxetosOS Core/Product SDK references
 - [x] Create the NES product manifest
 - [ ] Register the NES product with AxetosOS
-- [ ] Add Desktop Host
+- [x] Add Desktop Host
 - [ ] Add Web Host
 - [x] Add Headless Host
 - [ ] Add embedded Workbench host integration

@@ -20,7 +20,7 @@ Original NROM visual test cartridge for background rendering, primary OAM, sprit
 
 ## `axetos-controller-motion.nes`
 
-Original NROM test cartridge that polls controller port 1 once per VBlank and moves sprite 0 left or right through OAM DMA. `axetos-controller-motion.input.json` supplies a deterministic cycle-based input timeline for the headless host.
+Original NROM test cartridge that polls controller port 1 once per VBlank and moves sprite 0 left or right through OAM DMA. This particular diagnostic ROM intentionally responds only to Left and Right; the desktop host still maps the complete NES controller. `axetos-controller-motion.input.json` supplies a deterministic cycle-based input timeline for the headless host.
 
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-controller-motion.nes --cycles 420000 --input-script .\samples\axetos-controller-motion.input.json --frame .\output\controller-motion.ppm
