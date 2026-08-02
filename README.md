@@ -28,7 +28,7 @@ This repository now contains the initial architecture, development roadmap, and 
 
 ## Current foundation
 
-The v0.3.0 CPU foundation establishes:
+The v0.4.0 CPU foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -42,13 +42,15 @@ The v0.3.0 CPU foundation establishes:
 - mirrored 2 KiB CPU work RAM;
 - NROM-128 and NROM-256 PRG-ROM mapping;
 - RP2A03 CPU reset-vector loading;
-- an expanded RP2A03 CPU core with status flags, stack operations, subroutines, relative branches, arithmetic, BRK/RTI, IRQ and NMI entry;
+- all 151 official 6502 opcodes and documented addressing modes for the RP2A03 CPU core;
+- indexed page-cross cycle penalties, zero-page pointer wrapping and the 6502 indirect-JMP page-wrap quirk;
+- status flags, stack operations, subroutines, all conditional branches, arithmetic, logic, shifts, BRK/RTI, IRQ and NMI entry;
 - initial load/store/transfer instructions for A, X and Y;
 - a 3:1 PPU-to-CPU master-clock scheduler;
-- hardware tests covering RAM mirroring, NROM mapping, reset, instruction execution, clock ratios, stack/subroutine behavior, arithmetic flags, branches and NMI/RTI;
+- hardware tests covering RAM mirroring, NROM mapping, reset, instruction execution, clock ratios, addressing modes, stack/subroutine behavior, arithmetic and logic flags, shifts, branches, indirect jumps and NMI/RTI;
 - an original legal NROM smoke-test ROM under `samples/`.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles. The CPU instruction set and cycle model remain intentionally incomplete at this stage; v0.3.0 establishes the state, stack and interrupt foundations needed for full instruction coverage.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles. v0.4.0 implements all 151 official 6502 opcodes across the documented addressing modes, including indexed page-cross penalties and the original indirect-JMP page-wrap behavior. Execution is instruction-driven with documented cycle totals; later milestones will refine each instruction into explicit per-cycle bus micro-operations.
 
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"

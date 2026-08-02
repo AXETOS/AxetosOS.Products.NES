@@ -191,6 +191,131 @@ public sealed class HardwareFoundationTests
         Assert.Equal(0x8001, cpu.ProgramCounter);
     }
 
+
+    [Fact]
+    public void CpuSupportsIndexedAndIndirectAddressingModes()
+    {
+        var image = CreateNromImage(16 * 1024);
+        var program = new byte[]
+        {
+            0xA2, 0x04,       // LDX #$04
+            0xA0, 0x03,       // LDY #$03
+            0xA9, 0x10,       // LDA #$10
+            0x85, 0x20,       // STA $20
+            0xA9, 0x00,       // LDA #$00
+            0x85, 0x21,       // STA $21 => pointer $0010
+            0xA9, 0x7B,       // LDA #$7B
+            0x95, 0x0C,       // STA $0C,X => $10
+            0xB1, 0x20,       // LDA ($20),Y => $0013
+            0x81, 0x1C        // STA ($1C,X) => pointer at $20
+        };
+        program.CopyTo(image.PrgRom, 0);
+        SetVectors(image, reset: 0x8000, nmi: 0x8000, irq: 0x8000);
+        var ram = new CpuWorkRam();
+        ram.PowerOn();
+        ram.CpuWrite(0x0013, 0x42);
+        var cpu = CreateCpu(image, ram);
+
+        RunInstructions(cpu, 10);
+
+        Assert.Equal(0x42, cpu.Accumulator);
+        Assert.Equal(0x42, ram.CpuRead(0x0010));
+    }
+
+    [Fact]
+    public void CpuSupportsLogicShiftAndCompareInstructions()
+    {
+        var image = CreateNromImage(16 * 1024);
+        var program = new byte[]
+        {
+            0xA9, 0x81, // LDA #$81
+            0x0A,       // ASL A => $02, carry
+            0x2A,       // ROL A => $05
+            0x49, 0xFF, // EOR #$FF => $FA
+            0x29, 0x0F, // AND #$0F => $0A
+            0x09, 0x80, // ORA #$80 => $8A
+            0xC9, 0x8A  // CMP #$8A
+        };
+        program.CopyTo(image.PrgRom, 0);
+        SetVectors(image, reset: 0x8000, nmi: 0x8000, irq: 0x8000);
+        var cpu = CreateCpu(image);
+
+        RunInstructions(cpu, 7);
+
+        Assert.Equal(0x8A, cpu.Accumulator);
+        Assert.True(cpu.IsFlagSet(Rp2A03Cpu.ZeroFlag));
+        Assert.True(cpu.IsFlagSet(Rp2A03Cpu.CarryFlag));
+    }
+
+    [Fact]
+    public void CpuSupportsMemoryIncrementDecrementAndBitTest()
+    {
+        var image = CreateNromImage(16 * 1024);
+        var program = new byte[]
+        {
+            0xA9, 0x40,       // LDA #$40
+            0x85, 0x30,       // STA $30
+            0xE6, 0x30,       // INC $30
+            0xC6, 0x30,       // DEC $30
+            0x24, 0x30        // BIT $30
+        };
+        program.CopyTo(image.PrgRom, 0);
+        SetVectors(image, reset: 0x8000, nmi: 0x8000, irq: 0x8000);
+        var ram = new CpuWorkRam();
+        ram.PowerOn();
+        var cpu = CreateCpu(image, ram);
+
+        RunInstructions(cpu, 5);
+
+        Assert.Equal(0x40, ram.CpuRead(0x0030));
+        Assert.False(cpu.IsFlagSet(Rp2A03Cpu.ZeroFlag));
+        Assert.True(cpu.IsFlagSet(Rp2A03Cpu.OverflowFlag));
+    }
+
+    [Fact]
+    public void CpuSupportsStackAccumulatorAndStatusInstructions()
+    {
+        var image = CreateNromImage(16 * 1024);
+        var program = new byte[]
+        {
+            0xA9, 0xAA, // LDA #$AA
+            0x48,       // PHA
+            0xA9, 0x00, // LDA #$00
+            0x68,       // PLA
+            0x38,       // SEC
+            0x08,       // PHP
+            0x18,       // CLC
+            0x28        // PLP
+        };
+        program.CopyTo(image.PrgRom, 0);
+        SetVectors(image, reset: 0x8000, nmi: 0x8000, irq: 0x8000);
+        var cpu = CreateCpu(image);
+
+        RunInstructions(cpu, 8);
+
+        Assert.Equal(0xAA, cpu.Accumulator);
+        Assert.True(cpu.IsFlagSet(Rp2A03Cpu.CarryFlag));
+    }
+
+    [Fact]
+    public void CpuImplementsThe6502IndirectJumpPageWrapQuirk()
+    {
+        var image = CreateNromImage(16 * 1024);
+        var program = new byte[] { 0x6C, 0xFF, 0x02 }; // JMP ($02FF)
+        program.CopyTo(image.PrgRom, 0);
+        SetVectors(image, reset: 0x8000, nmi: 0x8000, irq: 0x8000);
+        var ram = new CpuWorkRam();
+        ram.PowerOn();
+        ram.CpuWrite(0x02FF, 0x34);
+        ram.CpuWrite(0x0200, 0x12);
+        ram.CpuWrite(0x0300, 0x99);
+        var cpu = CreateCpu(image, ram);
+
+        RunInstructions(cpu, 1);
+
+        Assert.Equal(0x1234, cpu.ProgramCounter);
+    }
+
     private static CpuBus CreateBus(NesRomImage image)
     {
         var bus = new CpuBus();
@@ -202,8 +327,12 @@ public sealed class HardwareFoundationTests
 
     private static Rp2A03Cpu CreateCpu(NesRomImage image, CpuWorkRam? ram = null)
     {
-        ram ??= new CpuWorkRam();
-        ram.PowerOn();
+        if (ram is null)
+        {
+            ram = new CpuWorkRam();
+            ram.PowerOn();
+        }
+
         var bus = new CpuBus();
         bus.Attach(ram);
         bus.Attach(new NromPrgRom(image));
