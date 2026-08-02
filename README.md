@@ -9,7 +9,7 @@
 
 ## Project status
 
-The repository is currently at **v0.11.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
+The repository is currently at **v0.12.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -25,12 +25,15 @@ The repository is currently at **v0.11.0**. The CPU executes all 151 official 65
 - [x] Render the first visible tile background
 - [x] Export a framebuffer image from the headless host
 - [x] Produce the first APU audio sample
+- [x] Load mapper and board definitions from JSON
+- [x] Assemble NROM and UxROM cartridge hardware automatically
+- [x] Execute an original mapper-2 bank-switching ROM
 - [ ] Run the first playable game
 - [ ] Publish the first working release
 
 ## Current foundation
 
-The v0.11.0 initial audio foundation establishes:
+The v0.12.0 data-driven cartridge foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -75,9 +78,12 @@ The v0.11.0 initial audio foundation establishes:
 - WAV export from the headless host;
 - original legal APU tone and DMC sample ROMs under `samples/`.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.11.0 extends the RP2A03 APU with frame-counter IRQs, DMC sample reads through the CPU bus, four-cycle DMC CPU stalls, looping and IRQ behavior, nonlinear DMC mixing, deterministic PCM generation, NES-style output filtering and WAV export. Secondary OAM, exact sprite evaluation, the full background fetch/shift-register pipeline, and cycle-level DMA sequencing remain future milestones.
+The headless host can inspect ROM metadata or boot supported NROM and UxROM cartridges for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.12.0 extends the RP2A03 APU with frame-counter IRQs, DMC sample reads through the CPU bus, four-cycle DMC CPU stalls, looping and IRQ behavior, nonlinear DMC mixing, deterministic PCM generation, NES-style output filtering and WAV export. Secondary OAM, exact sprite evaluation, the full background fetch/shift-register pipeline, and cycle-level DMA sequencing remain future milestones.
 
 ```powershell
+
+# Run the repository-owned UxROM bank-switching test
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-uxrom-bank-switch.nes --cycles 1000
 # Generate audio from the repository-owned APU tone ROM
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-apu-tone.nes --cycles 180000 --audio .\output\apu-tone.wav
 

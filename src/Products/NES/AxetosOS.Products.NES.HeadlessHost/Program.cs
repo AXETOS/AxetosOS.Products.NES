@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.Cartridges;
+using AxetosOS.Products.NES.Abstractions;
 using AxetosOS.Products.NES.Hardware;
 
 if (args.Length == 0)
@@ -88,20 +89,18 @@ if (requestedCycles == 0 && framePath is null && audioPath is null)
     return 0;
 }
 
-if (image.MapperNumber != 0)
-{
-    Console.Error.WriteLine("CPU boot execution currently supports NROM/mapper 0 only.");
-    return 4;
-}
-
 var ram = new CpuWorkRam();
 var ciram = new CiramNametableRam(image.Mirroring);
 var palette = new PpuPaletteRam();
-var chr = new NromChrMemory(image);
+var boardPath = Path.Combine(AppContext.BaseDirectory, "hardware", mapper.Definition.Replace('/', Path.DirectorySeparatorChar));
+await using var boardStream = File.OpenRead(boardPath);
+var boardDefinition = CartridgeBoardDefinition.Load(boardStream);
+var cartridge = CartridgeHardwareFactory.Create(image, boardDefinition);
+var chr = cartridge.ChrDevice;
 ram.PowerOn();
 ciram.PowerOn();
 palette.PowerOn();
-chr.PowerOn();
+if (chr is INesHardwareModule chrModule) chrModule.PowerOn();
 
 var ppuBus = new PpuBus();
 ppuBus.Attach(chr);
@@ -113,7 +112,7 @@ var ppu = new Rp2C02Ppu(ppuBus, nmi);
 var bus = new CpuBus();
 bus.Attach(ram);
 bus.Attach(ppu);
-bus.Attach(new NromPrgRom(image));
+bus.Attach(cartridge.PrgDevice);
 ScriptedNesControllerInput? scriptedInput = null;
 INesControllerInput input;
 if (inputScriptPath is not null)
@@ -176,6 +175,11 @@ catch (UnsupportedCpuOpcodeException exception)
 PrintCpuState(cpu);
 PrintPpuState(ppu, clock);
 PrintApuState(apu);
+if (cartridge.PrgDevice is UxRomPrgRom uxrom)
+{
+    Console.WriteLine($"PRG bank:    {uxrom.SelectedBank} / {uxrom.BankCount - 2}");
+    Console.WriteLine($"Mapper probe: ${ram.CpuRead(0):X2} ${ram.CpuRead(1):X2}");
+}
 Console.WriteLine($"Sprite 0:    x={ppu.ReadOamByte(3),3}, y={unchecked((byte)(ppu.ReadOamByte(0) + 1)),3}");
 
 if (framePath is not null)

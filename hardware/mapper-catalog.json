@@ -6,6 +6,12 @@
       "submapper": null,
       "name": "NROM",
       "definition": "boards/nrom.json"
+    },
+    {
+      "mapper": 2,
+      "submapper": null,
+      "name": "UxROM",
+      "definition": "boards/uxrom.json"
     }
   ]
 }

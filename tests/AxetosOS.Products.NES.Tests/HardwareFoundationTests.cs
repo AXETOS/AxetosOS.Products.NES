@@ -970,6 +970,40 @@ public sealed class HardwareFoundationTests
         return (ppu, bus, nmi);
     }
 
+    [Fact]
+    public void UxRomSwitchesLowerBankAndKeepsLastBankFixed()
+    {
+        var prg = new byte[4 * 16 * 1024];
+        prg[0] = 0x11;
+        prg[16 * 1024] = 0x22;
+        prg[2 * 16 * 1024] = 0x33;
+        prg[3 * 16 * 1024] = 0x44;
+        var image = new NesRomImage(NesHeaderFormat.INes, 2, null, prg.Length, 0, false, false, NametableMirroring.Horizontal, prg, Array.Empty<byte>());
+        var device = new UxRomPrgRom(image);
+        device.PowerOn();
+
+        Assert.Equal(0x11, device.CpuRead(0x8000));
+        Assert.Equal(0x44, device.CpuRead(0xC000));
+        device.CpuWrite(0x8000, 0x02);
+        Assert.Equal(0x33, device.CpuRead(0x8000));
+        Assert.Equal(0x44, device.CpuRead(0xC000));
+    }
+
+    [Fact]
+    public void CartridgeFactoryBuildsUxRomFromBoardDefinition()
+    {
+        var prg = new byte[2 * 16 * 1024];
+        var image = new NesRomImage(NesHeaderFormat.INes, 2, null, prg.Length, 0, false, false, NametableMirroring.Horizontal, prg, Array.Empty<byte>());
+        const string json = """{"id":"nes.board.uxrom","name":"UxROM","mapper":2,"components":[],"connections":[],"notes":null}""";
+        using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
+        var definition = CartridgeBoardDefinition.Load(stream);
+        var hardware = CartridgeHardwareFactory.Create(image, definition);
+
+        Assert.IsType<UxRomPrgRom>(hardware.PrgDevice);
+        Assert.True(((NromChrMemory)hardware.ChrDevice).IsWritable);
+        Assert.Equal("nes.board.uxrom", hardware.BoardId);
+    }
+
     private static CpuBus CreateBus(NesRomImage image)
     {
         var bus = new CpuBus();

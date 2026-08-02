@@ -10,9 +10,9 @@ public sealed class NromChrMemory : INesHardwareModule, IPpuBusDevice
     public NromChrMemory(NesRomImage image)
     {
         ArgumentNullException.ThrowIfNull(image);
-        if (image.MapperNumber != 0)
+        if (image.MapperNumber is not (0 or 2))
         {
-            throw new ArgumentException("NROM CHR hardware requires mapper 0.", nameof(image));
+            throw new ArgumentException("CHR memory currently supports mapper 0 and mapper 2 boards.", nameof(image));
         }
 
         if (image.ChrRom.Length == 0)
@@ -27,11 +27,11 @@ public sealed class NromChrMemory : INesHardwareModule, IPpuBusDevice
         }
         else
         {
-            throw new ArgumentException("NROM CHR memory must be 8 KiB CHR-ROM or 8 KiB CHR-RAM.", nameof(image));
+            throw new ArgumentException("CHR memory must be 8 KiB CHR-ROM or 8 KiB CHR-RAM.", nameof(image));
         }
     }
 
-    public string ModuleId => IsWritable ? "nes.cartridge.nrom.chr-ram" : "nes.cartridge.nrom.chr-rom";
+    public string ModuleId => IsWritable ? "nes.cartridge.chr-ram" : "nes.cartridge.chr-rom";
     public bool IsWritable { get; }
 
     public void PowerOn()

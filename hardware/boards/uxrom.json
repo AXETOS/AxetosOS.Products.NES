@@ -1,0 +1,34 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.uxrom",
+  "name": "UxROM",
+  "mapper": 2,
+  "components": [
+    {
+      "id": "prg",
+      "type": "BankedRom",
+      "source": "PrgRom",
+      "role": "switchable-16k-plus-fixed-last-16k"
+    },
+    {
+      "id": "bank",
+      "type": "Latch",
+      "width": 8,
+      "role": "prg-bank-select"
+    },
+    {
+      "id": "chr",
+      "type": "Ram",
+      "fallbackSize": 8192,
+      "role": "chr-ram"
+    }
+  ],
+  "connections": [
+    "Cpu.Write & Cpu.Address>=0x8000 -> bank.Load",
+    "bank.Output -> prg.SwitchableBank",
+    "Cpu.Address[0..13] -> prg.Address[0..13]",
+    "Cpu.Address[14] -> prg.FixedLastBankSelect",
+    "Ppu.Address[0..12] -> chr.Address[0..12]"
+  ],
+  "notes": "Data-driven UxROM board using reusable banked-ROM, latch and CHR-RAM hardware."
+}
