@@ -143,6 +143,8 @@ var controllers = new NesControllerPorts(input);
 controllers.PowerOn();
 bus.Attach(controllers);
 var cpu = new Rp2A03Cpu(bus);
+apu.AttachDmcMemory(bus, cpu.RequestDmaStall);
+apu.IrqLineChanged += cpu.SetIrqLine;
 var oamDma = new OamDmaController(bus, ppu, cpu);
 bus.Attach(oamDma);
 oamDma.PowerOn();
@@ -225,6 +227,11 @@ static void PrintApuState(Rp2A03Apu apu)
 {
     Console.WriteLine($"APU cycles:  {apu.CpuCycles:N0}");
     Console.WriteLine($"APU status:  ${apu.Status:X2}");
+    Console.WriteLine($"Frame IRQ:   {apu.FrameIrqAsserted}");
+    Console.WriteLine($"DMC IRQ:     {apu.DmcIrqAsserted}");
+    Console.WriteLine($"DMC address: ${apu.DmcCurrentAddress:X4}");
+    Console.WriteLine($"DMC bytes:   {apu.DmcBytesRemaining:N0}");
+    Console.WriteLine($"DMC output:  {apu.DmcOutputLevel}");
     Console.WriteLine($"Audio samples:{apu.Samples.Count,10:N0}");
 }
 

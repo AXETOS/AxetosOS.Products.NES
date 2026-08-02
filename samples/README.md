@@ -30,3 +30,5 @@ dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\
 ## axetos-apu-tone.nes
 
 Original NROM test cartridge that enables pulse channel 1 and produces a steady tone through the RP2A03 APU register interface. It contains no commercial code or assets.
+
+- `axetos-apu-dmc.nes` — original NROM test cartridge that streams a synthetic one-bit sample through the DMC channel.

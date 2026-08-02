@@ -860,6 +860,97 @@ public sealed class HardwareFoundationTests
         Assert.Equal(10, apu.ClockCount);
     }
 
+    [Fact]
+    public void ApuFourStepFrameCounterRaisesAndStatusReadClearsFrameIrq()
+    {
+        var apu = new Rp2A03Apu();
+        apu.PowerOn();
+
+        for (var cycle = 0; cycle < 29_829; cycle++)
+        {
+            apu.Clock();
+        }
+
+        Assert.True(apu.FrameIrqAsserted);
+        Assert.NotEqual(0, apu.Status & 0x40);
+
+        var status = apu.CpuRead(0x4015);
+
+        Assert.NotEqual(0, status & 0x40);
+        Assert.False(apu.FrameIrqAsserted);
+        Assert.Equal(0, apu.Status & 0x40);
+    }
+
+    [Fact]
+    public void ApuFrameIrqCanBeInhibitedThroughFrameCounterRegister()
+    {
+        var apu = new Rp2A03Apu();
+        apu.PowerOn();
+        apu.CpuWrite(0x4017, 0x40);
+
+        for (var cycle = 0; cycle < 60_000; cycle++)
+        {
+            apu.Clock();
+        }
+
+        Assert.False(apu.FrameIrqAsserted);
+        Assert.Equal(0, apu.Status & 0x40);
+    }
+
+    [Fact]
+    public void DmcFetchesPrgRomByteStallsCpuAndRaisesIrq()
+    {
+        var image = CreateNromImage(16 * 1024);
+        image.PrgRom[0] = 0xFF; // $C000 on an NROM-128 board
+        var bus = new CpuBus();
+        bus.Attach(new NromPrgRom(image));
+        var stalledCycles = 0;
+        var apu = new Rp2A03Apu();
+        apu.AttachDmcMemory(bus, cycles => stalledCycles += cycles);
+        apu.PowerOn();
+        apu.CpuWrite(0x4010, 0x8F); // IRQ enabled, fastest NTSC rate
+        apu.CpuWrite(0x4011, 0x00);
+        apu.CpuWrite(0x4012, 0x00); // $C000
+        apu.CpuWrite(0x4013, 0x00); // one byte
+        apu.CpuWrite(0x4015, 0x10);
+
+        for (var cycle = 0; cycle < 1_000; cycle++)
+        {
+            apu.Clock();
+        }
+
+        Assert.Equal(4, stalledCycles);
+        Assert.True(apu.DmcIrqAsserted);
+        Assert.NotEqual(0, apu.Status & 0x80);
+        Assert.True(apu.DmcOutputLevel > 0);
+    }
+
+    [Fact]
+    public void DmcLoopRestartsSampleWithoutRaisingIrq()
+    {
+        var image = CreateNromImage(16 * 1024);
+        image.PrgRom[0] = 0xAA;
+        var bus = new CpuBus();
+        bus.Attach(new NromPrgRom(image));
+        var fetchStalls = 0;
+        var apu = new Rp2A03Apu();
+        apu.AttachDmcMemory(bus, cycles => fetchStalls += cycles);
+        apu.PowerOn();
+        apu.CpuWrite(0x4010, 0xCF); // IRQ enabled + loop + fastest rate
+        apu.CpuWrite(0x4012, 0x00);
+        apu.CpuWrite(0x4013, 0x00);
+        apu.CpuWrite(0x4015, 0x10);
+
+        for (var cycle = 0; cycle < 2_000; cycle++)
+        {
+            apu.Clock();
+        }
+
+        Assert.True(fetchStalls >= 8);
+        Assert.False(apu.DmcIrqAsserted);
+        Assert.True(apu.DmcBytesRemaining > 0 || fetchStalls > 4);
+    }
+
     private static (Rp2C02Ppu Ppu, PpuBus Bus, SignalLine Nmi) CreatePpu()
     {
         var image = CreateNromImage(16 * 1024);

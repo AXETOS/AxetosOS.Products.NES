@@ -21,15 +21,32 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         202, 254, 380, 508, 762, 1_016, 2_034, 4_068
     ];
 
+    private static readonly ushort[] DmcPeriods =
+    [
+        428, 380, 340, 320, 286, 254, 226, 214,
+        190, 160, 142, 128, 106, 85, 72, 54
+    ];
+
     private readonly PulseChannel _pulse1 = new(hasSweepNegateExtra: true);
     private readonly PulseChannel _pulse2 = new(hasSweepNegateExtra: false);
     private readonly TriangleChannel _triangle = new();
     private readonly NoiseChannel _noise = new();
+    private readonly DmcChannel _dmc = new();
     private readonly List<float> _samples = [];
     private readonly int _sampleRate;
     private ulong _cpuCycles;
     private int _frameCycle;
+    private bool _fiveStepMode;
+    private bool _frameIrqInhibit;
+    private bool _frameIrq;
     private double _sampleAccumulator;
+    private float _highPass90LastInput;
+    private float _highPass90LastOutput;
+    private float _highPass440LastInput;
+    private float _highPass440LastOutput;
+    private float _lowPass14kLastOutput;
+    private CpuBus? _dmcBus;
+    private Action<int>? _dmcStall;
 
     public Rp2A03Apu(int sampleRate = DefaultSampleRate)
     {
@@ -46,29 +63,55 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
     public ulong CpuCycles => _cpuCycles;
     public IReadOnlyList<float> Samples => _samples;
     public float LastMixedSample { get; private set; }
+    public bool FrameIrqAsserted => _frameIrq;
+    public bool DmcIrqAsserted => _dmc.IrqAsserted;
+    public bool IrqAsserted => FrameIrqAsserted || DmcIrqAsserted;
+    public ushort DmcCurrentAddress => _dmc.CurrentAddress;
+    public ushort DmcBytesRemaining => _dmc.BytesRemaining;
+    public byte DmcOutputLevel => _dmc.Output;
+    public event Action<bool>? IrqLineChanged;
     public byte Status => (byte)(
         (_pulse1.LengthCounter > 0 ? 0x01 : 0) |
         (_pulse2.LengthCounter > 0 ? 0x02 : 0) |
         (_triangle.LengthCounter > 0 ? 0x04 : 0) |
-        (_noise.LengthCounter > 0 ? 0x08 : 0));
+        (_noise.LengthCounter > 0 ? 0x08 : 0) |
+        (_dmc.BytesRemaining > 0 ? 0x10 : 0) |
+        (_frameIrq ? 0x40 : 0) |
+        (_dmc.IrqAsserted ? 0x80 : 0));
 
     public void PowerOn()
     {
         _cpuCycles = 0;
         _frameCycle = 0;
+        _fiveStepMode = false;
+        _frameIrqInhibit = false;
+        _frameIrq = false;
         _sampleAccumulator = 0;
+        _highPass90LastInput = 0;
+        _highPass90LastOutput = 0;
+        _highPass440LastInput = 0;
+        _highPass440LastOutput = 0;
+        _lowPass14kLastOutput = 0;
         LastMixedSample = 0;
         _samples.Clear();
         _pulse1.PowerOn();
         _pulse2.PowerOn();
         _triangle.PowerOn();
         _noise.PowerOn();
+        _dmc.PowerOn();
+        NotifyIrqLine();
     }
 
     public void Reset() => PowerOn();
 
+    public void AttachDmcMemory(CpuBus bus, Action<int> stallCpu)
+    {
+        _dmcBus = bus ?? throw new ArgumentNullException(nameof(bus));
+        _dmcStall = stallCpu ?? throw new ArgumentNullException(nameof(stallCpu));
+    }
+
     public bool HandlesCpuAddress(ushort address) =>
-        address is >= 0x4000 and <= 0x4013 or 0x4015;
+        address is >= 0x4000 and <= 0x4013 or 0x4015 or 0x4017;
 
     public byte CpuRead(ushort address)
     {
@@ -77,7 +120,10 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
             return 0;
         }
 
-        return Status;
+        var status = Status;
+        _frameIrq = false;
+        NotifyIrqLine();
+        return status;
     }
 
     public void CpuWrite(ushort address, byte value)
@@ -98,11 +144,32 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
             case 0x400C: _noise.WriteControl(value); break;
             case 0x400E: _noise.WritePeriod(value, NoisePeriods); break;
             case 0x400F: _noise.WriteLength(value, LengthTable); break;
+            case 0x4010: _dmc.WriteControl(value, DmcPeriods); NotifyIrqLine(); break;
+            case 0x4011: _dmc.WriteDirectLoad(value); break;
+            case 0x4012: _dmc.WriteSampleAddress(value); break;
+            case 0x4013: _dmc.WriteSampleLength(value); break;
             case 0x4015:
                 _pulse1.SetEnabled((value & 0x01) != 0);
                 _pulse2.SetEnabled((value & 0x02) != 0);
                 _triangle.SetEnabled((value & 0x04) != 0);
                 _noise.SetEnabled((value & 0x08) != 0);
+                _dmc.SetEnabled((value & 0x10) != 0);
+                NotifyIrqLine();
+                break;
+            case 0x4017:
+                _fiveStepMode = (value & 0x80) != 0;
+                _frameIrqInhibit = (value & 0x40) != 0;
+                if (_frameIrqInhibit)
+                {
+                    _frameIrq = false;
+                    NotifyIrqLine();
+                }
+                _frameCycle = 0;
+                if (_fiveStepMode)
+                {
+                    ClockQuarterFrame();
+                    ClockHalfFrame();
+                }
                 break;
         }
     }
@@ -113,6 +180,12 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         _frameCycle++;
 
         _triangle.ClockTimer();
+        var irqBeforeDmcClock = IrqAsserted;
+        _dmc.ClockTimer(FetchDmcByte);
+        if (irqBeforeDmcClock != IrqAsserted)
+        {
+            NotifyIrqLine();
+        }
         if ((_cpuCycles & 1) == 0)
         {
             _pulse1.ClockTimer();
@@ -120,8 +193,53 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
             _noise.ClockTimer();
         }
 
-        // NTSC four-step frame sequencer approximation. Quarter-frame clocks
-        // envelopes/linear counters; half-frame clocks length/sweep units.
+        ClockFrameSequencer();
+
+        _sampleAccumulator += _sampleRate;
+        if (_sampleAccumulator < NtscCpuClockHz)
+        {
+            return;
+        }
+
+        _sampleAccumulator -= NtscCpuClockHz;
+        LastMixedSample = Filter(Mix());
+        _samples.Add(LastMixedSample);
+    }
+
+    public float[] DrainSamples()
+    {
+        var result = _samples.ToArray();
+        _samples.Clear();
+        return result;
+    }
+
+    private void ClockFrameSequencer()
+    {
+        if (_fiveStepMode)
+        {
+            switch (_frameCycle)
+            {
+                case 7_457:
+                    ClockQuarterFrame();
+                    break;
+                case 14_913:
+                    ClockQuarterFrame();
+                    ClockHalfFrame();
+                    break;
+                case 22_371:
+                    ClockQuarterFrame();
+                    break;
+                case 29_829:
+                    break;
+                case 37_281:
+                    ClockQuarterFrame();
+                    ClockHalfFrame();
+                    _frameCycle = 0;
+                    break;
+            }
+            return;
+        }
+
         switch (_frameCycle)
         {
             case 7_457:
@@ -137,26 +255,47 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
             case 29_829:
                 ClockQuarterFrame();
                 ClockHalfFrame();
+                if (!_frameIrqInhibit)
+                {
+                    _frameIrq = true;
+                    NotifyIrqLine();
+                }
                 _frameCycle = 0;
                 break;
         }
-
-        _sampleAccumulator += _sampleRate;
-        if (_sampleAccumulator < NtscCpuClockHz)
-        {
-            return;
-        }
-
-        _sampleAccumulator -= NtscCpuClockHz;
-        LastMixedSample = Mix();
-        _samples.Add(LastMixedSample);
     }
 
-    public float[] DrainSamples()
+    private byte FetchDmcByte(ushort address)
     {
-        var result = _samples.ToArray();
-        _samples.Clear();
-        return result;
+        if (_dmcBus is null || _dmcStall is null)
+        {
+            return 0;
+        }
+
+        _dmcStall(4);
+        var value = _dmcBus.Read(address);
+        NotifyIrqLine();
+        return value;
+    }
+
+    private void NotifyIrqLine() => IrqLineChanged?.Invoke(IrqAsserted);
+
+    private float Filter(float input)
+    {
+        var highPass90 = HighPass(input, 90.0, ref _highPass90LastInput, ref _highPass90LastOutput);
+        var highPass440 = HighPass(highPass90, 440.0, ref _highPass440LastInput, ref _highPass440LastOutput);
+        var lowPassAlpha = 1.0 - Math.Exp(-2.0 * Math.PI * 14_000.0 / _sampleRate);
+        _lowPass14kLastOutput += (float)(lowPassAlpha * (highPass440 - _lowPass14kLastOutput));
+        return _lowPass14kLastOutput;
+    }
+
+    private float HighPass(float input, double cutoff, ref float lastInput, ref float lastOutput)
+    {
+        var alpha = Math.Exp(-2.0 * Math.PI * cutoff / _sampleRate);
+        var output = (float)(alpha * (lastOutput + input - lastInput));
+        lastInput = input;
+        lastOutput = output;
+        return output;
     }
 
     private void ClockQuarterFrame()
@@ -180,7 +319,7 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         var pulseSum = _pulse1.Output + _pulse2.Output;
         var pulse = pulseSum == 0 ? 0.0 : 95.88 / ((8128.0 / pulseSum) + 100.0);
 
-        var tndInput = (_triangle.Output / 8227.0) + (_noise.Output / 12241.0);
+        var tndInput = (_triangle.Output / 8227.0) + (_noise.Output / 12241.0) + (_dmc.Output / 22638.0);
         var tnd = tndInput == 0 ? 0.0 : 159.79 / ((1.0 / tndInput) + 100.0);
         return (float)Math.Clamp(pulse + tnd, 0.0, 1.0);
     }
@@ -567,4 +706,138 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
             if (!_lengthHalt && LengthCounter > 0) LengthCounter--;
         }
     }
+    private sealed class DmcChannel
+    {
+        private bool _enabled;
+        private bool _irqEnabled;
+        private bool _loop;
+        private ushort _timerPeriod = 428;
+        private ushort _timer;
+        private ushort _sampleAddress = 0xC000;
+        private ushort _sampleLength = 1;
+        private byte? _sampleBuffer;
+        private byte _shiftRegister;
+        private byte _bitsRemaining = 8;
+        private bool _silence = true;
+
+        public bool IrqAsserted { get; private set; }
+        public ushort CurrentAddress { get; private set; }
+        public ushort BytesRemaining { get; private set; }
+        public byte Output { get; private set; }
+
+        public void PowerOn()
+        {
+            _enabled = false;
+            _irqEnabled = false;
+            _loop = false;
+            _timerPeriod = 428;
+            _timer = 0;
+            _sampleAddress = 0xC000;
+            _sampleLength = 1;
+            _sampleBuffer = null;
+            _shiftRegister = 0;
+            _bitsRemaining = 8;
+            _silence = true;
+            IrqAsserted = false;
+            CurrentAddress = _sampleAddress;
+            BytesRemaining = 0;
+            Output = 0;
+        }
+
+        public void WriteControl(byte value, IReadOnlyList<ushort> periods)
+        {
+            _irqEnabled = (value & 0x80) != 0;
+            _loop = (value & 0x40) != 0;
+            _timerPeriod = periods[value & 0x0F];
+            if (!_irqEnabled)
+            {
+                IrqAsserted = false;
+            }
+        }
+
+        public void WriteDirectLoad(byte value) => Output = (byte)(value & 0x7F);
+        public void WriteSampleAddress(byte value) => _sampleAddress = (ushort)(0xC000 | (value << 6));
+        public void WriteSampleLength(byte value) => _sampleLength = (ushort)((value << 4) | 1);
+
+        public void SetEnabled(bool enabled)
+        {
+            _enabled = enabled;
+            IrqAsserted = false;
+            if (!enabled)
+            {
+                BytesRemaining = 0;
+                return;
+            }
+
+            if (BytesRemaining == 0)
+            {
+                RestartSample();
+            }
+        }
+
+        public void ClockTimer(Func<ushort, byte> fetchByte)
+        {
+            if (_enabled && _sampleBuffer is null && BytesRemaining > 0)
+            {
+                _sampleBuffer = fetchByte(CurrentAddress);
+                CurrentAddress = CurrentAddress == 0xFFFF ? (ushort)0x8000 : (ushort)(CurrentAddress + 1);
+                BytesRemaining--;
+                if (BytesRemaining == 0)
+                {
+                    if (_loop)
+                    {
+                        RestartSample();
+                    }
+                    else if (_irqEnabled)
+                    {
+                        IrqAsserted = true;
+                    }
+                }
+            }
+
+            if (_timer > 0)
+            {
+                _timer--;
+                return;
+            }
+
+            _timer = _timerPeriod;
+            if (!_silence)
+            {
+                if ((_shiftRegister & 1) != 0)
+                {
+                    if (Output <= 125) Output += 2;
+                }
+                else if (Output >= 2)
+                {
+                    Output -= 2;
+                }
+            }
+
+            _shiftRegister >>= 1;
+            if (--_bitsRemaining != 0)
+            {
+                return;
+            }
+
+            _bitsRemaining = 8;
+            if (_sampleBuffer is byte buffered)
+            {
+                _shiftRegister = buffered;
+                _sampleBuffer = null;
+                _silence = false;
+            }
+            else
+            {
+                _silence = true;
+            }
+        }
+
+        private void RestartSample()
+        {
+            CurrentAddress = _sampleAddress;
+            BytesRemaining = _sampleLength;
+        }
+    }
+
 }

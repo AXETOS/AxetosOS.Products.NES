@@ -9,7 +9,7 @@
 
 ## Project status
 
-The repository is currently at **v0.10.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
+The repository is currently at **v0.11.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -30,7 +30,7 @@ The repository is currently at **v0.10.0**. The CPU executes all 151 official 65
 
 ## Current foundation
 
-The v0.10.0 initial audio foundation establishes:
+The v0.11.0 initial audio foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -69,17 +69,20 @@ The v0.10.0 initial audio foundation establishes:
 - rendering-time horizontal and pre-render vertical VRAM-address transfer groundwork;
 - PPM framebuffer export from the headless host;
 - an original legal PPU background test ROM under `samples/`;
-- an RP2A03 APU register device with pulse, triangle and noise channel foundations;
+- an RP2A03 APU register device with pulse, triangle, noise and DMC channel foundations;
 - quarter-frame and half-frame sequencing for envelopes, linear counters, length counters and pulse sweeps;
-- nonlinear NES pulse/TND mixing and deterministic 44.1 kHz sample generation;
+- nonlinear NES pulse/TND mixing including DMC, deterministic 44.1 kHz sample generation and NES-style high-pass/low-pass filtering;
 - WAV export from the headless host;
-- an original legal APU tone ROM under `samples/`.
+- original legal APU tone and DMC sample ROMs under `samples/`.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.10.0 adds the first RP2A03 APU hardware path, pulse/triangle/noise channel timing foundations, the frame sequencer, nonlinear mixing, deterministic PCM generation and WAV export. Secondary OAM, exact sprite evaluation, the full background fetch/shift-register pipeline, and cycle-level DMA sequencing remain future milestones.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.11.0 extends the RP2A03 APU with frame-counter IRQs, DMC sample reads through the CPU bus, four-cycle DMC CPU stalls, looping and IRQ behavior, nonlinear DMC mixing, deterministic PCM generation, NES-style output filtering and WAV export. Secondary OAM, exact sprite evaluation, the full background fetch/shift-register pipeline, and cycle-level DMA sequencing remain future milestones.
 
 ```powershell
 # Generate audio from the repository-owned APU tone ROM
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-apu-tone.nes --cycles 180000 --audio .\output\apu-tone.wav
+
+# Generate DMC sample audio (about five seconds)
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-apu-dmc.nes --cycles 9000000 --audio .\output\apu-dmc.wav
 
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"
 
@@ -759,7 +762,7 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [x] Implement frame sequencer
 - [x] Implement quarter-frame clocks
 - [x] Implement half-frame clocks
-- [ ] Implement frame IRQ
+- [x] Implement frame IRQ
 - [x] Implement pulse channel 1 timer and duty sequencer
 - [x] Implement pulse channel 2 timer and duty sequencer
 - [x] Implement pulse envelopes
@@ -772,15 +775,15 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [x] Implement noise LFSR
 - [x] Implement noise envelope
 - [x] Implement noise length counter
-- [ ] Implement DMC output unit
-- [ ] Implement DMC sample reader
-- [ ] Implement DMC DMA
-- [ ] Implement DMC CPU stalls
-- [ ] Implement DMC IRQ
+- [x] Implement DMC output unit
+- [x] Implement DMC sample reader
+- [x] Implement DMC DMA
+- [x] Implement DMC CPU stalls
+- [x] Implement DMC IRQ
 - [x] Implement nonlinear pulse mixing
 - [x] Implement nonlinear TND mixing
 - [x] Implement deterministic audio sampling
-- [ ] Implement resampler
+- [x] Implement fixed-rate host sample conversion and NES output filtering
 - [ ] Implement host audio ring buffer
 - [ ] Add desktop audio output
 - [ ] Add Web Audio output
