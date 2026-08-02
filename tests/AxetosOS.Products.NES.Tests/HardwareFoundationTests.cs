@@ -316,6 +316,143 @@ public sealed class HardwareFoundationTests
         Assert.Equal(0x1234, cpu.ProgramCounter);
     }
 
+
+    [Fact]
+    public void PpuBusMasksAddressesToFourteenBits()
+    {
+        var palette = new PpuPaletteRam();
+        palette.PowerOn();
+        var bus = new PpuBus();
+        bus.Attach(palette);
+
+        bus.Write(0x7F00, 0x2A);
+
+        Assert.Equal(0x2A, bus.Read(0x3F00));
+    }
+
+    [Fact]
+    public void CiramImplementsHorizontalAndVerticalMirroring()
+    {
+        var horizontal = new CiramNametableRam(NametableMirroring.Horizontal);
+        horizontal.PowerOn();
+        horizontal.PpuWrite(0x2000, 0x11);
+        horizontal.PpuWrite(0x2800, 0x22);
+        Assert.Equal(0x11, horizontal.PpuRead(0x2400));
+        Assert.Equal(0x22, horizontal.PpuRead(0x2C00));
+
+        var vertical = new CiramNametableRam(NametableMirroring.Vertical);
+        vertical.PowerOn();
+        vertical.PpuWrite(0x2000, 0x33);
+        vertical.PpuWrite(0x2400, 0x44);
+        Assert.Equal(0x33, vertical.PpuRead(0x2800));
+        Assert.Equal(0x44, vertical.PpuRead(0x2C00));
+    }
+
+    [Fact]
+    public void PaletteRamImplementsUniversalBackgroundAliases()
+    {
+        var palette = new PpuPaletteRam();
+        palette.PowerOn();
+
+        palette.PpuWrite(0x3F10, 0x7F);
+
+        Assert.Equal(0x3F, palette.PpuRead(0x3F00));
+        Assert.Equal(0x3F, palette.PpuRead(0x3F30));
+    }
+
+    [Fact]
+    public void NromChrSupportsRomAndRamCartridges()
+    {
+        var romImage = CreateNromImage(16 * 1024);
+        romImage.ChrRom[0x123] = 0x55;
+        var chrRom = new NromChrMemory(romImage);
+        chrRom.PpuWrite(0x0123, 0xAA);
+        Assert.False(chrRom.IsWritable);
+        Assert.Equal(0x55, chrRom.PpuRead(0x0123));
+
+        var ramImage = romImage with
+        {
+            ChrRomSizeBytes = 0,
+            ChrRom = []
+        };
+        var chrRam = new NromChrMemory(ramImage);
+        chrRam.PowerOn();
+        chrRam.PpuWrite(0x0123, 0xAA);
+        Assert.True(chrRam.IsWritable);
+        Assert.Equal(0xAA, chrRam.PpuRead(0x0123));
+    }
+
+    [Fact]
+    public void PpuRegistersWriteAndReadThroughThePpuBus()
+    {
+        var (ppu, bus, _) = CreatePpu();
+        ppu.CpuWrite(0x2006, 0x20);
+        ppu.CpuWrite(0x2006, 0x00);
+        ppu.CpuWrite(0x2007, 0x5A);
+        Assert.Equal(0x5A, bus.Read(0x2000));
+
+        ppu.CpuWrite(0x2006, 0x20);
+        ppu.CpuWrite(0x2006, 0x00);
+        Assert.Equal(0x00, ppu.CpuRead(0x2007));
+        Assert.Equal(0x5A, ppu.CpuRead(0x2007));
+    }
+
+    [Fact]
+    public void PpuEntersVBlankAssertsNmiAndStatusReadClearsIt()
+    {
+        var (ppu, _, nmi) = CreatePpu();
+        ppu.CpuWrite(0x2000, 0x80);
+
+        var clocksToVBlank = (241 * 341) + 2;
+        for (var i = 0; i < clocksToVBlank; i++)
+        {
+            ppu.Clock();
+        }
+
+        Assert.True(ppu.InVBlank);
+        Assert.True(nmi.IsAsserted);
+        Assert.True((ppu.CpuRead(0x2002) & 0x80) != 0);
+        Assert.False(ppu.InVBlank);
+        Assert.False(nmi.IsAsserted);
+    }
+
+    [Fact]
+    public void PpuCompletesAFrameAndProducesFramebufferPixels()
+    {
+        var (ppu, bus, _) = CreatePpu();
+        bus.Write(0x3F00, 0x21);
+
+        var clocksPerFrame = 262 * 341;
+        for (var i = 0; i < clocksPerFrame; i++)
+        {
+            ppu.Clock();
+        }
+
+        Assert.True(ppu.FrameCompleted);
+        Assert.Equal(1UL, ppu.Frame);
+        Assert.NotEqual(0U, ppu.Framebuffer[0]);
+        Assert.Equal(Rp2C02Ppu.ScreenWidth * Rp2C02Ppu.ScreenHeight, ppu.Framebuffer.Length);
+    }
+
+    private static (Rp2C02Ppu Ppu, PpuBus Bus, SignalLine Nmi) CreatePpu()
+    {
+        var image = CreateNromImage(16 * 1024);
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+        var nmi = new SignalLine();
+        var ppu = new Rp2C02Ppu(bus, nmi);
+        ppu.PowerOn();
+        return (ppu, bus, nmi);
+    }
+
     private static CpuBus CreateBus(NesRomImage image)
     {
         var bus = new CpuBus();

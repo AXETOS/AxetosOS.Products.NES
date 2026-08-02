@@ -58,31 +58,51 @@ if (image.MapperNumber != 0)
 }
 
 var ram = new CpuWorkRam();
+var ciram = new CiramNametableRam(image.Mirroring);
+var palette = new PpuPaletteRam();
+var chr = new NromChrMemory(image);
 ram.PowerOn();
+ciram.PowerOn();
+palette.PowerOn();
+chr.PowerOn();
+
+var ppuBus = new PpuBus();
+ppuBus.Attach(chr);
+ppuBus.Attach(ciram);
+ppuBus.Attach(palette);
+
+var nmi = new SignalLine();
+var ppu = new Rp2C02Ppu(ppuBus, nmi);
 var bus = new CpuBus();
 bus.Attach(ram);
+bus.Attach(ppu);
 bus.Attach(new NromPrgRom(image));
 var cpu = new Rp2A03Cpu(bus);
+nmi.Asserted += cpu.RequestNmi;
+ppu.PowerOn();
 cpu.PowerOn();
+var clock = new NesMasterClock(cpu, ppu);
 
 Console.WriteLine();
 Console.WriteLine($"Reset vector: ${cpu.ProgramCounter:X4}");
 
 try
 {
-    for (var cycle = 0; cycle < requestedCycles; cycle++)
+    while (clock.CpuCycles < (ulong)requestedCycles)
     {
-        cpu.Clock();
+        clock.Tick();
     }
 }
 catch (UnsupportedCpuOpcodeException exception)
 {
     Console.Error.WriteLine(exception.Message);
     PrintCpuState(cpu);
+    PrintPpuState(ppu, clock);
     return 5;
 }
 
 PrintCpuState(cpu);
+PrintPpuState(ppu, clock);
 return 0;
 
 static void PrintCpuState(Rp2A03Cpu cpu)
@@ -96,6 +116,15 @@ static void PrintCpuState(Rp2A03Cpu cpu)
     Console.WriteLine($"SP:          ${cpu.StackPointer:X2}");
     Console.WriteLine($"P:           ${cpu.Status:X2}");
     Console.WriteLine($"Last opcode: ${cpu.LastOpcode:X2}");
+}
+
+
+static void PrintPpuState(Rp2C02Ppu ppu, NesMasterClock clock)
+{
+    Console.WriteLine($"PPU cycles:  {clock.PpuCycles:N0}");
+    Console.WriteLine($"PPU position:{ppu.Scanline,8}, {ppu.Dot}");
+    Console.WriteLine($"PPU frame:   {ppu.Frame,12:N0}");
+    Console.WriteLine($"VBlank:      {ppu.InVBlank}");
 }
 
 static void WriteUsage()

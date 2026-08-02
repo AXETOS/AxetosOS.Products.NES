@@ -21,14 +21,14 @@ This repository now contains the initial architecture, development roadmap, and 
 - [x] Implement the first executable host scaffold
 - [x] Implement ROM header loading and inspection
 - [x] Execute the first CPU instructions
-- [ ] Render the first PPU frame
+- [x] Render the first PPU frame
 - [ ] Produce the first correct APU audio sample
 - [ ] Run the first playable game
 - [ ] Publish the first working release
 
 ## Current foundation
 
-The v0.4.0 CPU foundation establishes:
+The v0.5.0 video foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -48,9 +48,16 @@ The v0.4.0 CPU foundation establishes:
 - initial load/store/transfer instructions for A, X and Y;
 - a 3:1 PPU-to-CPU master-clock scheduler;
 - hardware tests covering RAM mirroring, NROM mapping, reset, instruction execution, clock ratios, addressing modes, stack/subroutine behavior, arithmetic and logic flags, shifts, branches, indirect jumps and NMI/RTI;
-- an original legal NROM smoke-test ROM under `samples/`.
+- an original legal NROM smoke-test ROM under `samples/`;
+- a 14-bit PPU bus with open-bus state;
+- NROM CHR-ROM and CHR-RAM devices;
+- 2 KiB CIRAM with horizontal and vertical nametable mirroring;
+- palette RAM with NES universal-background aliases;
+- RP2C02 CPU register mirroring, VRAM address/write latch and buffered PPUDATA reads;
+- scanline, dot, frame, VBlank and NMI timing;
+- a 256×240 framebuffer populated by the current universal background color.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles. v0.4.0 implements all 151 official 6502 opcodes across the documented addressing modes, including indexed page-cross penalties and the original indirect-JMP page-wrap behavior. Execution is instruction-driven with documented cycle totals; later milestones will refine each instruction into explicit per-cycle bus micro-operations.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.5.0 adds the PPU memory path, CPU-visible register interface, scanline/dot timing, VBlank/NMI behavior and the first complete framebuffer. Background and sprite fetch pipelines remain future milestones.
 
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"
@@ -572,14 +579,14 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 2 — Hardware composition foundation
 
-- [ ] Define base hardware module contract
-- [ ] Define power-on lifecycle
-- [ ] Define reset lifecycle
+- [x] Define base hardware module contract
+- [x] Define power-on lifecycle
+- [x] Define reset lifecycle
 - [ ] Define deterministic state capture and restore
-- [ ] Define clocked-module contract
-- [ ] Define signal-line abstraction
-- [ ] Define CPU bus
-- [ ] Define PPU bus
+- [x] Define clocked-module contract
+- [x] Define signal-line abstraction
+- [x] Define CPU bus
+- [x] Define PPU bus
 - [ ] Define bus ownership and tri-state behaviour
 - [ ] Define interrupt lines
 - [ ] Define DMA request and arbitration model
@@ -606,17 +613,17 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 4 — ROM and cartridge loading
 
-- [ ] Parse iNES headers
-- [ ] Parse NES 2.0 headers
+- [x] Parse iNES headers
+- [x] Parse NES 2.0 headers
 - [ ] Validate ROM size and sections
-- [ ] Extract PRG-ROM
-- [ ] Extract CHR-ROM
+- [x] Extract PRG-ROM
+- [x] Extract CHR-ROM
 - [ ] Support CHR-RAM declarations
-- [ ] Read mapper number
-- [ ] Read submapper number
-- [ ] Read mirroring metadata
-- [ ] Read battery-backed memory metadata
-- [ ] Read trainer metadata
+- [x] Read mapper number
+- [x] Read submapper number
+- [x] Read mirroring metadata
+- [x] Read battery-backed memory metadata
+- [x] Read trainer metadata
 - [ ] Read region metadata
 - [ ] Add ROM hash calculation
 - [ ] Add known-header correction database support
@@ -624,8 +631,8 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 5 — Mapper and board definition engine
 
-- [ ] Define mapper-catalog schema
-- [ ] Define board-definition schema
+- [x] Define mapper-catalog schema
+- [x] Define board-definition schema
 - [ ] Define chip-definition schema
 - [ ] Define component connection syntax
 - [ ] Define inheritance/extends support
@@ -642,10 +649,10 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 - [ ] Define NROM-128 board
 - [ ] Define NROM-256 board
-- [ ] Attach PRG-ROM to CPU bus
-- [ ] Attach CHR-ROM or CHR-RAM to PPU bus
-- [ ] Implement horizontal mirroring wiring
-- [ ] Implement vertical mirroring wiring
+- [x] Attach PRG-ROM to CPU bus
+- [x] Attach CHR-ROM or CHR-RAM to PPU bus
+- [x] Implement horizontal mirroring wiring
+- [x] Implement vertical mirroring wiring
 - [ ] Support optional PRG-RAM where applicable
 - [ ] Validate NROM board assembly
 - [ ] Run first NROM test cartridge
@@ -673,13 +680,13 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 8 — RP2C02 PPU
 
-- [ ] Implement PPU register interface
-- [ ] Implement PPU bus
-- [ ] Implement VRAM address registers
-- [ ] Implement scroll registers and write latch
-- [ ] Implement nametable RAM
-- [ ] Implement palette RAM
-- [ ] Implement pattern-table reads
+- [x] Implement PPU register interface
+- [x] Implement PPU bus
+- [x] Implement VRAM address registers
+- [x] Implement scroll registers and write latch
+- [x] Implement nametable RAM
+- [x] Implement palette RAM
+- [x] Implement pattern-table reads
 - [ ] Implement background fetch pipeline
 - [ ] Implement shift registers
 - [ ] Implement pixel composition
@@ -689,8 +696,8 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [ ] Implement sprite rendering
 - [ ] Implement sprite-zero hit
 - [ ] Implement sprite overflow behaviour
-- [ ] Implement VBlank timing
-- [ ] Implement NMI timing
+- [x] Implement VBlank timing
+- [x] Implement NMI timing
 - [ ] Implement odd-frame timing behaviour
 - [ ] Produce first correct framebuffer
 - [ ] Pass selected PPU test ROMs
