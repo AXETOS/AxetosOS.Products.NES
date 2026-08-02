@@ -50,6 +50,11 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
     public byte Status => _status;
     public ushort VramAddress => _vramAddress;
     public uint[] Framebuffer { get; }
+    public byte OamAddress => _oamAddress;
+
+    public byte ReadOamByte(byte address) => _oam[address];
+
+    public void WriteOamDmaByte(byte value) => _oam[_oamAddress++] = value;
 
     public void PowerOn()
     {
@@ -161,10 +166,26 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
 
     private void RenderVisiblePixel(int screenX, int screenY)
     {
-        if ((_mask & 0x08) == 0)
+        var background = ReadBackgroundPixel(screenX, screenY);
+        var sprite = ReadSpritePixel(screenX, screenY);
+
+        if (sprite.Opaque && background.Opaque && sprite.SpriteIndex == 0 && screenX < 255)
         {
-            WriteFramebufferPixel(screenX, screenY, _bus.Read(0x3F00));
-            return;
+            _status |= 0x40;
+        }
+
+        var paletteIndex = sprite.Opaque && (!background.Opaque || !sprite.BehindBackground)
+            ? sprite.PaletteIndex
+            : background.PaletteIndex;
+
+        WriteFramebufferPixel(screenX, screenY, paletteIndex);
+    }
+
+    private PixelSample ReadBackgroundPixel(int screenX, int screenY)
+    {
+        if ((_mask & 0x08) == 0 || (screenX < 8 && (_mask & 0x02) == 0))
+        {
+            return new PixelSample(_bus.Read(0x3F00), false);
         }
 
         var scrollX = ((_temporaryAddress & 0x001F) << 3) | _fineX;
@@ -191,16 +212,112 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
 
         if (pixel == 0)
         {
-            WriteFramebufferPixel(screenX, screenY, _bus.Read(0x3F00));
-            return;
+            return new PixelSample(_bus.Read(0x3F00), false);
         }
 
         var attributeAddress = baseNametable + 0x03C0 + ((tileY >> 2) * 8) + (tileX >> 2);
         var attribute = _bus.Read((ushort)attributeAddress);
         var quadrantShift = ((tileY & 0x02) != 0 ? 4 : 0) + ((tileX & 0x02) != 0 ? 2 : 0);
         var palette = (attribute >> quadrantShift) & 0x03;
-        var paletteAddress = (ushort)(0x3F00 + (palette * 4) + pixel);
-        WriteFramebufferPixel(screenX, screenY, _bus.Read(paletteAddress));
+        return new PixelSample(_bus.Read((ushort)(0x3F00 + (palette * 4) + pixel)), true);
+    }
+
+    private SpriteSample ReadSpritePixel(int screenX, int screenY)
+    {
+        if ((_mask & 0x10) == 0 || (screenX < 8 && (_mask & 0x04) == 0))
+        {
+            return SpriteSample.Transparent;
+        }
+
+        var spriteHeight = (_control & 0x20) != 0 ? 16 : 8;
+        var spritesOnScanline = 0;
+        for (var spriteIndex = 0; spriteIndex < 64; spriteIndex++)
+        {
+            var spriteTop = unchecked((byte)(_oam[spriteIndex * 4] + 1));
+            var row = screenY - spriteTop;
+            if (row >= 0 && row < spriteHeight)
+            {
+                spritesOnScanline++;
+            }
+        }
+
+        if (spritesOnScanline > 8)
+        {
+            _status |= 0x20;
+        }
+
+        var evaluatedSprites = 0;
+        for (var spriteIndex = 0; spriteIndex < 64 && evaluatedSprites < 8; spriteIndex++)
+        {
+            var offset = spriteIndex * 4;
+            var spriteTop = unchecked((byte)(_oam[offset] + 1));
+            var row = screenY - spriteTop;
+            if (row < 0 || row >= spriteHeight)
+            {
+                continue;
+            }
+
+            evaluatedSprites++;
+            var spriteX = _oam[offset + 3];
+            var column = screenX - spriteX;
+            if (column < 0 || column >= 8)
+            {
+                continue;
+            }
+
+            var attributes = _oam[offset + 2];
+            if ((attributes & 0x80) != 0)
+            {
+                row = spriteHeight - 1 - row;
+            }
+
+            if ((attributes & 0x40) != 0)
+            {
+                column = 7 - column;
+            }
+
+            var patternAddress = GetSpritePatternAddress(_oam[offset + 1], row, spriteHeight);
+            var lowPlane = _bus.Read(patternAddress);
+            var highPlane = _bus.Read((ushort)(patternAddress + 8));
+            var bit = 7 - column;
+            var pixel = ((lowPlane >> bit) & 0x01) | (((highPlane >> bit) & 0x01) << 1);
+            if (pixel == 0)
+            {
+                continue;
+            }
+
+            var palette = attributes & 0x03;
+            var paletteIndex = _bus.Read((ushort)(0x3F10 + (palette * 4) + pixel));
+            return new SpriteSample(paletteIndex, true, (attributes & 0x20) != 0, spriteIndex);
+        }
+
+        return SpriteSample.Transparent;
+    }
+
+    private ushort GetSpritePatternAddress(byte tileIndex, int row, int spriteHeight)
+    {
+        if (spriteHeight == 8)
+        {
+            var patternBase = (_control & 0x08) != 0 ? 0x1000 : 0x0000;
+            return (ushort)(patternBase + (tileIndex * 16) + row);
+        }
+
+        var patternTable = (tileIndex & 0x01) * 0x1000;
+        var tile = tileIndex & 0xFE;
+        if (row >= 8)
+        {
+            tile++;
+            row -= 8;
+        }
+
+        return (ushort)(patternTable + (tile * 16) + row);
+    }
+
+    private readonly record struct PixelSample(byte PaletteIndex, bool Opaque);
+
+    private readonly record struct SpriteSample(byte PaletteIndex, bool Opaque, bool BehindBackground, int SpriteIndex)
+    {
+        public static SpriteSample Transparent => new(0, false, false, -1);
     }
 
     private void WriteFramebufferPixel(int x, int y, byte paletteIndex)

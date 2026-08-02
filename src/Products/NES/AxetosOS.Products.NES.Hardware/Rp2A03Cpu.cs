@@ -17,6 +17,7 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
     private int _cyclesRemaining;
     private bool _nmiPending;
     private bool _irqLine;
+    private int _stallCycles;
 
     public Rp2A03Cpu(CpuBus bus) => _bus = bus ?? throw new ArgumentNullException(nameof(bus));
 
@@ -30,7 +31,7 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
     public ulong TotalCycles { get; private set; }
     public ulong InstructionsExecuted { get; private set; }
     public byte LastOpcode { get; private set; }
-    public bool IsInstructionBoundary => _cyclesRemaining == 0;
+    public bool IsInstructionBoundary => _cyclesRemaining == 0 && _stallCycles == 0;
 
     public void PowerOn()
     {
@@ -46,6 +47,7 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
         _cyclesRemaining = 0;
         _nmiPending = false;
         _irqLine = false;
+        _stallCycles = 0;
         Reset();
     }
 
@@ -59,11 +61,18 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
 
     public void RequestNmi() => _nmiPending = true;
     public void SetIrqLine(bool asserted) => _irqLine = asserted;
+    public void RequestDmaStall(int cycles) => _stallCycles += Math.Max(0, cycles);
     public bool IsFlagSet(byte flag) => (Status & flag) != 0;
 
     public void Clock()
     {
         TotalCycles++;
+        if (_stallCycles > 0)
+        {
+            _stallCycles--;
+            return;
+        }
+
         if (_cyclesRemaining > 0)
         {
             _cyclesRemaining--;

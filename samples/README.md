@@ -12,3 +12,7 @@ dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\
 ## axetos-ppu-background.nes
 
 Original AXETOS NROM test cartridge that initializes a checkerboard CHR tile, nametable and palette, enables background rendering and loops. Use the headless host `--frame` option to export the framebuffer as PPM.
+
+## `axetos-ppu-sprites.nes`
+
+Original NROM visual test cartridge for background rendering, primary OAM, sprite priority/flipping and `$4014` OAM DMA. It contains no commercial code or assets.

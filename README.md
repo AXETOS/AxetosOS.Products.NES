@@ -9,7 +9,7 @@
 
 ## Project status
 
-The repository is currently at **v0.6.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
+The repository is currently at **v0.7.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -30,7 +30,7 @@ The repository is currently at **v0.6.0**. The CPU executes all 151 official 650
 
 ## Current foundation
 
-The v0.6.0 video foundation establishes:
+The v0.7.0 sprite and DMA foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -58,10 +58,12 @@ The v0.6.0 video foundation establishes:
 - RP2C02 CPU register mirroring, VRAM address/write latch and buffered PPUDATA reads;
 - scanline, dot, frame, VBlank and NMI timing;
 - a 256×240 framebuffer with visible background tiles, nametable lookup, attribute decoding, palette selection and basic scroll offsets;
+- primary OAM storage, 8×8 and 8×16 sprite pattern addressing, sprite flipping, priority, sprite-zero hit and overflow groundwork;
+- `$4014` OAM DMA transfers from CPU memory with 513/514-cycle CPU stalls;
 - PPM framebuffer export from the headless host;
 - an original legal PPU background test ROM under `samples/`.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.6.0 adds visible background tile rendering, nametable and attribute decoding, pattern-table selection, palette lookup, basic scroll offsets and framebuffer export. Sprite evaluation, exact scrolling transfers and the cycle-level shift-register fetch pipeline remain future milestones.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.7.0 adds primary OAM, sprite rendering, sprite priority and flipping, sprite-zero hit, sprite-overflow groundwork, and `$4014` OAM DMA with CPU stalls. Secondary OAM, exact per-dot sprite evaluation, exact scrolling transfers and cycle-level DMA sequencing remain future milestones.
 
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"
@@ -72,6 +74,9 @@ dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C
 
 # Run the repository-owned legal CPU smoke ROM
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-cpu-smoke.nes --cycles 1000
+
+# Render the repository-owned sprite and DMA test ROM
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-ppu-sprites.nes --cycles 120000 --frame .\output\ppu-sprites.ppm
 
 # Render the repository-owned legal PPU background ROM to an image
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-ppu-background.nes --cycles 100000 --frame .\output\ppu-background.ppm
@@ -595,7 +600,7 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [x] Define PPU bus
 - [ ] Define bus ownership and tri-state behaviour
 - [x] Define interrupt lines
-- [ ] Define DMA request and arbitration model
+- [x] Define DMA request and arbitration model
 - [ ] Define NES motherboard/backplane composition
 - [ ] Add module and connection validation
 - [ ] Add deterministic hardware trace format
@@ -696,12 +701,12 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [ ] Implement background fetch pipeline
 - [ ] Implement shift registers
 - [x] Implement background pixel composition
-- [ ] Implement sprite OAM
+- [x] Implement sprite OAM
 - [ ] Implement secondary OAM
-- [ ] Implement sprite evaluation
-- [ ] Implement sprite rendering
-- [ ] Implement sprite-zero hit
-- [ ] Implement sprite overflow behaviour
+- [x] Implement sprite evaluation
+- [x] Implement sprite rendering
+- [x] Implement sprite-zero hit
+- [x] Implement sprite overflow behaviour
 - [x] Implement VBlank timing
 - [x] Implement NMI timing
 - [ ] Implement odd-frame timing behaviour
@@ -710,8 +715,8 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 9 — DMA and controllers
 
-- [ ] Implement OAM DMA request
-- [ ] Implement OAM DMA CPU stalls
+- [x] Implement OAM DMA request
+- [x] Implement OAM DMA CPU stalls
 - [ ] Implement DMA bus transfer sequencing
 - [ ] Implement controller port 1
 - [ ] Implement controller port 2

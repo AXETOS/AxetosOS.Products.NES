@@ -460,7 +460,7 @@ public sealed class HardwareFoundationTests
         bus.Write(0x3F05, 0x21);
         var ppu = new Rp2C02Ppu(bus, new SignalLine());
         ppu.PowerOn();
-        ppu.CpuWrite(0x2001, 0x08);
+        ppu.CpuWrite(0x2001, 0x0A);
 
         for (var i = 0; i < 9; i++)
         {
@@ -492,13 +492,177 @@ public sealed class HardwareFoundationTests
         var ppu = new Rp2C02Ppu(bus, new SignalLine());
         ppu.PowerOn();
         ppu.CpuWrite(0x2000, 0x10);
-        ppu.CpuWrite(0x2001, 0x08);
+        ppu.CpuWrite(0x2001, 0x0A);
 
         ppu.Clock();
         ppu.Clock();
         ppu.Clock();
 
         Assert.NotEqual(ppu.Framebuffer[0], ppu.Framebuffer[1]);
+    }
+
+    [Fact]
+    public void OamDmaCopiesCpuPageAndWrapsFromCurrentOamAddress()
+    {
+        var image = CreateNromImage(16 * 1024);
+        SetVectors(image, reset: 0x8000, nmi: 0x8000, irq: 0x8000);
+        var ram = new CpuWorkRam();
+        ram.PowerOn();
+        for (var index = 0; index < 256; index++)
+        {
+            ram.CpuWrite((ushort)(0x0200 + index), (byte)index);
+        }
+
+        var (ppu, _, _) = CreatePpu();
+        ppu.CpuWrite(0x2003, 0xFE);
+        var cpuBus = new CpuBus();
+        cpuBus.Attach(ram);
+        cpuBus.Attach(ppu);
+        cpuBus.Attach(new NromPrgRom(image));
+        var cpu = new Rp2A03Cpu(cpuBus);
+        cpu.PowerOn();
+        var dma = new OamDmaController(cpuBus, ppu, cpu);
+        dma.PowerOn();
+        cpuBus.Attach(dma);
+
+        cpuBus.Write(0x4014, 0x02);
+
+        Assert.Equal(0x00, ppu.ReadOamByte(0xFE));
+        Assert.Equal(0x01, ppu.ReadOamByte(0xFF));
+        Assert.Equal(0x02, ppu.ReadOamByte(0x00));
+        Assert.Equal(1UL, dma.Transfers);
+        Assert.Equal(0x02, dma.LastPage);
+
+        for (var cycle = 0; cycle < 513; cycle++)
+        {
+            cpu.Clock();
+        }
+
+        Assert.Equal(0UL, cpu.InstructionsExecuted);
+    }
+
+    [Fact]
+    public void PpuRendersSpritePixelsAndSetsSpriteZeroHit()
+    {
+        var image = CreateNromImage(16 * 1024);
+        for (var row = 0; row < 8; row++)
+        {
+            image.ChrRom[16 + row] = 0xFF; // background tile 1
+            image.ChrRom[32 + row] = 0xFF; // sprite tile 2
+        }
+
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+        bus.Write(0x2000, 1);
+        bus.Write(0x3F01, 0x21);
+        bus.Write(0x3F11, 0x30);
+
+        var ppu = new Rp2C02Ppu(bus, new SignalLine());
+        ppu.PowerOn();
+        ppu.CpuWrite(0x2003, 0x00);
+        ppu.CpuWrite(0x2004, 0xFF); // Y wraps to first visible scanline
+        ppu.CpuWrite(0x2004, 0x02);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2001, 0x1E);
+
+        ppu.Clock();
+        ppu.Clock();
+
+        Assert.True((ppu.Status & 0x40) != 0);
+        Assert.NotEqual(0U, ppu.Framebuffer[0]);
+    }
+
+    [Fact]
+    public void PpuSetsSpriteOverflowWhenMoreThanEightSpritesShareAScanline()
+    {
+        var image = CreateNromImage(16 * 1024);
+        for (var row = 0; row < 8; row++)
+        {
+            image.ChrRom[32 + row] = 0xFF;
+        }
+
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+        bus.Write(0x3F11, 0x30);
+
+        var ppu = new Rp2C02Ppu(bus, new SignalLine());
+        ppu.PowerOn();
+        ppu.CpuWrite(0x2003, 0x00);
+        for (var sprite = 0; sprite < 9; sprite++)
+        {
+            ppu.CpuWrite(0x2004, 0xFF);
+            ppu.CpuWrite(0x2004, 0x02);
+            ppu.CpuWrite(0x2004, 0x00);
+            ppu.CpuWrite(0x2004, (byte)(sprite * 8));
+        }
+
+        ppu.CpuWrite(0x2001, 0x14);
+        ppu.Clock();
+        ppu.Clock();
+
+        Assert.True((ppu.Status & 0x20) != 0);
+    }
+
+    [Fact]
+    public void PpuHonorsSpritePriorityBehindOpaqueBackground()
+    {
+        var image = CreateNromImage(16 * 1024);
+        for (var row = 0; row < 8; row++)
+        {
+            image.ChrRom[16 + row] = 0xFF;
+            image.ChrRom[32 + row] = 0xFF;
+        }
+
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+        bus.Write(0x2000, 1);
+        bus.Write(0x3F01, 0x21);
+        bus.Write(0x3F11, 0x30);
+
+        var backgroundOnly = new Rp2C02Ppu(bus, new SignalLine());
+        backgroundOnly.PowerOn();
+        backgroundOnly.CpuWrite(0x2001, 0x0A);
+        backgroundOnly.Clock();
+        backgroundOnly.Clock();
+        var expectedBackground = backgroundOnly.Framebuffer[0];
+
+        var ppu = new Rp2C02Ppu(bus, new SignalLine());
+        ppu.PowerOn();
+        ppu.CpuWrite(0x2003, 0x00);
+        ppu.CpuWrite(0x2004, 0xFF);
+        ppu.CpuWrite(0x2004, 0x02);
+        ppu.CpuWrite(0x2004, 0x20); // behind background
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2001, 0x1E);
+        ppu.Clock();
+        ppu.Clock();
+
+        Assert.Equal(expectedBackground, ppu.Framebuffer[0]);
     }
 
     private static (Rp2C02Ppu Ppu, PpuBus Bus, SignalLine Nmi) CreatePpu()
