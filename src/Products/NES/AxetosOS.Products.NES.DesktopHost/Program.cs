@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AxetosOS.Audio.Windows;
 using AxetosOS.Products.NES.Abstractions;
 using AxetosOS.Products.NES.Cartridges;
 using AxetosOS.Products.NES.Hardware;
@@ -73,6 +74,8 @@ using var presenter = new Win32FramePresenter(
     Rp2C02Ppu.ScreenWidth * 3,
     Rp2C02Ppu.ScreenHeight * 3);
 var surface = new FrameSurface(Rp2C02Ppu.ScreenWidth, Rp2C02Ppu.ScreenHeight);
+using var audio = new Win32WaveOutAudioSink(apu.SampleRate);
+audio.Start();
 var buttons = NesButtons.None;
 presenter.KeyStateChanged += (key, pressed) =>
 {
@@ -107,6 +110,7 @@ Console.WriteLine($"ROM:       {romPath}");
 Console.WriteLine($"Mapper:    {image.MapperNumber} ({mapper.Name})");
 Console.WriteLine("Controls:  Arrows=D-pad, Z=A, X=B, Enter=Start, Right Shift=Select, Esc=Exit");
 Console.WriteLine("Video:     AxetosOS native framebuffer presenter");
+Console.WriteLine($"Audio:     AxetosOS native PCM output ({apu.SampleRate:N0} Hz mono)");
 
 const double framesPerSecond = 60.0988;
 var frameDuration = TimeSpan.FromSeconds(1.0 / framesPerSecond);
@@ -136,6 +140,12 @@ try
 
         ppu.Framebuffer.AsSpan().CopyTo(surface.PixelSpan);
         presenter.Present(surface, ScalingMode.IntegerNearest);
+
+        var audioSamples = apu.DrainSamples();
+        if (audioSamples.Length > 0)
+        {
+            audio.Submit(audioSamples);
+        }
 
         nextFrame += frameDuration;
         while (presenter.IsOpen && timer.Elapsed < nextFrame)

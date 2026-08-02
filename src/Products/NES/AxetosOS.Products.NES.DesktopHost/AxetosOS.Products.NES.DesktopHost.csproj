@@ -8,6 +8,8 @@
   <ItemGroup>
     <ProjectReference Include="..\AxetosOS.Products.NES.Cartridges\AxetosOS.Products.NES.Cartridges.csproj" />
     <ProjectReference Include="..\AxetosOS.Products.NES.Hardware\AxetosOS.Products.NES.Hardware.csproj" />
+    <ProjectReference Include="..\..\..\..\..\AxetosOS.Audio.Abstractions\AxetosOS.Audio.Abstractions.csproj" />
+    <ProjectReference Include="..\..\..\..\..\AxetosOS.Audio.Windows\AxetosOS.Audio.Windows.csproj" />
     <ProjectReference Include="..\..\..\..\..\AxetosOS.Rendering.Abstractions\AxetosOS.Rendering.Abstractions.csproj" />
     <ProjectReference Include="..\..\..\..\..\AxetosOS.Rendering.Windows\AxetosOS.Rendering.Windows.csproj" />
   </ItemGroup>

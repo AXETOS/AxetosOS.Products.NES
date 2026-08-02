@@ -9,7 +9,7 @@
 
 ## Project status
 
-The repository is currently at **v0.13.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
+The repository is currently at **v0.14.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -33,7 +33,11 @@ The repository is currently at **v0.13.0**. The CPU executes all 151 official 65
 
 ## Current foundation
 
-The v0.13.0 native desktop milestone establishes:
+The v0.14.0 native desktop audio milestone establishes:
+
+- AxetosOS-owned Windows PCM playback through low-level native APIs;
+- live connection from the emulated RP2A03 APU to the desktop speakers;
+- no external audio framework or game engine;
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -793,7 +797,7 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [x] Implement deterministic audio sampling
 - [x] Implement fixed-rate host sample conversion and NES output filtering
 - [ ] Implement host audio ring buffer
-- [ ] Add desktop audio output
+- [x] Add desktop audio output
 - [ ] Add Web Audio output
 - [ ] Add APU diagnostic views
 - [ ] Pass selected APU test ROMs
