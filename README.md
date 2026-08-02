@@ -1,8 +1,16 @@
 # AxetosOS Products / NES
 
-## v0.18.0 active PPU scroll-address correction
+## v0.19.0 flicker-free native presentation
 
-The v0.16.0 compatibility milestone separates the PPU's active rendering address from its temporary scroll address. Mid-frame `$2005`/`$2006` writes can now prepare upcoming nametable data without making the currently rendered playfield jump to the wrong screen. The background renderer latches the active `v` address per scanline and follows horizontal nametable wrapping from that state. Super Mario Bros. is the primary real-ROM regression target.
+The v0.19.0 desktop milestone adds an AxetosOS-owned native presentation back buffer. Each NES frame is composed completely in an off-screen Win32/GDI surface—including scaling and letterboxing—and is then copied to the visible window in one operation. This removes the visible black clear-and-redraw interval that could cause occasional flicker at full emulation speed, including during Super Mario Bros. scrolling.
+
+## v0.18.0 full-speed scanline sprite evaluation
+
+The v0.18.0 performance milestone moves sprite selection from the per-pixel hot path to one evaluation per scanline. Super Mario Bros. improved from roughly 67% emulation speed and 40 FPS to approximately 100% emulation speed and the NTSC target of about 60.1 FPS. Runtime diagnostics now use smoothed readings for emulation speed, completed PPU frames and queued audio.
+
+## v0.16.0 active PPU scroll-address correction
+
+The v0.16.0 compatibility milestone separates the PPU's active rendering address from its temporary scroll address. Mid-frame `$2005`/`$2006` writes can prepare upcoming nametable data without making the currently rendered playfield jump to the wrong screen. The background renderer latches the active `v` address per scanline and follows horizontal nametable wrapping from that state. Super Mario Bros. is the primary real-ROM regression target.
 
 ## v0.15.0 PPU sprite visibility correction
 
@@ -10,14 +18,14 @@ The v0.15.0 compatibility milestone corrects OAM Y-coordinate handling so a spri
 
 > A modular, cycle-driven NES hardware emulator implemented as a native AxetosOS product.
 
-[![Status](https://img.shields.io/badge/status-interactive%20input-yellow)](#project-status)
+[![Status](https://img.shields.io/badge/status-real%20ROMs%20running-yellow)](#project-status)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Project status
 
-The repository is currently at **v0.16.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
+The repository is currently at **v0.19.0**. Supported NROM and UxROM cartridges run in an AxetosOS-owned native desktop window with live keyboard input, native PCM audio, smoothed runtime diagnostics and flicker-free off-screen frame composition. Donkey Kong and Super Mario Bros. are active real-ROM compatibility targets.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -36,12 +44,21 @@ The repository is currently at **v0.16.0**. The CPU executes all 151 official 65
 - [x] Load mapper and board definitions from JSON
 - [x] Assemble NROM and UxROM cartridge hardware automatically
 - [x] Execute an original mapper-2 bank-switching ROM
-- [ ] Run the first playable game
-- [ ] Publish the first working release
+- [x] Run the first playable commercial game from a user-owned ROM dump
+- [x] Reach approximately full NTSC speed in Super Mario Bros.
+- [x] Add flicker-free native desktop frame composition
+- [x] Publish the first working release
+- [ ] Complete cycle-accurate PPU background fetching and scrolling
+- [ ] Refine APU accuracy and reduce output latency
+- [ ] Expand supported cartridge boards and mappers
 
 ## Current foundation
 
-The v0.14.0 native desktop audio milestone establishes:
+The current native desktop foundation establishes:
+
+- off-screen native frame composition followed by a single visible-window copy;
+- smoothed live diagnostics for emulation speed, FPS and queued audio;
+- full-speed scanline sprite evaluation validated with Super Mario Bros.;
 
 - AxetosOS-owned Windows PCM playback through low-level native APIs;
 - live connection from the emulated RP2A03 APU to the desktop speakers;
