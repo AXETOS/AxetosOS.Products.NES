@@ -1042,7 +1042,7 @@ public sealed class HardwareFoundationTests
         prg[16 * 1024] = 0x22;
         prg[2 * 16 * 1024] = 0x33;
         prg[3 * 16 * 1024] = 0x44;
-        var image = new NesRomImage(NesHeaderFormat.INes, 2, null, prg.Length, 0, false, false, NametableMirroring.Horizontal, prg, Array.Empty<byte>());
+        var image = new NesRomImage(NesHeaderFormat.INes, 2, null, prg.Length, 0, false, false, NametableMirroring.Horizontal, NesTimingMode.Unknown, prg, Array.Empty<byte>());
         var device = new UxRomPrgRom(image);
         device.PowerOn();
 
@@ -1057,7 +1057,7 @@ public sealed class HardwareFoundationTests
     public void CartridgeFactoryBuildsUxRomFromBoardDefinition()
     {
         var prg = new byte[2 * 16 * 1024];
-        var image = new NesRomImage(NesHeaderFormat.INes, 2, null, prg.Length, 0, false, false, NametableMirroring.Horizontal, prg, Array.Empty<byte>());
+        var image = new NesRomImage(NesHeaderFormat.INes, 2, null, prg.Length, 0, false, false, NametableMirroring.Horizontal, NesTimingMode.Unknown, prg, Array.Empty<byte>());
         const string json = """{"id":"nes.board.uxrom","name":"UxROM","mapper":2,"components":[],"connections":[],"notes":null}""";
         using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
         var definition = CartridgeBoardDefinition.Load(stream);
@@ -1121,6 +1121,7 @@ public sealed class HardwareFoundationTests
         HasTrainer: false,
         HasBatteryBackedMemory: false,
         Mirroring: NametableMirroring.Horizontal,
+        HeaderTiming: NesTimingMode.Unknown,
         PrgRom: new byte[prgSize],
         ChrRom: new byte[8 * 1024]);
 
@@ -1128,5 +1129,77 @@ public sealed class HardwareFoundationTests
     {
         public int ClockCount { get; private set; }
         public void Clock() => ClockCount++;
+    }
+
+
+    [Fact]
+    public void TimingResolverUsesPalFilenameWhenHeaderIsUnknown()
+    {
+        var image = new NesRomImage(NesHeaderFormat.INes, 0, null, 16 * 1024, 8 * 1024, false, false,
+            NametableMirroring.Horizontal, NesTimingMode.Unknown, new byte[16 * 1024], new byte[8 * 1024]);
+
+        var selection = NesTimingResolver.Resolve(image, "Example (Europe).nes");
+
+        Assert.Equal(NesTimingMode.Pal, selection.Mode);
+        Assert.Equal(NesTimingSource.FileName, selection.Source);
+    }
+
+    [Fact]
+    public void TimingResolverManualOverrideWins()
+    {
+        var image = new NesRomImage(NesHeaderFormat.Nes20, 0, 0, 16 * 1024, 8 * 1024, false, false,
+            NametableMirroring.Horizontal, NesTimingMode.Pal, new byte[16 * 1024], new byte[8 * 1024]);
+
+        var selection = NesTimingResolver.Resolve(image, "Example (Europe).nes", NesTimingMode.Ntsc);
+
+        Assert.Equal(NesTimingMode.Ntsc, selection.Mode);
+        Assert.Equal(NesTimingSource.ManualOverride, selection.Source);
+    }
+
+    [Fact]
+    public void Mmc1SwitchesPrgBankAndKeepsLastBankFixed()
+    {
+        var prg = new byte[4 * 16 * 1024];
+        for (var bank = 0; bank < 4; bank++) prg[bank * 16 * 1024] = (byte)(0x10 + bank);
+        var image = new NesRomImage(NesHeaderFormat.INes, 1, null, prg.Length, 0, false, false,
+            NametableMirroring.Horizontal, NesTimingMode.Unknown, prg, Array.Empty<byte>());
+        var mmc1 = new Mmc1CartridgeMemory(image);
+
+        WriteMmc1Register(mmc1, 0xE000, 2);
+
+        Assert.Equal(0x12, mmc1.CpuRead(0x8000));
+        Assert.Equal(0x13, mmc1.CpuRead(0xC000));
+    }
+
+    [Fact]
+    public void Mmc1ChangesMirroringFromControlRegister()
+    {
+        var image = new NesRomImage(NesHeaderFormat.INes, 1, null, 32 * 1024, 0, false, false,
+            NametableMirroring.Horizontal, NesTimingMode.Unknown, new byte[32 * 1024], Array.Empty<byte>());
+        var mmc1 = new Mmc1CartridgeMemory(image);
+
+        WriteMmc1Register(mmc1, 0x8000, 0x0E);
+
+        Assert.Equal(NametableMirroring.Vertical, mmc1.Mirroring);
+    }
+
+    [Fact]
+    public void Mmc1PersistsBatteryBackedPrgRam()
+    {
+        var image = new NesRomImage(NesHeaderFormat.INes, 1, null, 32 * 1024, 0, false, true,
+            NametableMirroring.Horizontal, NesTimingMode.Unknown, new byte[32 * 1024], Array.Empty<byte>());
+        var mmc1 = new Mmc1CartridgeMemory(image);
+        mmc1.CpuWrite(0x6000, 0x5A);
+
+        var saved = mmc1.SavePersistent();
+        var restored = new Mmc1CartridgeMemory(image);
+        restored.LoadPersistent(saved);
+
+        Assert.Equal(0x5A, restored.CpuRead(0x6000));
+    }
+
+    private static void WriteMmc1Register(Mmc1CartridgeMemory mmc1, ushort address, byte value)
+    {
+        for (var bit = 0; bit < 5; bit++) mmc1.CpuWrite(address, (byte)((value >> bit) & 1));
     }
 }

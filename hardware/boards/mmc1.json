@@ -1,0 +1,20 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.mmc1",
+  "name": "MMC1",
+  "mapper": 1,
+  "components": [
+    { "id": "mapper", "type": "SerialMapper", "role": "MMC1" },
+    { "id": "prg", "type": "BankedRom", "source": "PrgRom", "role": "16k-or-32k" },
+    { "id": "chr", "type": "BankedRomOrRam", "source": "ChrRom", "fallbackSize": 8192, "role": "4k-or-8k" },
+    { "id": "save", "type": "Ram", "fallbackSize": 8192, "role": "battery-backed-prg-ram" }
+  ],
+  "connections": [
+    "Cpu.Write & Cpu.Address>=0x8000 -> mapper.SerialLoad",
+    "mapper.PrgBank -> prg.BankSelect",
+    "mapper.ChrBanks -> chr.BankSelect",
+    "mapper.Mirroring -> Console.CiramA10",
+    "Cpu.Address[0x6000..0x7fff] <-> save"
+  ],
+  "notes": "MMC1 serial mapper with PRG/CHR banking, mapper-controlled mirroring and persistent PRG RAM."
+}

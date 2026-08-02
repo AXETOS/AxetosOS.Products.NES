@@ -18,7 +18,14 @@ public sealed class CiramNametableRam : INesHardwareModule, IPpuBusDevice
     }
 
     public string ModuleId => "nes.memory.ciram";
-    public NametableMirroring Mirroring { get; }
+    public NametableMirroring Mirroring { get; private set; }
+
+    public void SetMirroring(NametableMirroring mirroring)
+    {
+        if (mirroring == NametableMirroring.FourScreen)
+            throw new NotSupportedException("Four-screen nametable memory requires cartridge-provided VRAM.");
+        Mirroring = mirroring;
+    }
 
     public void PowerOn() => Array.Clear(_memory);
     public void Reset() { }
@@ -38,6 +45,8 @@ public sealed class CiramNametableRam : INesHardwareModule, IPpuBusDevice
         {
             NametableMirroring.Horizontal => table < 2 ? 0 : 1,
             NametableMirroring.Vertical => table & 1,
+            NametableMirroring.SingleScreenLower => 0,
+            NametableMirroring.SingleScreenUpper => 1,
             _ => throw new InvalidOperationException("Unsupported CIRAM mirroring mode.")
         };
 

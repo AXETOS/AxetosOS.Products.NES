@@ -33,11 +33,13 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
     private ushort _temporaryAddress;
     private ushort _scanlineAddress;
     private readonly SpriteSample[] _scanlineSprites = new SpriteSample[ScreenWidth];
+    private readonly int _preRenderScanline;
 
-    public Rp2C02Ppu(PpuBus bus, ISignalLine nmi)
+    public Rp2C02Ppu(PpuBus bus, ISignalLine nmi, NesTimingProfile? timing = null)
     {
         _bus = bus ?? throw new ArgumentNullException(nameof(bus));
         _nmi = nmi ?? throw new ArgumentNullException(nameof(nmi));
+        _preRenderScanline = (timing ?? NesTimingProfile.For(AxetosOS.Products.NES.Cartridges.NesTimingMode.Ntsc)).PpuScanlines - 1;
         Framebuffer = new uint[ScreenWidth * ScreenHeight];
     }
 
@@ -160,13 +162,13 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
             _status |= 0x80;
             UpdateNmiLine();
         }
-        else if (Scanline == 261 && Dot == 1)
+        else if (Scanline == _preRenderScanline && Dot == 1)
         {
             _status &= 0x1F;
             _nmi.Release();
         }
 
-        if (RenderingEnabled && (Scanline is >= 0 and < 240 || Scanline == 261))
+        if (RenderingEnabled && (Scanline is >= 0 and < 240 || Scanline == _preRenderScanline))
         {
             if ((Dot is >= 8 and <= 256 || Dot is 328 or 336) && Dot % 8 == 0)
             {
@@ -183,7 +185,7 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
                 CopyHorizontalAddress();
             }
 
-            if (Scanline == 261 && Dot is >= 280 and <= 304)
+            if (Scanline == _preRenderScanline && Dot is >= 280 and <= 304)
             {
                 CopyVerticalAddress();
             }
@@ -197,7 +199,7 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
 
         Dot = 0;
         Scanline++;
-        if (Scanline <= 261)
+        if (Scanline <= _preRenderScanline)
         {
             return;
         }

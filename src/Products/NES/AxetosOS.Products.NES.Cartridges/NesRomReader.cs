@@ -66,8 +66,28 @@ public static class NesRomReader
             hasTrainer,
             (flags6 & 0x02) != 0,
             mirroring,
+            ReadTimingMode(header, isNes20),
             prgRom,
             chrRom);
+    }
+
+    private static NesTimingMode ReadTimingMode(ReadOnlySpan<byte> header, bool isNes20)
+    {
+        if (isNes20)
+        {
+            return (header[12] & 0x03) switch
+            {
+                0 => NesTimingMode.Ntsc,
+                1 => NesTimingMode.Pal,
+                2 => NesTimingMode.MultiRegion,
+                3 => NesTimingMode.Dendy,
+                _ => NesTimingMode.Unknown
+            };
+        }
+
+        // The legacy iNES PAL bit is not universally trustworthy, but it remains
+        // useful when no stronger metadata is available.
+        return (header[9] & 0x01) != 0 ? NesTimingMode.Pal : NesTimingMode.Unknown;
     }
 
     private static void ReadExactly(Stream stream, Span<byte> destination)

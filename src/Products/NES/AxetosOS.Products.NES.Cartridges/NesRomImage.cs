@@ -9,6 +9,7 @@ public sealed record NesRomImage(
     bool HasTrainer,
     bool HasBatteryBackedMemory,
     NametableMirroring Mirroring,
+    NesTimingMode HeaderTiming,
     byte[] PrgRom,
     byte[] ChrRom);
 
@@ -22,5 +23,16 @@ public enum NametableMirroring
 {
     Horizontal,
     Vertical,
-    FourScreen
+    FourScreen,
+    SingleScreenLower,
+    SingleScreenUpper
+}
+
+public enum NesTimingMode
+{
+    Unknown,
+    Ntsc,
+    Pal,
+    MultiRegion,
+    Dendy
 }

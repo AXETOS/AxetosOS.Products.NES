@@ -6,23 +6,34 @@ using AxetosOS.Products.NES.Hardware;
 using AxetosOS.Rendering.Abstractions;
 using AxetosOS.Rendering.Windows;
 
-if (args.Length > 1)
+NesTimingMode? manualTiming = null;
+string? romArgument = null;
+for (var index = 0; index < args.Length; index++)
 {
-    Console.Error.WriteLine("Usage: dotnet run --project .\\src\\Products\\NES\\AxetosOS.Products.NES.DesktopHost -- [rom-path]");
-    return 2;
+    if (args[index].Equals("--timing", StringComparison.OrdinalIgnoreCase))
+    {
+        if (++index >= args.Length || !TryParseTiming(args[index], out manualTiming))
+        {
+            Console.Error.WriteLine("Timing must be auto, ntsc, pal or dendy.");
+            return 2;
+        }
+        continue;
+    }
+
+    if (romArgument is not null)
+    {
+        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--timing auto|ntsc|pal|dendy]");
+        return 2;
+    }
+    romArgument = args[index];
 }
 
-var selectedRomPath = args.Length == 1
-    ? args[0]
-    : NativeFileDialog.OpenFile(
-        "Open NES cartridge image",
-        "NES cartridge images (*.nes)|*.nes|All files (*.*)|*.*",
-        defaultExtension: "nes");
+var selectedRomPath = romArgument ?? NativeFileDialog.OpenFile(
+    "Open NES cartridge image",
+    "NES cartridge images (*.nes)|*.nes|All files (*.*)|*.*",
+    defaultExtension: "nes");
 
-if (string.IsNullOrWhiteSpace(selectedRomPath))
-{
-    return 0;
-}
+if (string.IsNullOrWhiteSpace(selectedRomPath)) return 0;
 
 var romPath = Path.GetFullPath(selectedRomPath);
 if (!File.Exists(romPath))
@@ -33,14 +44,29 @@ if (!File.Exists(romPath))
 
 await using var romStream = File.OpenRead(romPath);
 var image = NesRomReader.Read(romStream);
+var timingSelection = NesTimingResolver.Resolve(image, romPath, manualTiming);
+var timing = NesTimingProfile.For(timingSelection.Mode);
 var catalogPath = Path.Combine(AppContext.BaseDirectory, "hardware", "mapper-catalog.json");
 await using var catalogStream = File.OpenRead(catalogPath);
 var catalog = MapperCatalog.Load(catalogStream);
-var mapper = catalog.Resolve(image.MapperNumber, image.SubmapperNumber);
-var boardPath = Path.Combine(AppContext.BaseDirectory, "hardware", mapper.Definition.Replace('/', Path.DirectorySeparatorChar));
-await using var boardStream = File.OpenRead(boardPath);
-var boardDefinition = CartridgeBoardDefinition.Load(boardStream);
-var cartridge = CartridgeHardwareFactory.Create(image, boardDefinition);
+MapperCatalogEntry mapper;
+CartridgeHardware cartridge;
+try
+{
+    mapper = catalog.Resolve(image.MapperNumber, image.SubmapperNumber);
+    var boardPath = Path.Combine(AppContext.BaseDirectory, "hardware", mapper.Definition.Replace('/', Path.DirectorySeparatorChar));
+    await using var boardStream = File.OpenRead(boardPath);
+    var boardDefinition = CartridgeBoardDefinition.Load(boardStream);
+    cartridge = CartridgeHardwareFactory.Create(image, boardDefinition);
+}
+catch (UnsupportedMapperException exception)
+{
+    var submapper = exception.Submapper?.ToString() ?? "unspecified";
+    var message = $"Mapper {exception.Mapper}, submapper {submapper}, is not supported yet.\n\nSupported mappers: 0 (NROM), 1 (MMC1), 2 (UxROM).";
+    NativeMessageDialog.ShowError("Unsupported cartridge hardware", message);
+    Console.Error.WriteLine(message);
+    return 4;
+}
 
 var ram = new CpuWorkRam();
 var ciram = new CiramNametableRam(image.Mirroring);
@@ -49,6 +75,16 @@ ram.PowerOn();
 ciram.PowerOn();
 palette.PowerOn();
 if (cartridge.ChrDevice is INesHardwareModule chrModule) chrModule.PowerOn();
+if (cartridge.PrgDevice is ICartridgeMirroringProvider mirroringProvider)
+{
+    ciram.SetMirroring(mirroringProvider.Mirroring);
+    mirroringProvider.MirroringChanged += ciram.SetMirroring;
+}
+
+var savePath = Path.ChangeExtension(romPath, ".sav");
+var persistentMemory = cartridge.PrgDevice as IBatteryBackedMemory;
+if (persistentMemory is { HasBattery: true } && File.Exists(savePath))
+    persistentMemory.LoadPersistent(await File.ReadAllBytesAsync(savePath));
 
 var ppuBus = new PpuBus();
 ppuBus.Attach(cartridge.ChrDevice);
@@ -56,7 +92,7 @@ ppuBus.Attach(ciram);
 ppuBus.Attach(palette);
 
 var nmi = new SignalLine();
-var ppu = new Rp2C02Ppu(ppuBus, nmi);
+var ppu = new Rp2C02Ppu(ppuBus, nmi, timing);
 var cpuBus = new CpuBus();
 cpuBus.Attach(ram);
 cpuBus.Attach(ppu);
@@ -79,7 +115,7 @@ oamDma.PowerOn();
 nmi.Asserted += cpu.RequestNmi;
 ppu.PowerOn();
 cpu.PowerOn();
-var clock = new NesMasterClock(cpu, ppu, apu);
+var clock = new NesMasterClock(cpu, ppu, apu, timing);
 
 using var presenter = new Win32FramePresenter(
     $"AxetosOS NES — {Path.GetFileNameWithoutExtension(romPath)}",
@@ -121,12 +157,14 @@ Console.WriteLine("AxetosOS Products / NES — native desktop host");
 Console.WriteLine("Launch:    Native ROM picker available when no path is supplied");
 Console.WriteLine($"ROM:       {romPath}");
 Console.WriteLine($"Mapper:    {image.MapperNumber} ({mapper.Name})");
+Console.WriteLine($"Timing:    {timing.Name} ({timingSelection.Source})");
+Console.WriteLine($"Save RAM:  {(persistentMemory is { HasBattery: true } ? savePath : "not battery-backed")}");
 Console.WriteLine("Controls:  Arrows=D-pad, Z=A, X=B, Enter=Start, Right Shift=Select, Esc=Exit");
 Console.WriteLine("Video:     AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:     AxetosOS native PCM output ({apu.SampleRate:N0} Hz mono)");
 
-const double framesPerSecond = 60.0988;
-const double cpuClockHz = 1_789_773.0;
+var framesPerSecond = timing.FramesPerSecond;
+var cpuClockHz = timing.CpuClockHz;
 var frameDuration = TimeSpan.FromSeconds(1.0 / framesPerSecond);
 var timer = Stopwatch.StartNew();
 var nextFrame = TimeSpan.Zero;
@@ -192,7 +230,7 @@ try
                     ? bufferedAudio
                     : smoothedAudioMilliseconds.Value + ((bufferedAudio - smoothedAudioMilliseconds.Value) * diagnosticsSmoothing);
 
-                presenter.SetTitle($"{romTitle} | Emulation {smoothedEmulationPercent:F1}% | FPS {smoothedFps:F1} | Audio {smoothedAudioMilliseconds:F0} ms");
+                presenter.SetTitle($"{romTitle} | {timing.Name} | Emulation {smoothedEmulationPercent:F1}% | FPS {smoothedFps:F1} | Audio {smoothedAudioMilliseconds:F0} ms");
             }
 
             diagnosticsStart = now;
@@ -223,4 +261,25 @@ catch (UnsupportedCpuOpcodeException exception)
     return 5;
 }
 
+if (persistentMemory is { HasBattery: true })
+    await File.WriteAllBytesAsync(savePath, persistentMemory.SavePersistent());
+
 return 0;
+
+static bool TryParseTiming(string value, out NesTimingMode? mode)
+{
+    mode = value.ToLowerInvariant() switch
+    {
+        "auto" => null,
+        "ntsc" => NesTimingMode.Ntsc,
+        "pal" => NesTimingMode.Pal,
+        "dendy" => NesTimingMode.Dendy,
+        _ => (NesTimingMode?)NesTimingMode.Unknown
+    };
+    if (mode == NesTimingMode.Unknown)
+    {
+        mode = null;
+        return false;
+    }
+    return true;
+}

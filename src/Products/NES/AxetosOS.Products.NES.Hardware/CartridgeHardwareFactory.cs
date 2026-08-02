@@ -17,8 +17,15 @@ public static class CartridgeHardwareFactory
         return definition.Mapper switch
         {
             0 => new CartridgeHardware(new NromPrgRom(image), new NromChrMemory(image), definition.Id),
+            1 => CreateMmc1(image, definition.Id),
             2 => new CartridgeHardware(new UxRomPrgRom(image), new NromChrMemory(image), definition.Id),
             _ => throw new UnsupportedMapperException(image.MapperNumber, image.SubmapperNumber)
         };
+    }
+
+    private static CartridgeHardware CreateMmc1(NesRomImage image, string boardId)
+    {
+        var memory = new Mmc1CartridgeMemory(image);
+        return new CartridgeHardware(memory, memory, boardId);
     }
 }

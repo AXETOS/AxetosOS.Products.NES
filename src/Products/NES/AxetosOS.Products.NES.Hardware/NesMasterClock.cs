@@ -7,12 +7,18 @@ public sealed class NesMasterClock
     private readonly IClockedHardwareModule _cpu;
     private readonly IClockedHardwareModule? _ppu;
     private readonly IClockedHardwareModule? _apu;
+    private readonly int _cpuNumerator;
+    private readonly int _cpuDenominator;
+    private int _cpuAccumulator;
 
-    public NesMasterClock(IClockedHardwareModule cpu, IClockedHardwareModule? ppu = null, IClockedHardwareModule? apu = null)
+    public NesMasterClock(IClockedHardwareModule cpu, IClockedHardwareModule? ppu = null, IClockedHardwareModule? apu = null, NesTimingProfile? timing = null)
     {
         _cpu = cpu ?? throw new ArgumentNullException(nameof(cpu));
         _ppu = ppu;
         _apu = apu;
+        var profile = timing ?? NesTimingProfile.For(AxetosOS.Products.NES.Cartridges.NesTimingMode.Ntsc);
+        _cpuNumerator = profile.CpuTicksPerPpuNumerator;
+        _cpuDenominator = profile.CpuTicksPerPpuDenominator;
     }
 
     public ulong PpuCycles { get; private set; }
@@ -23,10 +29,9 @@ public sealed class NesMasterClock
         _ppu?.Clock();
         PpuCycles++;
 
-        if ((PpuCycles - 1) % 3 != 0)
-        {
-            return;
-        }
+        _cpuAccumulator += _cpuNumerator;
+        if (_cpuAccumulator < _cpuDenominator) return;
+        _cpuAccumulator -= _cpuDenominator;
 
         _apu?.Clock();
         _cpu.Clock();

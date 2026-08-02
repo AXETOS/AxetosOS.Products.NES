@@ -8,6 +8,12 @@
       "definition": "boards/nrom.json"
     },
     {
+      "mapper": 1,
+      "submapper": null,
+      "name": "MMC1",
+      "definition": "boards/mmc1.json"
+    },
+    {
       "mapper": 2,
       "submapper": null,
       "name": "UxROM",
