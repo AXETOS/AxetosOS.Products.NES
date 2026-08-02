@@ -1,3 +1,7 @@
+
+## v0.15.0 PPU sprite visibility correction
+
+The v0.15.0 compatibility milestone corrects OAM Y-coordinate handling so a sprite stored at Y=$FF remains below the visible frame instead of wrapping onto scanline 0. This removes phantom sprite fragments at the top edge in real games such as Donkey Kong and adds a regression test for the hardware rule.
 # AxetosOS Products / NES
 
 > A modular, cycle-driven NES hardware emulator implemented as a native AxetosOS product.
@@ -9,7 +13,7 @@
 
 ## Project status
 
-The repository is currently at **v0.14.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
+The repository is currently at **v0.15.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model

@@ -261,7 +261,7 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         var spritesOnScanline = 0;
         for (var spriteIndex = 0; spriteIndex < 64; spriteIndex++)
         {
-            var spriteTop = unchecked((byte)(_oam[spriteIndex * 4] + 1));
+            var spriteTop = _oam[spriteIndex * 4] + 1;
             var row = screenY - spriteTop;
             if (row >= 0 && row < spriteHeight)
             {
@@ -278,7 +278,7 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         for (var spriteIndex = 0; spriteIndex < 64 && evaluatedSprites < 8; spriteIndex++)
         {
             var offset = spriteIndex * 4;
-            var spriteTop = unchecked((byte)(_oam[offset] + 1));
+            var spriteTop = _oam[offset] + 1;
             var row = screenY - spriteTop;
             if (row < 0 || row >= spriteHeight)
             {

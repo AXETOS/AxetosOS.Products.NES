@@ -430,7 +430,7 @@ public sealed class HardwareFoundationTests
 
         Assert.True(ppu.FrameCompleted);
         Assert.Equal(1UL, ppu.Frame);
-        Assert.NotEqual(0U, ppu.Framebuffer[0]);
+        Assert.NotEqual(0U, ppu.Framebuffer[Rp2C02Ppu.ScreenWidth]);
         Assert.Equal(Rp2C02Ppu.ScreenWidth * Rp2C02Ppu.ScreenHeight, ppu.Framebuffer.Length);
     }
 
@@ -568,14 +568,16 @@ public sealed class HardwareFoundationTests
         var ppu = new Rp2C02Ppu(bus, new SignalLine());
         ppu.PowerOn();
         ppu.CpuWrite(0x2003, 0x00);
-        ppu.CpuWrite(0x2004, 0xFF); // Y wraps to first visible scanline
+        ppu.CpuWrite(0x2004, 0x00); // visible from scanline 1
         ppu.CpuWrite(0x2004, 0x02);
         ppu.CpuWrite(0x2004, 0x00);
         ppu.CpuWrite(0x2004, 0x00);
         ppu.CpuWrite(0x2001, 0x1E);
 
-        ppu.Clock();
-        ppu.Clock();
+        for (var cycle = 0; cycle < 343; cycle++)
+        {
+            ppu.Clock();
+        }
 
         Assert.True((ppu.Status & 0x40) != 0);
         Assert.NotEqual(0U, ppu.Framebuffer[0]);
@@ -607,15 +609,17 @@ public sealed class HardwareFoundationTests
         ppu.CpuWrite(0x2003, 0x00);
         for (var sprite = 0; sprite < 9; sprite++)
         {
-            ppu.CpuWrite(0x2004, 0xFF);
+            ppu.CpuWrite(0x2004, 0x00);
             ppu.CpuWrite(0x2004, 0x02);
             ppu.CpuWrite(0x2004, 0x00);
             ppu.CpuWrite(0x2004, (byte)(sprite * 8));
         }
 
         ppu.CpuWrite(0x2001, 0x14);
-        ppu.Clock();
-        ppu.Clock();
+        for (var cycle = 0; cycle < 343; cycle++)
+        {
+            ppu.Clock();
+        }
 
         Assert.True((ppu.Status & 0x20) != 0);
     }
@@ -647,25 +651,67 @@ public sealed class HardwareFoundationTests
         var backgroundOnly = new Rp2C02Ppu(bus, new SignalLine());
         backgroundOnly.PowerOn();
         backgroundOnly.CpuWrite(0x2001, 0x0A);
-        backgroundOnly.Clock();
-        backgroundOnly.Clock();
-        var expectedBackground = backgroundOnly.Framebuffer[0];
+        for (var cycle = 0; cycle < 343; cycle++)
+        {
+            backgroundOnly.Clock();
+        }
+        var expectedBackground = backgroundOnly.Framebuffer[Rp2C02Ppu.ScreenWidth];
 
         var ppu = new Rp2C02Ppu(bus, new SignalLine());
         ppu.PowerOn();
         ppu.CpuWrite(0x2003, 0x00);
-        ppu.CpuWrite(0x2004, 0xFF);
+        ppu.CpuWrite(0x2004, 0x00);
         ppu.CpuWrite(0x2004, 0x02);
         ppu.CpuWrite(0x2004, 0x20); // behind background
         ppu.CpuWrite(0x2004, 0x00);
         ppu.CpuWrite(0x2001, 0x1E);
-        ppu.Clock();
-        ppu.Clock();
+        for (var cycle = 0; cycle < 343; cycle++)
+        {
+            ppu.Clock();
+        }
 
-        Assert.Equal(expectedBackground, ppu.Framebuffer[0]);
+        Assert.Equal(expectedBackground, ppu.Framebuffer[Rp2C02Ppu.ScreenWidth]);
     }
 
 
+
+    [Fact]
+    public void PpuDoesNotWrapHiddenSpriteAtY255OntoTopScanline()
+    {
+        var image = CreateNromImage(16 * 1024);
+        for (var row = 0; row < 8; row++)
+        {
+            image.ChrRom[32 + row] = 0xFF;
+        }
+
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+        bus.Write(0x3F00, 0x0F);
+        bus.Write(0x3F11, 0x30);
+
+        var ppu = new Rp2C02Ppu(bus, new SignalLine());
+        ppu.PowerOn();
+        ppu.CpuWrite(0x2003, 0x00);
+        ppu.CpuWrite(0x2004, 0xFF); // hidden below the visible frame
+        ppu.CpuWrite(0x2004, 0x02);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2001, 0x14);
+
+        ppu.Clock();
+        ppu.Clock();
+
+        Assert.Equal(0xFF000000U, ppu.Framebuffer[0]);
+        Assert.True((ppu.Status & 0x40) == 0);
+    }
 
     [Fact]
     public void PpuScrollWritesPopulateTemporaryAddressAndFineX()
