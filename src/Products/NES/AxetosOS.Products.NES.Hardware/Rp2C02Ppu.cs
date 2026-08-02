@@ -31,6 +31,8 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
     private bool _writeToggle;
     private ushort _vramAddress;
     private ushort _temporaryAddress;
+    private ushort _scanlineAddress;
+    private readonly SpriteSample[] _scanlineSprites = new SpriteSample[ScreenWidth];
 
     public Rp2C02Ppu(PpuBus bus, ISignalLine nmi)
     {
@@ -50,6 +52,7 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
     public byte Status => _status;
     public ushort VramAddress => _vramAddress;
     public ushort TemporaryVramAddress => _temporaryAddress;
+    public ushort ActiveScanlineVramAddress => _scanlineAddress;
     public byte FineXScroll => _fineX;
     public bool WriteToggle => _writeToggle;
     public uint[] Framebuffer { get; }
@@ -70,12 +73,14 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         _writeToggle = false;
         _vramAddress = 0;
         _temporaryAddress = 0;
+        _scanlineAddress = 0;
         Scanline = 0;
         Dot = 0;
         Frame = 0;
         FrameCompleted = false;
         Array.Clear(_oam);
         Array.Clear(Framebuffer);
+        Array.Clear(_scanlineSprites);
         _nmi.Release();
     }
 
@@ -132,6 +137,18 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
     public void Clock()
     {
         FrameCompleted = false;
+
+        if (Scanline is >= 0 and < ScreenHeight && Dot == 1)
+        {
+            // The active rendering address is latched for this scanline. CPU writes to
+            // $2005/$2006 update the temporary address and must not immediately replace
+            // the playfield currently being drawn. Horizontal bits are transferred at
+            // dot 257 and vertical bits during the pre-render scanline.
+            _scanlineAddress = Scanline == 0 && Frame == 0
+                ? _vramAddress
+                : RewindPrefetchedTiles(_vramAddress);
+            PrepareSpriteScanline(Scanline);
+        }
 
         if (Scanline is >= 0 and < ScreenHeight && Dot is >= 1 and <= ScreenWidth)
         {
@@ -190,12 +207,35 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         FrameCompleted = true;
     }
 
+
+    private static ushort RewindPrefetchedTiles(ushort address)
+    {
+        // At dots 328 and 336 the real PPU advances v while prefetching the first
+        // two tiles for the next scanline. A cycle-accurate renderer consumes those
+        // tiles from shift registers. This direct framebuffer renderer does not have
+        // those shift registers, so compensate when taking the visible-scanline base.
+        var coarseX = address & 0x001F;
+        var nametableX = (address >> 10) & 0x01;
+
+        if (coarseX >= 2)
+        {
+            coarseX -= 2;
+        }
+        else
+        {
+            coarseX = (coarseX + 32) - 2;
+            nametableX ^= 0x01;
+        }
+
+        return (ushort)((address & ~0x041F) | coarseX | (nametableX << 10));
+    }
+
     private bool RenderingEnabled => (_mask & 0x18) != 0;
 
     private void RenderVisiblePixel(int screenX, int screenY)
     {
         var background = ReadBackgroundPixel(screenX, screenY);
-        var sprite = ReadSpritePixel(screenX, screenY);
+        var sprite = ReadSpritePixel(screenX);
 
         if (sprite.Opaque && background.Opaque && sprite.SpriteIndex == 0 && screenX < 255)
         {
@@ -216,19 +256,25 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
             return new PixelSample(_bus.Read(0x3F00), false);
         }
 
-        var scrollX = ((_temporaryAddress & 0x001F) << 3) | _fineX;
-        var scrollY = (((_temporaryAddress >> 5) & 0x001F) << 3) | ((_temporaryAddress >> 12) & 0x07);
-        var worldX = (screenX + scrollX) % 512;
-        var worldY = (screenY + scrollY) % 480;
-        var nametableX = worldX / 256;
-        var nametableY = worldY / 240;
-        var localX = worldX % 256;
-        var localY = worldY % 240;
+        // Render from the PPU's active VRAM address for this scanline, not from the
+        // temporary scroll address. Games such as Super Mario Bros. rewrite $2005 while
+        // the frame is active to prepare the next nametable; those writes must not make
+        // the current scanline jump to the newly prepared screen.
+        var coarseX = _scanlineAddress & 0x001F;
+        var coarseY = (_scanlineAddress >> 5) & 0x001F;
+        var nametableX = (_scanlineAddress >> 10) & 0x01;
+        var nametableY = (_scanlineAddress >> 11) & 0x01;
+        var fineY = (_scanlineAddress >> 12) & 0x07;
+
+        var horizontalPixel = screenX + _fineX;
+        var tileAdvance = horizontalPixel >> 3;
+        var tileXWithWrap = coarseX + tileAdvance;
+        nametableX ^= (tileXWithWrap >> 5) & 0x01;
+        var tileX = tileXWithWrap & 0x1F;
+        var tileY = coarseY;
+        var fineX = horizontalPixel & 0x07;
+
         var baseNametable = 0x2000 + (nametableY * 0x0800) + (nametableX * 0x0400);
-        var tileX = localX >> 3;
-        var tileY = localY >> 3;
-        var fineX = localX & 0x07;
-        var fineY = localY & 0x07;
 
         var tileIndex = _bus.Read((ushort)(baseNametable + (tileY * 32) + tileX));
         var patternBase = (_control & 0x10) != 0 ? 0x1000 : 0x0000;
@@ -250,22 +296,78 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         return new PixelSample(_bus.Read((ushort)(0x3F00 + (palette * 4) + pixel)), true);
     }
 
-    private SpriteSample ReadSpritePixel(int screenX, int screenY)
+    private SpriteSample ReadSpritePixel(int screenX)
     {
         if ((_mask & 0x10) == 0 || (screenX < 8 && (_mask & 0x04) == 0))
         {
             return SpriteSample.Transparent;
         }
 
+        return _scanlineSprites[screenX];
+    }
+
+    private void PrepareSpriteScanline(int screenY)
+    {
+        Array.Clear(_scanlineSprites);
+
+        if ((_mask & 0x10) == 0)
+        {
+            return;
+        }
+
         var spriteHeight = (_control & 0x20) != 0 ? 16 : 8;
         var spritesOnScanline = 0;
+        var evaluatedSprites = 0;
+
         for (var spriteIndex = 0; spriteIndex < 64; spriteIndex++)
         {
-            var spriteTop = _oam[spriteIndex * 4] + 1;
-            var row = screenY - spriteTop;
-            if (row >= 0 && row < spriteHeight)
+            var offset = spriteIndex * 4;
+            var spriteTop = _oam[offset] + 1;
+            var sourceRow = screenY - spriteTop;
+            if (sourceRow < 0 || sourceRow >= spriteHeight)
             {
-                spritesOnScanline++;
+                continue;
+            }
+
+            spritesOnScanline++;
+            if (evaluatedSprites >= 8)
+            {
+                continue;
+            }
+
+            evaluatedSprites++;
+            var attributes = _oam[offset + 2];
+            var patternRow = (attributes & 0x80) != 0
+                ? spriteHeight - 1 - sourceRow
+                : sourceRow;
+            var patternAddress = GetSpritePatternAddress(_oam[offset + 1], patternRow, spriteHeight);
+            var lowPlane = _bus.Read(patternAddress);
+            var highPlane = _bus.Read((ushort)(patternAddress + 8));
+            var spriteX = _oam[offset + 3];
+
+            for (var outputColumn = 0; outputColumn < 8; outputColumn++)
+            {
+                var screenX = spriteX + outputColumn;
+                if (screenX >= ScreenWidth || _scanlineSprites[screenX].Opaque)
+                {
+                    continue;
+                }
+
+                var sourceColumn = (attributes & 0x40) != 0 ? 7 - outputColumn : outputColumn;
+                var bit = 7 - sourceColumn;
+                var pixel = ((lowPlane >> bit) & 0x01) | (((highPlane >> bit) & 0x01) << 1);
+                if (pixel == 0)
+                {
+                    continue;
+                }
+
+                var palette = attributes & 0x03;
+                var paletteIndex = _bus.Read((ushort)(0x3F10 + (palette * 4) + pixel));
+                _scanlineSprites[screenX] = new SpriteSample(
+                    paletteIndex,
+                    true,
+                    (attributes & 0x20) != 0,
+                    spriteIndex);
             }
         }
 
@@ -273,53 +375,6 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         {
             _status |= 0x20;
         }
-
-        var evaluatedSprites = 0;
-        for (var spriteIndex = 0; spriteIndex < 64 && evaluatedSprites < 8; spriteIndex++)
-        {
-            var offset = spriteIndex * 4;
-            var spriteTop = _oam[offset] + 1;
-            var row = screenY - spriteTop;
-            if (row < 0 || row >= spriteHeight)
-            {
-                continue;
-            }
-
-            evaluatedSprites++;
-            var spriteX = _oam[offset + 3];
-            var column = screenX - spriteX;
-            if (column < 0 || column >= 8)
-            {
-                continue;
-            }
-
-            var attributes = _oam[offset + 2];
-            if ((attributes & 0x80) != 0)
-            {
-                row = spriteHeight - 1 - row;
-            }
-
-            if ((attributes & 0x40) != 0)
-            {
-                column = 7 - column;
-            }
-
-            var patternAddress = GetSpritePatternAddress(_oam[offset + 1], row, spriteHeight);
-            var lowPlane = _bus.Read(patternAddress);
-            var highPlane = _bus.Read((ushort)(patternAddress + 8));
-            var bit = 7 - column;
-            var pixel = ((lowPlane >> bit) & 0x01) | (((highPlane >> bit) & 0x01) << 1);
-            if (pixel == 0)
-            {
-                continue;
-            }
-
-            var palette = attributes & 0x03;
-            var paletteIndex = _bus.Read((ushort)(0x3F10 + (palette * 4) + pixel));
-            return new SpriteSample(paletteIndex, true, (attributes & 0x20) != 0, spriteIndex);
-        }
-
-        return SpriteSample.Transparent;
     }
 
     private ushort GetSpritePatternAddress(byte tileIndex, int row, int spriteHeight)

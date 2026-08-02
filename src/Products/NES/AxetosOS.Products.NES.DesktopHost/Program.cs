@@ -113,9 +113,19 @@ Console.WriteLine("Video:     AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:     AxetosOS native PCM output ({apu.SampleRate:N0} Hz mono)");
 
 const double framesPerSecond = 60.0988;
+const double cpuClockHz = 1_789_773.0;
 var frameDuration = TimeSpan.FromSeconds(1.0 / framesPerSecond);
 var timer = Stopwatch.StartNew();
 var nextFrame = TimeSpan.Zero;
+var diagnosticsStart = timer.Elapsed;
+var diagnosticsCpuCycles = clock.CpuCycles;
+var diagnosticsPpuFrame = ppu.Frame;
+var lastTitleUpdate = TimeSpan.Zero;
+var romTitle = Path.GetFileNameWithoutExtension(romPath);
+double? smoothedEmulationPercent = null;
+double? smoothedFps = null;
+double? smoothedAudioMilliseconds = null;
+const double diagnosticsSmoothing = 0.20;
 
 try
 {
@@ -145,6 +155,37 @@ try
         if (audioSamples.Length > 0)
         {
             audio.Submit(audioSamples);
+        }
+
+        var now = timer.Elapsed;
+        if (now - lastTitleUpdate >= TimeSpan.FromMilliseconds(500))
+        {
+            var diagnosticSeconds = (now - diagnosticsStart).TotalSeconds;
+            if (diagnosticSeconds > 0)
+            {
+                var cpuDelta = clock.CpuCycles - diagnosticsCpuCycles;
+                var frameDelta = ppu.Frame - diagnosticsPpuFrame;
+                var emulationPercent = cpuDelta / (cpuClockHz * diagnosticSeconds) * 100.0;
+                var measuredFps = frameDelta / diagnosticSeconds;
+                var bufferedAudio = audio.BufferedMilliseconds;
+
+                smoothedEmulationPercent = smoothedEmulationPercent is null
+                    ? emulationPercent
+                    : smoothedEmulationPercent.Value + ((emulationPercent - smoothedEmulationPercent.Value) * diagnosticsSmoothing);
+                smoothedFps = smoothedFps is null
+                    ? measuredFps
+                    : smoothedFps.Value + ((measuredFps - smoothedFps.Value) * diagnosticsSmoothing);
+                smoothedAudioMilliseconds = smoothedAudioMilliseconds is null
+                    ? bufferedAudio
+                    : smoothedAudioMilliseconds.Value + ((bufferedAudio - smoothedAudioMilliseconds.Value) * diagnosticsSmoothing);
+
+                presenter.SetTitle($"{romTitle} | Emulation {smoothedEmulationPercent:F1}% | FPS {smoothedFps:F1} | Audio {smoothedAudioMilliseconds:F0} ms");
+            }
+
+            diagnosticsStart = now;
+            diagnosticsCpuCycles = clock.CpuCycles;
+            diagnosticsPpuFrame = ppu.Frame;
+            lastTitleUpdate = now;
         }
 
         nextFrame += frameDuration;

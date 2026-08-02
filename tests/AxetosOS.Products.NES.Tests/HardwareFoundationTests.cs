@@ -729,6 +729,24 @@ public sealed class HardwareFoundationTests
     }
 
     [Fact]
+    public void PpuMidScanlineScrollWriteDoesNotReplaceActiveRenderingAddress()
+    {
+        var (ppu, _, _) = CreatePpu();
+        ppu.CpuWrite(0x2006, 0x20);
+        ppu.CpuWrite(0x2006, 0x00);
+        ppu.Clock(); // dot 0
+        ppu.Clock(); // dot 1 latches active scanline address
+
+        var activeAddress = ppu.ActiveScanlineVramAddress;
+        ppu.CpuWrite(0x2005, 0xA8);
+        ppu.CpuWrite(0x2005, 0x38);
+
+        Assert.Equal((ushort)0x2000, activeAddress);
+        Assert.Equal(activeAddress, ppu.ActiveScanlineVramAddress);
+        Assert.NotEqual(ppu.TemporaryVramAddress, ppu.ActiveScanlineVramAddress);
+    }
+
+    [Fact]
     public void PpuAddressWritesCopyTemporaryAddressIntoCurrentAddress()
     {
         var (ppu, _, _) = CreatePpu();
