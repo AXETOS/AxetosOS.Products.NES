@@ -6,13 +6,25 @@ using AxetosOS.Products.NES.Hardware;
 using AxetosOS.Rendering.Abstractions;
 using AxetosOS.Rendering.Windows;
 
-if (args.Length != 1)
+if (args.Length > 1)
 {
-    Console.Error.WriteLine("Usage: dotnet run --project .\\src\\Products\\NES\\AxetosOS.Products.NES.DesktopHost -- <rom-path>");
+    Console.Error.WriteLine("Usage: dotnet run --project .\\src\\Products\\NES\\AxetosOS.Products.NES.DesktopHost -- [rom-path]");
     return 2;
 }
 
-var romPath = Path.GetFullPath(args[0]);
+var selectedRomPath = args.Length == 1
+    ? args[0]
+    : NativeFileDialog.OpenFile(
+        "Open NES cartridge image",
+        "NES cartridge images (*.nes)|*.nes|All files (*.*)|*.*",
+        defaultExtension: "nes");
+
+if (string.IsNullOrWhiteSpace(selectedRomPath))
+{
+    return 0;
+}
+
+var romPath = Path.GetFullPath(selectedRomPath);
 if (!File.Exists(romPath))
 {
     Console.Error.WriteLine($"ROM file not found: {romPath}");
@@ -106,6 +118,7 @@ presenter.KeyStateChanged += (key, pressed) =>
 };
 
 Console.WriteLine("AxetosOS Products / NES — native desktop host");
+Console.WriteLine("Launch:    Native ROM picker available when no path is supplied");
 Console.WriteLine($"ROM:       {romPath}");
 Console.WriteLine($"Mapper:    {image.MapperNumber} ({mapper.Name})");
 Console.WriteLine("Controls:  Arrows=D-pad, Z=A, X=B, Enter=Start, Right Shift=Select, Esc=Exit");
