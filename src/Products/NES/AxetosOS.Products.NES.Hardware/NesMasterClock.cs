@@ -6,11 +6,13 @@ public sealed class NesMasterClock
 {
     private readonly IClockedHardwareModule _cpu;
     private readonly IClockedHardwareModule? _ppu;
+    private readonly IClockedHardwareModule? _apu;
 
-    public NesMasterClock(IClockedHardwareModule cpu, IClockedHardwareModule? ppu = null)
+    public NesMasterClock(IClockedHardwareModule cpu, IClockedHardwareModule? ppu = null, IClockedHardwareModule? apu = null)
     {
         _cpu = cpu ?? throw new ArgumentNullException(nameof(cpu));
         _ppu = ppu;
+        _apu = apu;
     }
 
     public ulong PpuCycles { get; private set; }
@@ -26,6 +28,7 @@ public sealed class NesMasterClock
             return;
         }
 
+        _apu?.Clock();
         _cpu.Clock();
         CpuCycles++;
     }

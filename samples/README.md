@@ -25,3 +25,8 @@ Original NROM test cartridge that polls controller port 1 once per VBlank and mo
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-controller-motion.nes --cycles 420000 --input-script .\samples\axetos-controller-motion.input.json --frame .\output\controller-motion.ppm
 ```
+
+
+## axetos-apu-tone.nes
+
+Original NROM test cartridge that enables pulse channel 1 and produces a steady tone through the RP2A03 APU register interface. It contains no commercial code or assets.

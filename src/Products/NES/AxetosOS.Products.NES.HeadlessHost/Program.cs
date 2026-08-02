@@ -16,6 +16,7 @@ if (!File.Exists(romPath))
 
 var requestedCycles = 0;
 string? framePath = null;
+string? audioPath = null;
 var controller1Buttons = NesButtons.None;
 var controller2Buttons = NesButtons.None;
 string? inputScriptPath = null;
@@ -31,6 +32,12 @@ for (var index = 1; index < args.Length; index++)
     if (string.Equals(args[index], "--frame", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
     {
         framePath = Path.GetFullPath(args[++index]);
+        continue;
+    }
+
+    if (string.Equals(args[index], "--audio", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
+    {
+        audioPath = Path.GetFullPath(args[++index]);
         continue;
     }
 
@@ -76,7 +83,7 @@ Console.WriteLine($"Mirroring:   {image.Mirroring}");
 Console.WriteLine($"Trainer:     {image.HasTrainer}");
 Console.WriteLine($"Battery RAM: {image.HasBatteryBackedMemory}");
 
-if (requestedCycles == 0 && framePath is null)
+if (requestedCycles == 0 && framePath is null && audioPath is null)
 {
     return 0;
 }
@@ -129,6 +136,9 @@ else
     input = mutableInput;
 }
 
+var apu = new Rp2A03Apu();
+apu.PowerOn();
+bus.Attach(apu);
 var controllers = new NesControllerPorts(input);
 controllers.PowerOn();
 bus.Attach(controllers);
@@ -139,7 +149,7 @@ oamDma.PowerOn();
 nmi.Asserted += cpu.RequestNmi;
 ppu.PowerOn();
 cpu.PowerOn();
-var clock = new NesMasterClock(cpu, ppu);
+var clock = new NesMasterClock(cpu, ppu, apu);
 
 Console.WriteLine();
 Console.WriteLine($"Reset vector: ${cpu.ProgramCounter:X4}");
@@ -163,12 +173,19 @@ catch (UnsupportedCpuOpcodeException exception)
 
 PrintCpuState(cpu);
 PrintPpuState(ppu, clock);
+PrintApuState(apu);
 Console.WriteLine($"Sprite 0:    x={ppu.ReadOamByte(3),3}, y={unchecked((byte)(ppu.ReadOamByte(0) + 1)),3}");
 
 if (framePath is not null)
 {
     WritePpm(framePath, ppu.Framebuffer);
     Console.WriteLine($"Frame image:  {framePath}");
+}
+
+if (audioPath is not null)
+{
+    WriteWave(audioPath, apu.Samples, apu.SampleRate);
+    Console.WriteLine($"Audio file:  {audioPath}");
 }
 
 var finalController1 = input.ReadButtons(0);
@@ -201,6 +218,53 @@ static void PrintPpuState(Rp2C02Ppu ppu, NesMasterClock clock)
     Console.WriteLine($"PPU position:{ppu.Scanline,8}, {ppu.Dot}");
     Console.WriteLine($"PPU frame:   {ppu.Frame,12:N0}");
     Console.WriteLine($"VBlank:      {ppu.InVBlank}");
+}
+
+
+static void PrintApuState(Rp2A03Apu apu)
+{
+    Console.WriteLine($"APU cycles:  {apu.CpuCycles:N0}");
+    Console.WriteLine($"APU status:  ${apu.Status:X2}");
+    Console.WriteLine($"Audio samples:{apu.Samples.Count,10:N0}");
+}
+
+static void WriteWave(string path, IReadOnlyList<float> samples, int sampleRate)
+{
+    var directory = Path.GetDirectoryName(path);
+    if (!string.IsNullOrEmpty(directory))
+    {
+        Directory.CreateDirectory(directory);
+    }
+
+    using var stream = File.Create(path);
+    using var writer = new BinaryWriter(stream);
+    const short channels = 1;
+    const short bitsPerSample = 16;
+    var blockAlign = (short)(channels * bitsPerSample / 8);
+    var byteRate = sampleRate * blockAlign;
+    var dataLength = samples.Count * blockAlign;
+
+    writer.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+    writer.Write(36 + dataLength);
+    writer.Write(System.Text.Encoding.ASCII.GetBytes("WAVE"));
+    writer.Write(System.Text.Encoding.ASCII.GetBytes("fmt "));
+    writer.Write(16);
+    writer.Write((short)1);
+    writer.Write(channels);
+    writer.Write(sampleRate);
+    writer.Write(byteRate);
+    writer.Write(blockAlign);
+    writer.Write(bitsPerSample);
+    writer.Write(System.Text.Encoding.ASCII.GetBytes("data"));
+    writer.Write(dataLength);
+
+    var mean = samples.Count == 0 ? 0.0 : samples.Average(static sample => (double)sample);
+    var peak = samples.Count == 0 ? 0.0 : samples.Max(sample => Math.Abs(sample - mean));
+    foreach (var sample in samples)
+    {
+        var normalized = peak <= double.Epsilon ? 0.0 : ((sample - mean) / peak) * 0.85;
+        writer.Write((short)Math.Round(Math.Clamp(normalized, -1.0, 1.0) * short.MaxValue));
+    }
 }
 
 static void WritePpm(string path, IReadOnlyList<uint> framebuffer)
@@ -287,6 +351,6 @@ static void WriteUsage()
 {
     Console.Error.WriteLine("Usage:");
     Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes>");
-    Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes> [--cycles <count>] [--frame <output.ppm>] [--controller1 <buttons>] [--controller2 <buttons>] [--input-script <events.json>]");
+    Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes> [--cycles <count>] [--frame <output.ppm>] [--audio <output.wav>] [--controller1 <buttons>] [--controller2 <buttons>] [--input-script <events.json>]");
     Console.Error.WriteLine("  Buttons are comma-separated: A,B,Select,Start,Up,Down,Left,Right");
 }

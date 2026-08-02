@@ -9,7 +9,7 @@
 
 ## Project status
 
-The repository is currently at **v0.9.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
+The repository is currently at **v0.10.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -24,13 +24,13 @@ The repository is currently at **v0.9.0**. The CPU executes all 151 official 650
 - [x] Render the first PPU frame
 - [x] Render the first visible tile background
 - [x] Export a framebuffer image from the headless host
-- [ ] Produce the first correct APU audio sample
+- [x] Produce the first APU audio sample
 - [ ] Run the first playable game
 - [ ] Publish the first working release
 
 ## Current foundation
 
-The v0.9.0 interactive input and scrolling foundation establishes:
+The v0.10.0 initial audio foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -68,11 +68,19 @@ The v0.9.0 interactive input and scrolling foundation establishes:
 - an original legal controller-motion NROM and input timeline under `samples/`;
 - rendering-time horizontal and pre-render vertical VRAM-address transfer groundwork;
 - PPM framebuffer export from the headless host;
-- an original legal PPU background test ROM under `samples/`.
+- an original legal PPU background test ROM under `samples/`;
+- an RP2A03 APU register device with pulse, triangle and noise channel foundations;
+- quarter-frame and half-frame sequencing for envelopes, linear counters, length counters and pulse sweeps;
+- nonlinear NES pulse/TND mixing and deterministic 44.1 kHz sample generation;
+- WAV export from the headless host;
+- an original legal APU tone ROM under `samples/`.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.9.0 adds deterministic cycle-based controller input scripts, an original controller-driven sprite ROM, coarse-X and vertical VRAM increments, nametable wrapping, horizontal address transfer at dot 257, and pre-render vertical address transfer. Secondary OAM, exact sprite evaluation, the full background fetch/shift-register pipeline, and cycle-level DMA sequencing remain future milestones.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.10.0 adds the first RP2A03 APU hardware path, pulse/triangle/noise channel timing foundations, the frame sequencer, nonlinear mixing, deterministic PCM generation and WAV export. Secondary OAM, exact sprite evaluation, the full background fetch/shift-register pipeline, and cycle-level DMA sequencing remain future milestones.
 
 ```powershell
+# Generate audio from the repository-owned APU tone ROM
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-apu-tone.nes --cycles 180000 --audio .\output\apu-tone.wav
+
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"
 
 # Boot mapper 0 and execute a bounded number of CPU cycles
@@ -747,31 +755,31 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 10 — APU and sound
 
-- [ ] Implement APU register interface
-- [ ] Implement frame sequencer
-- [ ] Implement quarter-frame clocks
-- [ ] Implement half-frame clocks
+- [x] Implement APU register interface
+- [x] Implement frame sequencer
+- [x] Implement quarter-frame clocks
+- [x] Implement half-frame clocks
 - [ ] Implement frame IRQ
-- [ ] Implement pulse channel 1 timer and duty sequencer
-- [ ] Implement pulse channel 2 timer and duty sequencer
-- [ ] Implement pulse envelopes
-- [ ] Implement pulse length counters
-- [ ] Implement pulse sweep units
-- [ ] Implement triangle timer and sequencer
-- [ ] Implement triangle linear counter
-- [ ] Implement triangle length counter
-- [ ] Implement noise timer
-- [ ] Implement noise LFSR
-- [ ] Implement noise envelope
-- [ ] Implement noise length counter
+- [x] Implement pulse channel 1 timer and duty sequencer
+- [x] Implement pulse channel 2 timer and duty sequencer
+- [x] Implement pulse envelopes
+- [x] Implement pulse length counters
+- [x] Implement pulse sweep units
+- [x] Implement triangle timer and sequencer
+- [x] Implement triangle linear counter
+- [x] Implement triangle length counter
+- [x] Implement noise timer
+- [x] Implement noise LFSR
+- [x] Implement noise envelope
+- [x] Implement noise length counter
 - [ ] Implement DMC output unit
 - [ ] Implement DMC sample reader
 - [ ] Implement DMC DMA
 - [ ] Implement DMC CPU stalls
 - [ ] Implement DMC IRQ
-- [ ] Implement nonlinear pulse mixing
-- [ ] Implement nonlinear TND mixing
-- [ ] Implement deterministic audio sampling
+- [x] Implement nonlinear pulse mixing
+- [x] Implement nonlinear TND mixing
+- [x] Implement deterministic audio sampling
 - [ ] Implement resampler
 - [ ] Implement host audio ring buffer
 - [ ] Add desktop audio output

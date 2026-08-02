@@ -804,6 +804,62 @@ public sealed class HardwareFoundationTests
         Assert.Equal((ushort)0x0800, (ushort)(ppu.VramAddress & 0x0800));
     }
 
+    [Fact]
+    public void ApuPulseChannelProducesSamplesThroughCpuRegisters()
+    {
+        var apu = new Rp2A03Apu();
+        apu.PowerOn();
+
+        apu.CpuWrite(0x4015, 0x01);
+        apu.CpuWrite(0x4000, 0xBF); // 50% duty, halt length, constant volume 15
+        apu.CpuWrite(0x4002, 0xFD);
+        apu.CpuWrite(0x4003, 0x08);
+
+        for (var cycle = 0; cycle < 100_000; cycle++)
+        {
+            apu.Clock();
+        }
+
+        Assert.True(apu.Samples.Count > 2_000);
+        Assert.Contains(apu.Samples, sample => sample > 0.01f);
+        Assert.Equal(0x01, apu.Status & 0x01);
+    }
+
+    [Fact]
+    public void ApuStatusWriteDisablesAndClearsLengthCounters()
+    {
+        var apu = new Rp2A03Apu();
+        apu.PowerOn();
+        apu.CpuWrite(0x4015, 0x01);
+        apu.CpuWrite(0x4000, 0x1F);
+        apu.CpuWrite(0x4002, 0x40);
+        apu.CpuWrite(0x4003, 0xF8);
+
+        Assert.Equal(0x01, apu.CpuRead(0x4015) & 0x01);
+
+        apu.CpuWrite(0x4015, 0x00);
+
+        Assert.Equal(0, apu.CpuRead(0x4015) & 0x01);
+    }
+
+    [Fact]
+    public void MasterClockAdvancesApuOncePerCpuCycle()
+    {
+        var cpu = new CountingClockedModule();
+        var ppu = new CountingClockedModule();
+        var apu = new CountingClockedModule();
+        var clock = new NesMasterClock(cpu, ppu, apu);
+
+        for (var tick = 0; tick < 30; tick++)
+        {
+            clock.Tick();
+        }
+
+        Assert.Equal(30, ppu.ClockCount);
+        Assert.Equal(10, cpu.ClockCount);
+        Assert.Equal(10, apu.ClockCount);
+    }
+
     private static (Rp2C02Ppu Ppu, PpuBus Bus, SignalLine Nmi) CreatePpu()
     {
         var image = CreateNromImage(16 * 1024);
