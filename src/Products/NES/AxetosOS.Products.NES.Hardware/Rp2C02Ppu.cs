@@ -127,8 +127,7 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
 
         if (Scanline is >= 0 and < ScreenHeight && Dot is >= 1 and <= ScreenWidth)
         {
-            var paletteIndex = _bus.Read(0x3F00) & 0x3F;
-            Framebuffer[(Scanline * ScreenWidth) + (Dot - 1)] = SystemPalette[paletteIndex];
+            RenderVisiblePixel(Dot - 1, Scanline);
         }
 
         if (Scanline == 241 && Dot == 1)
@@ -158,6 +157,55 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         Scanline = 0;
         Frame++;
         FrameCompleted = true;
+    }
+
+    private void RenderVisiblePixel(int screenX, int screenY)
+    {
+        if ((_mask & 0x08) == 0)
+        {
+            WriteFramebufferPixel(screenX, screenY, _bus.Read(0x3F00));
+            return;
+        }
+
+        var scrollX = ((_temporaryAddress & 0x001F) << 3) | _fineX;
+        var scrollY = (((_temporaryAddress >> 5) & 0x001F) << 3) | ((_temporaryAddress >> 12) & 0x07);
+        var worldX = (screenX + scrollX) % 512;
+        var worldY = (screenY + scrollY) % 480;
+        var nametableX = worldX / 256;
+        var nametableY = worldY / 240;
+        var localX = worldX % 256;
+        var localY = worldY % 240;
+        var baseNametable = 0x2000 + (nametableY * 0x0800) + (nametableX * 0x0400);
+        var tileX = localX >> 3;
+        var tileY = localY >> 3;
+        var fineX = localX & 0x07;
+        var fineY = localY & 0x07;
+
+        var tileIndex = _bus.Read((ushort)(baseNametable + (tileY * 32) + tileX));
+        var patternBase = (_control & 0x10) != 0 ? 0x1000 : 0x0000;
+        var patternAddress = patternBase + (tileIndex * 16) + fineY;
+        var lowPlane = _bus.Read((ushort)patternAddress);
+        var highPlane = _bus.Read((ushort)(patternAddress + 8));
+        var bit = 7 - fineX;
+        var pixel = ((lowPlane >> bit) & 0x01) | (((highPlane >> bit) & 0x01) << 1);
+
+        if (pixel == 0)
+        {
+            WriteFramebufferPixel(screenX, screenY, _bus.Read(0x3F00));
+            return;
+        }
+
+        var attributeAddress = baseNametable + 0x03C0 + ((tileY >> 2) * 8) + (tileX >> 2);
+        var attribute = _bus.Read((ushort)attributeAddress);
+        var quadrantShift = ((tileY & 0x02) != 0 ? 4 : 0) + ((tileX & 0x02) != 0 ? 2 : 0);
+        var palette = (attribute >> quadrantShift) & 0x03;
+        var paletteAddress = (ushort)(0x3F00 + (palette * 4) + pixel);
+        WriteFramebufferPixel(screenX, screenY, _bus.Read(paletteAddress));
+    }
+
+    private void WriteFramebufferPixel(int x, int y, byte paletteIndex)
+    {
+        Framebuffer[(y * ScreenWidth) + x] = SystemPalette[paletteIndex & 0x3F];
     }
 
     private void WriteControl(byte value)

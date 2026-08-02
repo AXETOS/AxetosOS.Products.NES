@@ -28,7 +28,7 @@ This repository now contains the initial architecture, development roadmap, and 
 
 ## Current foundation
 
-The v0.5.0 video foundation establishes:
+The v0.6.0 video foundation establishes:
 
 - .NET 8 solution and product project structure;
 - generic NES hardware-module and bus contracts;
@@ -57,7 +57,7 @@ The v0.5.0 video foundation establishes:
 - scanline, dot, frame, VBlank and NMI timing;
 - a 256×240 framebuffer populated by the current universal background color.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.5.0 adds the PPU memory path, CPU-visible register interface, scanline/dot timing, VBlank/NMI behavior and the first complete framebuffer. Background and sprite fetch pipelines remain future milestones.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.6.0 adds the PPU memory path, CPU-visible register interface, scanline/dot timing, VBlank/NMI behavior and the first complete framebuffer. v0.6.0 adds visible background tile rendering, nametable and attribute decoding, pattern-table selection, palette lookup, basic scroll offsets and framebuffer export. Sprite evaluation and cycle-level shift-register fetch timing remain future milestones.
 
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"

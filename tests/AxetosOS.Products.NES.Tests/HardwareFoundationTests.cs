@@ -434,6 +434,73 @@ public sealed class HardwareFoundationTests
         Assert.Equal(Rp2C02Ppu.ScreenWidth * Rp2C02Ppu.ScreenHeight, ppu.Framebuffer.Length);
     }
 
+    [Fact]
+    public void PpuRendersBackgroundPatternAndAttributePalette()
+    {
+        var image = CreateNromImage(16 * 1024);
+        for (var row = 0; row < 8; row++)
+        {
+            image.ChrRom[16 + row] = 0b10101010;
+            image.ChrRom[24 + row] = 0;
+        }
+
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+        bus.Write(0x2000, 1);
+        bus.Write(0x23C0, 0b00000010);
+        bus.Write(0x3F00, 0x0F);
+        bus.Write(0x3F05, 0x21);
+        var ppu = new Rp2C02Ppu(bus, new SignalLine());
+        ppu.PowerOn();
+        ppu.CpuWrite(0x2001, 0x08);
+
+        for (var i = 0; i < 9; i++)
+        {
+            ppu.Clock();
+        }
+
+        Assert.NotEqual(ppu.Framebuffer[0], ppu.Framebuffer[1]);
+        Assert.Equal(ppu.Framebuffer[0], ppu.Framebuffer[2]);
+    }
+
+    [Fact]
+    public void PpuUsesSelectedBackgroundPatternTable()
+    {
+        var image = CreateNromImage(16 * 1024);
+        image.ChrRom[0x1010] = 0x80;
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+        bus.Write(0x2000, 1);
+        bus.Write(0x3F00, 0x0F);
+        bus.Write(0x3F01, 0x30);
+        var ppu = new Rp2C02Ppu(bus, new SignalLine());
+        ppu.PowerOn();
+        ppu.CpuWrite(0x2000, 0x10);
+        ppu.CpuWrite(0x2001, 0x08);
+
+        ppu.Clock();
+        ppu.Clock();
+        ppu.Clock();
+
+        Assert.NotEqual(ppu.Framebuffer[0], ppu.Framebuffer[1]);
+    }
+
     private static (Rp2C02Ppu Ppu, PpuBus Bus, SignalLine Nmi) CreatePpu()
     {
         var image = CreateNromImage(16 * 1024);

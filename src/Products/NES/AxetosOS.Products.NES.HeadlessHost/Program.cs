@@ -1,7 +1,7 @@
 using AxetosOS.Products.NES.Cartridges;
 using AxetosOS.Products.NES.Hardware;
 
-if (args.Length is not 1 and not 3)
+if (args.Length == 0)
 {
     WriteUsage();
     return 2;
@@ -15,15 +15,24 @@ if (!File.Exists(romPath))
 }
 
 var requestedCycles = 0;
-if (args.Length == 3)
+string? framePath = null;
+for (var index = 1; index < args.Length; index++)
 {
-    if (!string.Equals(args[1], "--cycles", StringComparison.OrdinalIgnoreCase) ||
-        !int.TryParse(args[2], out requestedCycles) ||
-        requestedCycles < 0)
+    if (string.Equals(args[index], "--cycles", StringComparison.OrdinalIgnoreCase) &&
+        index + 1 < args.Length && int.TryParse(args[++index], out var cycles) && cycles >= 0)
     {
-        WriteUsage();
-        return 2;
+        requestedCycles = cycles;
+        continue;
     }
+
+    if (string.Equals(args[index], "--frame", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
+    {
+        framePath = Path.GetFullPath(args[++index]);
+        continue;
+    }
+
+    WriteUsage();
+    return 2;
 }
 
 await using var romStream = File.OpenRead(romPath);
@@ -46,7 +55,7 @@ Console.WriteLine($"Mirroring:   {image.Mirroring}");
 Console.WriteLine($"Trainer:     {image.HasTrainer}");
 Console.WriteLine($"Battery RAM: {image.HasBatteryBackedMemory}");
 
-if (requestedCycles == 0)
+if (requestedCycles == 0 && framePath is null)
 {
     return 0;
 }
@@ -86,9 +95,10 @@ var clock = new NesMasterClock(cpu, ppu);
 Console.WriteLine();
 Console.WriteLine($"Reset vector: ${cpu.ProgramCounter:X4}");
 
+var targetCycles = requestedCycles > 0 ? (ulong)requestedCycles : 100_000UL;
 try
 {
-    while (clock.CpuCycles < (ulong)requestedCycles)
+    while (clock.CpuCycles < targetCycles)
     {
         clock.Tick();
     }
@@ -103,6 +113,13 @@ catch (UnsupportedCpuOpcodeException exception)
 
 PrintCpuState(cpu);
 PrintPpuState(ppu, clock);
+
+if (framePath is not null)
+{
+    WritePpm(framePath, ppu.Framebuffer);
+    Console.WriteLine($"Frame image:  {framePath}");
+}
+
 return 0;
 
 static void PrintCpuState(Rp2A03Cpu cpu)
@@ -118,7 +135,6 @@ static void PrintCpuState(Rp2A03Cpu cpu)
     Console.WriteLine($"Last opcode: ${cpu.LastOpcode:X2}");
 }
 
-
 static void PrintPpuState(Rp2C02Ppu ppu, NesMasterClock clock)
 {
     Console.WriteLine($"PPU cycles:  {clock.PpuCycles:N0}");
@@ -127,9 +143,28 @@ static void PrintPpuState(Rp2C02Ppu ppu, NesMasterClock clock)
     Console.WriteLine($"VBlank:      {ppu.InVBlank}");
 }
 
+static void WritePpm(string path, IReadOnlyList<uint> framebuffer)
+{
+    var directory = Path.GetDirectoryName(path);
+    if (!string.IsNullOrEmpty(directory))
+    {
+        Directory.CreateDirectory(directory);
+    }
+
+    using var stream = File.Create(path);
+    using var writer = new BinaryWriter(stream);
+    writer.Write(System.Text.Encoding.ASCII.GetBytes($"P6\n{Rp2C02Ppu.ScreenWidth} {Rp2C02Ppu.ScreenHeight}\n255\n"));
+    foreach (var pixel in framebuffer)
+    {
+        writer.Write((byte)((pixel >> 16) & 0xFF));
+        writer.Write((byte)((pixel >> 8) & 0xFF));
+        writer.Write((byte)(pixel & 0xFF));
+    }
+}
+
 static void WriteUsage()
 {
     Console.Error.WriteLine("Usage:");
     Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes>");
-    Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes> --cycles <count>");
+    Console.Error.WriteLine("  AxetosOS.Products.NES.HeadlessHost <path-to-rom.nes> [--cycles <count>] [--frame <output.ppm>]");
 }
