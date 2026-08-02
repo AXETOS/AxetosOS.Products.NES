@@ -2,14 +2,14 @@
 
 > A modular, cycle-driven NES hardware emulator implemented as a native AxetosOS product.
 
-[![Status](https://img.shields.io/badge/status-hardware%20foundation-orange)](#project-status)
+[![Status](https://img.shields.io/badge/status-background%20rendering-yellow)](#project-status)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Project status
 
-This repository now contains the initial architecture, development roadmap, and first executable product foundation.
+The repository is currently at **v0.6.0**. The CPU executes all 151 official 6502 opcodes, the RP2C02 timing model advances alongside it, and the headless host can render an original NROM test cartridge to a 256×240 framebuffer image.
 
 - [x] Define the product vision
 - [x] Define the AxetosOS dependency model
@@ -22,6 +22,8 @@ This repository now contains the initial architecture, development roadmap, and 
 - [x] Implement ROM header loading and inspection
 - [x] Execute the first CPU instructions
 - [x] Render the first PPU frame
+- [x] Render the first visible tile background
+- [x] Export a framebuffer image from the headless host
 - [ ] Produce the first correct APU audio sample
 - [ ] Run the first playable game
 - [ ] Publish the first working release
@@ -55,9 +57,11 @@ The v0.6.0 video foundation establishes:
 - palette RAM with NES universal-background aliases;
 - RP2C02 CPU register mirroring, VRAM address/write latch and buffered PPUDATA reads;
 - scanline, dot, frame, VBlank and NMI timing;
-- a 256×240 framebuffer populated by the current universal background color.
+- a 256×240 framebuffer with visible background tiles, nametable lookup, attribute decoding, palette selection and basic scroll offsets;
+- PPM framebuffer export from the headless host;
+- an original legal PPU background test ROM under `samples/`.
 
-The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.6.0 adds the PPU memory path, CPU-visible register interface, scanline/dot timing, VBlank/NMI behavior and the first complete framebuffer. v0.6.0 adds visible background tile rendering, nametable and attribute decoding, pattern-table selection, palette lookup, basic scroll offsets and framebuffer export. Sprite evaluation and cycle-level shift-register fetch timing remain future milestones.
+The headless host can inspect ROM metadata or boot an NROM cartridge for a selected number of CPU cycles while the RP2C02 advances at the NTSC 3:1 PPU-to-CPU clock ratio. v0.6.0 adds visible background tile rendering, nametable and attribute decoding, pattern-table selection, palette lookup, basic scroll offsets and framebuffer export. Sprite evaluation, exact scrolling transfers and the cycle-level shift-register fetch pipeline remain future milestones.
 
 ```powershell
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C:\ROMs\game.nes"
@@ -68,6 +72,9 @@ dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- "C
 
 # Run the repository-owned legal CPU smoke ROM
 dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-cpu-smoke.nes --cycles 1000
+
+# Render the repository-owned legal PPU background ROM to an image
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-ppu-background.nes --cycles 100000 --frame .\output\ppu-background.ppm
 ```
 
 Commercial ROM files are not included and must never be committed.
@@ -504,7 +511,7 @@ Selecting a virtual chip in AxetosOS should expose its live state and signals.
 
 ## Planned repository structure
 
-The exact structure will be adjusted to match the latest AxetosOS source and product contracts before implementation begins.
+The repository currently uses the following product-oriented structure. Additional host and AxetosOS integration projects will be added as their contracts are implemented.
 
 ```text
 AxetosOS.Products.NES/
@@ -535,7 +542,7 @@ AxetosOS.Products.NES/
 The expected technology direction is:
 
 - C#;
-- .NET 8 or the version currently used by AxetosOS when implementation begins;
+- .NET 8;
 - AxetosOS Core and product/module contracts;
 - a desktop rendering and audio host selected during implementation;
 - Blazor and browser APIs for the web host;
@@ -556,7 +563,6 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [x] Document the modular hardware architecture
 - [x] Document the mapper-definition strategy
 - [x] Document the initial APU strategy
-- [ ] Inspect the latest AxetosOS source as the sole source of truth
 - [ ] Confirm existing AxetosOS product contracts
 - [ ] Confirm existing module lifecycle contracts
 - [ ] Confirm project loading and Run Project integration
@@ -565,13 +571,13 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 1 — Product foundation
 
-- [ ] Create the solution and product projects
+- [x] Create the solution and product projects
 - [ ] Add AxetosOS Core/Product SDK references
-- [ ] Create the NES product manifest
+- [x] Create the NES product manifest
 - [ ] Register the NES product with AxetosOS
 - [ ] Add Desktop Host
 - [ ] Add Web Host
-- [ ] Add Headless Host
+- [x] Add Headless Host
 - [ ] Add embedded Workbench host integration
 - [ ] Add shared host service contracts
 - [ ] Add product lifecycle tests
@@ -588,7 +594,7 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [x] Define CPU bus
 - [x] Define PPU bus
 - [ ] Define bus ownership and tri-state behaviour
-- [ ] Define interrupt lines
+- [x] Define interrupt lines
 - [ ] Define DMA request and arbitration model
 - [ ] Define NES motherboard/backplane composition
 - [ ] Add module and connection validation
@@ -615,10 +621,10 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 - [x] Parse iNES headers
 - [x] Parse NES 2.0 headers
-- [ ] Validate ROM size and sections
+- [x] Validate ROM size and sections
 - [x] Extract PRG-ROM
 - [x] Extract CHR-ROM
-- [ ] Support CHR-RAM declarations
+- [x] Support CHR-RAM declarations
 - [x] Read mapper number
 - [x] Read submapper number
 - [x] Read mirroring metadata
@@ -647,32 +653,32 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 6 — NROM / Mapper 0
 
-- [ ] Define NROM-128 board
-- [ ] Define NROM-256 board
+- [x] Define NROM-128 board
+- [x] Define NROM-256 board
 - [x] Attach PRG-ROM to CPU bus
 - [x] Attach CHR-ROM or CHR-RAM to PPU bus
 - [x] Implement horizontal mirroring wiring
 - [x] Implement vertical mirroring wiring
 - [ ] Support optional PRG-RAM where applicable
-- [ ] Validate NROM board assembly
-- [ ] Run first NROM test cartridge
+- [x] Validate NROM board assembly
+- [x] Run first NROM test cartridge
 
 ### Phase 7 — RP2A03 CPU core
 
-- [ ] Define CPU pins and bus interface
-- [ ] Implement CPU registers
-- [ ] Implement status flags
-- [ ] Implement reset sequence
-- [ ] Implement stack behaviour
-- [ ] Implement addressing modes
-- [ ] Implement official opcodes
+- [x] Define CPU bus interface
+- [x] Implement CPU registers
+- [x] Implement status flags
+- [x] Implement reset sequence
+- [x] Implement stack behaviour
+- [x] Implement addressing modes
+- [x] Implement all 151 official opcodes
 - [ ] Implement instruction micro-operations
 - [ ] Implement cycle-accurate bus reads and writes
-- [ ] Implement page-crossing timing
-- [ ] Implement branch timing
-- [ ] Implement IRQ handling
-- [ ] Implement NMI handling
-- [ ] Implement BRK behaviour
+- [x] Implement page-crossing timing
+- [x] Implement branch timing
+- [x] Implement IRQ handling
+- [x] Implement NMI handling
+- [x] Implement BRK behaviour
 - [ ] Implement RDY and CPU stalls
 - [ ] Decide scope for unofficial opcodes
 - [ ] Add CPU trace output
@@ -689,7 +695,7 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [x] Implement pattern-table reads
 - [ ] Implement background fetch pipeline
 - [ ] Implement shift registers
-- [ ] Implement pixel composition
+- [x] Implement background pixel composition
 - [ ] Implement sprite OAM
 - [ ] Implement secondary OAM
 - [ ] Implement sprite evaluation
@@ -699,7 +705,7 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 - [x] Implement VBlank timing
 - [x] Implement NMI timing
 - [ ] Implement odd-frame timing behaviour
-- [ ] Produce first correct framebuffer
+- [x] Produce first visible background framebuffer
 - [ ] Pass selected PPU test ROMs
 
 ### Phase 9 — DMA and controllers
@@ -752,7 +758,7 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 11 — Host rendering and execution
 
-- [ ] Implement NES framebuffer abstraction
+- [x] Expose NES framebuffer output
 - [ ] Implement nearest-neighbour scaling
 - [ ] Implement desktop renderer
 - [ ] Implement browser Canvas/WebGL renderer
@@ -840,10 +846,10 @@ The roadmap is intentionally detailed so completed work can be checked off direc
 
 ### Phase 16 — Quality and compatibility
 
-- [ ] CPU unit tests
-- [ ] PPU unit tests
+- [x] CPU unit tests
+- [x] PPU unit tests
 - [ ] APU unit tests
-- [ ] bus and signal tests
+- [x] bus and signal tests
 - [ ] mapper-definition tests
 - [ ] deterministic replay tests
 - [ ] save-state round-trip tests
@@ -945,7 +951,7 @@ The repository should not contain:
 
 ## Contributions
 
-The project is currently in its initial planning phase. Contribution guidance will be added after the first product structure and hardware contracts are established.
+The project is under active early development. Contribution guidance will be added after the first playable product milestone and the public AxetosOS product contracts have stabilized.
 
 ## License
 
