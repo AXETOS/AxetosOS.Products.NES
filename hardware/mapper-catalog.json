@@ -18,6 +18,54 @@
       "submapper": null,
       "name": "UxROM",
       "definition": "boards/uxrom.json"
+    },
+    {
+      "mapper": 3,
+      "submapper": null,
+      "name": "CNROM",
+      "definition": "boards/cnrom.json"
+    },
+    {
+      "mapper": 4,
+      "submapper": null,
+      "name": "MMC3/MMC6",
+      "definition": "boards/mmc3.json"
+    },
+    {
+      "mapper": 7,
+      "submapper": null,
+      "name": "AxROM",
+      "definition": "boards/axrom.json"
+    },
+    {
+      "mapper": 11,
+      "submapper": null,
+      "name": "Color Dreams",
+      "definition": "boards/colordreams.json"
+    },
+    {
+      "mapper": 66,
+      "submapper": null,
+      "name": "GxROM",
+      "definition": "boards/gxrom.json"
+    },
+    {
+      "mapper": 71,
+      "submapper": null,
+      "name": "Camerica",
+      "definition": "boards/camerica.json"
+    },
+    {
+      "mapper": 79,
+      "submapper": null,
+      "name": "NINA-03/NINA-06",
+      "definition": "boards/nina.json"
+    },
+    {
+      "mapper": 206,
+      "submapper": null,
+      "name": "DxROM",
+      "definition": "boards/dxrom.json"
     }
   ]
 }

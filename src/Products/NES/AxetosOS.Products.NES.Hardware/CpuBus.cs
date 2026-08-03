@@ -40,12 +40,14 @@ public sealed class CpuBus
     public void Write(ushort address, byte value)
     {
         _openBus = value;
+        // CPU reads are selected by the first matching device, but writes may target
+        // multiple chips on the same decoded address. The NES notably uses $4017
+        // for controller-port reads and APU frame-counter writes.
         foreach (var device in _devices)
         {
             if (device.HandlesCpuAddress(address))
             {
                 device.CpuWrite(address, value);
-                return;
             }
         }
     }

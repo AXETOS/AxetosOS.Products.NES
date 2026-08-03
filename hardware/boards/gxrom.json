@@ -1,0 +1,18 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.gxrom",
+  "name": "GxROM",
+  "mapper": 66,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "ReusableMapperHardware",
+      "role": "gxrom"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu"
+  ],
+  "notes": "Composable GxROM board built from shared PRG, CHR, mirroring, RAM and IRQ components."
+}

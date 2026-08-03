@@ -417,6 +417,60 @@ public sealed class HardwareFoundationTests
     }
 
     [Fact]
+    public void PpuQueuesOnlyOneNmiEdgeWhileVBlankRemainsAsserted()
+    {
+        var (ppu, _, nmi) = CreatePpu();
+        var edges = 0;
+        nmi.Asserted += () => edges++;
+        ppu.CpuWrite(0x2000, 0x80);
+
+        var clocksToVBlank = (241 * 341) + 2;
+        for (var i = 0; i < clocksToVBlank; i++) ppu.Clock();
+
+        ppu.CpuWrite(0x2000, 0x80);
+        ppu.CpuWrite(0x2000, 0x80);
+
+        Assert.Equal(1, edges);
+        Assert.Equal((ulong)1, ppu.NmiEdges);
+        Assert.Equal((ulong)1, ppu.VBlankStarts);
+    }
+
+    [Fact]
+    public void EnablingNmiDuringVBlankCreatesExactlyOneEdge()
+    {
+        var (ppu, _, nmi) = CreatePpu();
+        var edges = 0;
+        nmi.Asserted += () => edges++;
+
+        var clocksToVBlank = (241 * 341) + 2;
+        for (var i = 0; i < clocksToVBlank; i++) ppu.Clock();
+        Assert.True(ppu.InVBlank);
+        Assert.Equal(0, edges);
+
+        ppu.CpuWrite(0x2000, 0x80);
+        ppu.CpuWrite(0x2000, 0x80);
+
+        Assert.Equal(1, edges);
+        Assert.Equal((ulong)1, ppu.NmiEdges);
+    }
+
+    [Fact]
+    public void StatusReadSuppressesNmiOutputUntilNextVBlank()
+    {
+        var (ppu, _, nmi) = CreatePpu();
+        ppu.CpuWrite(0x2000, 0x80);
+        var clocksToVBlank = (241 * 341) + 2;
+        for (var i = 0; i < clocksToVBlank; i++) ppu.Clock();
+
+        _ = ppu.CpuRead(0x2002);
+
+        Assert.False(nmi.IsAsserted);
+        Assert.Equal((ulong)1, ppu.StatusReads);
+        ppu.CpuWrite(0x2000, 0x80);
+        Assert.False(nmi.IsAsserted);
+    }
+
+    [Fact]
     public void PpuCompletesAFrameAndProducesFramebufferPixels()
     {
         var (ppu, bus, _) = CreatePpu();
@@ -1201,5 +1255,187 @@ public sealed class HardwareFoundationTests
     private static void WriteMmc1Register(Mmc1CartridgeMemory mmc1, ushort address, byte value)
     {
         for (var bit = 0; bit < 5; bit++) mmc1.CpuWrite(address, (byte)((value >> bit) & 1));
+    }
+
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(7)]
+    [InlineData(11)]
+    [InlineData(66)]
+    [InlineData(71)]
+    [InlineData(79)]
+    public void DiscreteMapperFamiliesCanBeConstructed(int mapper)
+    {
+        var image = CreateMapperImage(mapper, prgBanks16K: 8, chrBanks8K: 8);
+        var definition = new CartridgeBoardDefinition($"mapper-{mapper}", $"Mapper {mapper}", mapper, [], [], null);
+        var hardware = CartridgeHardwareFactory.Create(image, definition);
+        Assert.NotNull(hardware.PrgDevice);
+        Assert.NotNull(hardware.ChrDevice);
+    }
+
+    [Fact]
+    public void Mmc3SwitchesPrgBanksAndExposesIrqProvider()
+    {
+        var image = CreateMapperImage(4, prgBanks16K: 8, chrBanks8K: 8);
+        var memory = new Mmc3CartridgeMemory(image, hasIrq: true);
+        memory.CpuWrite(0x8000, 0x06);
+        memory.CpuWrite(0x8001, 0x03);
+        Assert.Equal(0x03, memory.CpuRead(0x8000));
+        Assert.IsAssignableFrom<ICartridgeIrqProvider>(memory);
+    }
+
+    [Fact]
+    public void Mmc3ScanlineClockReloadsCountsAndAssertsIrq()
+    {
+        var image = CreateMapperImage(4, prgBanks16K: 8, chrBanks8K: 8);
+        var memory = new Mmc3CartridgeMemory(image, hasIrq: true);
+        memory.CpuWrite(0xC000, 2);
+        memory.CpuWrite(0xC001, 0);
+        memory.CpuWrite(0xE001, 0);
+
+        memory.ClockScanline();
+        Assert.False(memory.IrqAsserted);
+        memory.ClockScanline();
+        Assert.False(memory.IrqAsserted);
+        memory.ClockScanline();
+        Assert.True(memory.IrqAsserted);
+
+        memory.CpuWrite(0xE000, 0);
+        Assert.False(memory.IrqAsserted);
+    }
+
+    [Fact]
+    public void Mmc3PrgRamHonorsEnableAndWriteProtection()
+    {
+        var image = CreateMapperImage(4, prgBanks16K: 8, chrBanks8K: 8);
+        var memory = new Mmc3CartridgeMemory(image, hasIrq: true);
+        memory.CpuWrite(0x6000, 0x11);
+        Assert.Equal(0x11, memory.CpuRead(0x6000));
+
+        memory.CpuWrite(0xA001, 0xC0);
+        memory.CpuWrite(0x6000, 0x22);
+        Assert.Equal(0x11, memory.CpuRead(0x6000));
+
+        memory.CpuWrite(0xA001, 0x00);
+        Assert.Equal(0xFF, memory.CpuRead(0x6000));
+    }
+
+    [Fact]
+    public void Mmc3MapsEveryPrgSlotInBothBankModes()
+    {
+        var image = CreateMapperImage(4, prgBanks16K: 8, chrBanks8K: 8);
+        var memory = new Mmc3CartridgeMemory(image, hasIrq: true);
+        memory.CpuWrite(0x8000, 0x06);
+        memory.CpuWrite(0x8001, 0x03);
+        memory.CpuWrite(0x8000, 0x07);
+        memory.CpuWrite(0x8001, 0x05);
+
+        Assert.Equal(new[] { 3, 5, 14, 15 }, memory.GetDiagnostics().PrgBanks);
+
+        memory.CpuWrite(0x8000, 0x46);
+        Assert.Equal(new[] { 14, 5, 3, 15 }, memory.GetDiagnostics().PrgBanks);
+    }
+
+    [Fact]
+    public void Mmc3MapsEveryChrWindowInBothInversionModes()
+    {
+        var image = CreateMapperImage(4, prgBanks16K: 8, chrBanks8K: 8);
+        var memory = new Mmc3CartridgeMemory(image, hasIrq: true);
+        var values = new byte[] { 4, 8, 12, 13, 14, 15 };
+        for (var register = 0; register < values.Length; register++)
+        {
+            memory.CpuWrite(0x8000, (byte)register);
+            memory.CpuWrite(0x8001, values[register]);
+        }
+
+        Assert.Equal(new[] { 4, 5, 8, 9, 12, 13, 14, 15 }, memory.GetDiagnostics().ChrBanks);
+
+        memory.CpuWrite(0x8000, 0x80);
+        Assert.Equal(new[] { 12, 13, 14, 15, 4, 5, 8, 9 }, memory.GetDiagnostics().ChrBanks);
+    }
+
+    [Fact]
+    public void Mmc3DiagnosticsExposeRegisterAndIrqState()
+    {
+        var image = CreateMapperImage(4, prgBanks16K: 8, chrBanks8K: 8);
+        var memory = new Mmc3CartridgeMemory(image, hasIrq: true);
+        memory.CpuWrite(0x8000, 0x86);
+        memory.CpuWrite(0x8001, 0x07);
+        memory.CpuWrite(0xC000, 0x02);
+        memory.CpuWrite(0xC001, 0x00);
+        memory.CpuWrite(0xE001, 0x00);
+        memory.ClockScanline();
+
+        var diagnostics = memory.GetDiagnostics();
+        Assert.Equal(0x86, diagnostics.BankSelect);
+        Assert.Equal(0x07, diagnostics.Registers[6]);
+        Assert.Equal(0x02, diagnostics.IrqLatch);
+        Assert.Equal(0x02, diagnostics.IrqCounter);
+        Assert.True(diagnostics.IrqEnabled);
+        Assert.Equal(1, diagnostics.ScanlineClocks);
+        Assert.True(diagnostics.RegisterWrites >= 5);
+    }
+
+    [Fact]
+    public void IrqLineCombinerKeepsOutputAssertedUntilEverySourceClears()
+    {
+        var output = false;
+        var combiner = new IrqLineCombiner(value => output = value);
+        var first = combiner.CreateSource();
+        var second = combiner.CreateSource();
+
+        first(true);
+        second(true);
+        first(false);
+        Assert.True(output);
+        second(false);
+        Assert.False(output);
+    }
+
+
+    [Fact]
+    public void CpuBusBroadcastsWritesToOverlappingDevicesButReadsFromFirstMatch()
+    {
+        var bus = new CpuBus();
+        var first = new OverlappingCpuDevice(0x11);
+        var second = new OverlappingCpuDevice(0x22);
+        bus.Attach(first);
+        bus.Attach(second);
+
+        Assert.Equal(0x11, bus.Read(0x4017));
+
+        bus.Write(0x4017, 0xC0);
+
+        Assert.Equal(1, first.WriteCount);
+        Assert.Equal(1, second.WriteCount);
+        Assert.Equal(0xC0, first.LastWrite);
+        Assert.Equal(0xC0, second.LastWrite);
+    }
+
+    private sealed class OverlappingCpuDevice(byte readValue) : ICpuBusDevice
+    {
+        public int WriteCount { get; private set; }
+        public byte LastWrite { get; private set; }
+
+        public bool HandlesCpuAddress(ushort address) => address == 0x4017;
+        public byte CpuRead(ushort address) => readValue;
+        public void CpuWrite(ushort address, byte value)
+        {
+            WriteCount++;
+            LastWrite = value;
+        }
+    }
+
+    private static NesRomImage CreateMapperImage(int mapper, int prgBanks16K, int chrBanks8K)
+    {
+        var prg = new byte[prgBanks16K * 16 * 1024];
+        for (var bank = 0; bank < prg.Length / 0x2000; bank++)
+            Array.Fill(prg, (byte)bank, bank * 0x2000, 0x2000);
+        var chr = new byte[chrBanks8K * 8 * 1024];
+        for (var bank = 0; bank < chr.Length / 0x2000; bank++)
+            Array.Fill(chr, (byte)bank, bank * 0x2000, 0x2000);
+        return new NesRomImage(NesHeaderFormat.INes, mapper, 0, prg.Length, chr.Length, false, false,
+            NametableMirroring.Horizontal, NesTimingMode.Unknown, prg, chr);
     }
 }

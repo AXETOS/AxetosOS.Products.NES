@@ -5,6 +5,7 @@ namespace AxetosOS.Products.NES.Hardware;
 public sealed class PpuBus
 {
     private readonly List<IPpuBusDevice> _devices = [];
+    private readonly List<IPpuScanlineClock> _scanlineClocks = [];
     private byte _openBus;
 
     public IReadOnlyList<IPpuBusDevice> Devices => _devices;
@@ -19,6 +20,8 @@ public sealed class PpuBus
         }
 
         _devices.Add(device);
+        if (device is IPpuScanlineClock scanlineClock)
+            _scanlineClocks.Add(scanlineClock);
     }
 
     public byte Read(ushort address)
@@ -50,6 +53,12 @@ public sealed class PpuBus
                 return;
             }
         }
+    }
+
+    public void ClockScanline()
+    {
+        for (var index = 0; index < _scanlineClocks.Count; index++)
+            _scanlineClocks[index].ClockScanline();
     }
 
     private static ushort Normalize(ushort address) => (ushort)(address & 0x3FFF);

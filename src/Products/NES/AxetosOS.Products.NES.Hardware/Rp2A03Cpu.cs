@@ -32,6 +32,10 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
     public ulong InstructionsExecuted { get; private set; }
     public byte LastOpcode { get; private set; }
     public bool IsInstructionBoundary => _cyclesRemaining == 0 && _stallCycles == 0;
+    public ulong NmiServiced { get; private set; }
+    public ulong IrqServiced { get; private set; }
+    public ulong BrkExecuted { get; private set; }
+    public ulong RtiExecuted { get; private set; }
 
     public void PowerOn()
     {
@@ -48,6 +52,10 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
         _nmiPending = false;
         _irqLine = false;
         _stallCycles = 0;
+        NmiServiced = 0;
+        IrqServiced = 0;
+        BrkExecuted = 0;
+        RtiExecuted = 0;
         Reset();
     }
 
@@ -82,6 +90,7 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
         if (_nmiPending)
         {
             _nmiPending = false;
+            NmiServiced++;
             EnterInterrupt(0xFFFA, false);
             _cyclesRemaining = 6;
             return;
@@ -89,6 +98,7 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
 
         if (_irqLine && !IsFlagSet(InterruptDisableFlag))
         {
+            IrqServiced++;
             EnterInterrupt(0xFFFE, false);
             _cyclesRemaining = 6;
             return;
@@ -437,6 +447,7 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
 
     private int Break()
     {
+        BrkExecuted++;
         ProgramCounter++;
         EnterInterrupt(0xFFFE, true);
         return 7;
@@ -444,6 +455,7 @@ public sealed class Rp2A03Cpu : INesHardwareModule, IClockedHardwareModule
 
     private int ReturnFromInterrupt()
     {
+        RtiExecuted++;
         Status = NormalizeStatus((byte)(Pop() & ~BreakFlag));
         var low = Pop();
         var high = Pop();

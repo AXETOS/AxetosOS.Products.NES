@@ -34,6 +34,7 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
     private ushort _scanlineAddress;
     private readonly SpriteSample[] _scanlineSprites = new SpriteSample[ScreenWidth];
     private readonly int _preRenderScanline;
+    private bool _nmiOutput;
 
     public Rp2C02Ppu(PpuBus bus, ISignalLine nmi, NesTimingProfile? timing = null)
     {
@@ -59,6 +60,9 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
     public bool WriteToggle => _writeToggle;
     public uint[] Framebuffer { get; }
     public byte OamAddress => _oamAddress;
+    public ulong VBlankStarts { get; private set; }
+    public ulong NmiEdges { get; private set; }
+    public ulong StatusReads { get; private set; }
 
     public byte ReadOamByte(byte address) => _oam[address];
 
@@ -83,6 +87,10 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         Array.Clear(_oam);
         Array.Clear(Framebuffer);
         Array.Clear(_scanlineSprites);
+        _nmiOutput = false;
+        VBlankStarts = 0;
+        NmiEdges = 0;
+        StatusReads = 0;
         _nmi.Release();
     }
 
@@ -91,7 +99,7 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         _control = 0;
         _mask = 0;
         _writeToggle = false;
-        _nmi.Release();
+        SetNmiOutput(false);
     }
 
     public bool HandlesCpuAddress(ushort address) => address is >= 0x2000 and <= 0x3FFF;
@@ -157,15 +165,24 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
             RenderVisiblePixel(Dot - 1, Scanline);
         }
 
+        // MMC3-family cartridges receive one qualified scanline clock. The current
+        // direct framebuffer renderer does not model every PPU fetch/A12 transition,
+        // so this represents the filtered A12 rising edge produced during rendering.
+        if (RenderingEnabled && Scanline is >= 0 and < ScreenHeight && Dot == 260)
+        {
+            _bus.ClockScanline();
+        }
+
         if (Scanline == 241 && Dot == 1)
         {
             _status |= 0x80;
+            VBlankStarts++;
             UpdateNmiLine();
         }
         else if (Scanline == _preRenderScanline && Dot == 1)
         {
             _status &= 0x1F;
-            _nmi.Release();
+            UpdateNmiLine();
         }
 
         if (RenderingEnabled && (Scanline is >= 0 and < 240 || Scanline == _preRenderScanline))
@@ -416,22 +433,19 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
         _control = value;
         _temporaryAddress = (ushort)((_temporaryAddress & 0xF3FF) | ((value & 0x03) << 10));
 
-        if (!wasNmiEnabled && (_control & 0x80) != 0 && InVBlank)
-        {
-            _nmi.Assert();
-        }
-        else
-        {
-            UpdateNmiLine();
-        }
+        // NMI is edge-triggered. Enabling it during VBlank must create a rising edge,
+        // while repeated writes with bit 7 already set must not queue duplicate NMIs.
+        _ = wasNmiEnabled;
+        UpdateNmiLine();
     }
 
     private byte ReadStatus()
     {
+        StatusReads++;
         var value = _status;
         _status &= 0x7F;
         _writeToggle = false;
-        _nmi.Release();
+        SetNmiOutput(false);
         return value;
     }
 
@@ -543,8 +557,20 @@ public sealed class Rp2C02Ppu : INesHardwareModule, IClockedHardwareModule, ICpu
 
     private void UpdateNmiLine()
     {
-        if (InVBlank && (_control & 0x80) != 0)
+        SetNmiOutput(InVBlank && (_control & 0x80) != 0);
+    }
+
+    private void SetNmiOutput(bool asserted)
+    {
+        if (_nmiOutput == asserted)
         {
+            return;
+        }
+
+        _nmiOutput = asserted;
+        if (asserted)
+        {
+            NmiEdges++;
             _nmi.Assert();
         }
         else

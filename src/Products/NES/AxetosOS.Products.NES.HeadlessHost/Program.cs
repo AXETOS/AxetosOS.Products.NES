@@ -143,7 +143,10 @@ controllers.PowerOn();
 bus.Attach(controllers);
 var cpu = new Rp2A03Cpu(bus);
 apu.AttachDmcMemory(bus, cpu.RequestDmaStall);
-apu.IrqLineChanged += cpu.SetIrqLine;
+var irqLines = new IrqLineCombiner(cpu.SetIrqLine);
+apu.IrqLineChanged += irqLines.CreateSource();
+if (cartridge.PrgDevice is ICartridgeIrqProvider cartridgeIrq)
+    cartridgeIrq.IrqLineChanged += irqLines.CreateSource();
 var oamDma = new OamDmaController(bus, ppu, cpu);
 bus.Attach(oamDma);
 oamDma.PowerOn();

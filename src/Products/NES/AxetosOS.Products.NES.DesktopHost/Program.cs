@@ -7,9 +7,19 @@ using AxetosOS.Rendering.Abstractions;
 using AxetosOS.Rendering.Windows;
 
 NesTimingMode? manualTiming = null;
+bool mapperTraceEnabled = false;
+string? mapperTracePath = null;
 string? romArgument = null;
 for (var index = 0; index < args.Length; index++)
 {
+    if (args[index].Equals("--mapper-trace", StringComparison.OrdinalIgnoreCase))
+    {
+        mapperTraceEnabled = true;
+        if (index + 1 < args.Length && !args[index + 1].StartsWith("--", StringComparison.Ordinal))
+            mapperTracePath = args[++index];
+        continue;
+    }
+
     if (args[index].Equals("--timing", StringComparison.OrdinalIgnoreCase))
     {
         if (++index >= args.Length || !TryParseTiming(args[index], out manualTiming))
@@ -22,7 +32,7 @@ for (var index = 0; index < args.Length; index++)
 
     if (romArgument is not null)
     {
-        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--timing auto|ntsc|pal|dendy]");
+        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--timing auto|ntsc|pal|dendy] [--mapper-trace [path]]");
         return 2;
     }
     romArgument = args[index];
@@ -62,7 +72,7 @@ try
 catch (UnsupportedMapperException exception)
 {
     var submapper = exception.Submapper?.ToString() ?? "unspecified";
-    var message = $"Mapper {exception.Mapper}, submapper {submapper}, is not supported yet.\n\nSupported mappers: 0 (NROM), 1 (MMC1), 2 (UxROM).";
+    var message = $"Mapper {exception.Mapper}, submapper {submapper}, is not supported yet.\n\nSupported mappers: 0, 1, 2, 3, 4, 7, 11, 66, 71, 79 and 206.";
     NativeMessageDialog.ShowError("Unsupported cartridge hardware", message);
     Console.Error.WriteLine(message);
     return 4;
@@ -108,7 +118,10 @@ apu.PowerOn();
 cpuBus.Attach(apu);
 var cpu = new Rp2A03Cpu(cpuBus);
 apu.AttachDmcMemory(cpuBus, cpu.RequestDmaStall);
-apu.IrqLineChanged += cpu.SetIrqLine;
+var irqLines = new IrqLineCombiner(cpu.SetIrqLine);
+apu.IrqLineChanged += irqLines.CreateSource();
+if (cartridge.PrgDevice is ICartridgeIrqProvider cartridgeIrq)
+    cartridgeIrq.IrqLineChanged += irqLines.CreateSource();
 var oamDma = new OamDmaController(cpuBus, ppu, cpu);
 cpuBus.Attach(oamDma);
 oamDma.PowerOn();
@@ -163,6 +176,24 @@ Console.WriteLine("Controls:  Arrows=D-pad, Z=A, X=B, Enter=Start, Right Shift=S
 Console.WriteLine("Video:     AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:     AxetosOS native PCM output ({apu.SampleRate:N0} Hz mono)");
 
+StreamWriter? mapperTrace = null;
+Mmc3CartridgeMemory? mmc3 = cartridge.PrgDevice as Mmc3CartridgeMemory;
+if (mapperTraceEnabled && mmc3 is not null)
+{
+    mapperTracePath ??= Path.ChangeExtension(romPath, ".mmc3-trace.log");
+    mapperTracePath = Path.GetFullPath(mapperTracePath);
+    mapperTrace = new StreamWriter(mapperTracePath, append: false) { AutoFlush = true };
+    mapperTrace.WriteLine($"# AxetosOS NES MMC3 trace");
+    mapperTrace.WriteLine($"# ROM={romPath}");
+    mapperTrace.WriteLine($"# Mapper={image.MapperNumber} Submapper={image.SubmapperNumber?.ToString() ?? "unspecified"} Timing={timing.Name}");
+    mapperTrace.WriteLine("# frame,cpuCycles,pc,nmiServiced,irqServiced,brk,rti,vblankStarts,nmiEdges,statusReads,bankSelect,registers,prgBanks,chrBanks,irqLatch,irqCounter,reload,enabled,asserted,scanlineClocks,irqAssertions,mirroring");
+    Console.WriteLine($"Trace:     {mapperTracePath}");
+}
+else if (mapperTraceEnabled)
+{
+    Console.WriteLine("Trace:     requested, but the loaded cartridge is not MMC3-family hardware");
+}
+
 var framesPerSecond = timing.FramesPerSecond;
 var cpuClockHz = timing.CpuClockHz;
 var frameDuration = TimeSpan.FromSeconds(1.0 / framesPerSecond);
@@ -177,6 +208,9 @@ double? smoothedEmulationPercent = null;
 double? smoothedFps = null;
 double? smoothedAudioMilliseconds = null;
 const double diagnosticsSmoothing = 0.20;
+ulong lastTracedFrame = ulong.MaxValue;
+ushort lastObservedPc = cpu.ProgramCounter;
+long unchangedPcFrames = 0;
 
 try
 {
@@ -206,6 +240,44 @@ try
         if (audioSamples.Length > 0)
         {
             audio.Submit(audioSamples);
+        }
+
+        if (mapperTrace is { } trace && mmc3 is { } activeMmc3 && ppu.Frame != lastTracedFrame)
+        {
+            var snapshot = activeMmc3.GetDiagnostics();
+            trace.WriteLine(string.Join(',',
+                ppu.Frame,
+                clock.CpuCycles,
+                $"{cpu.ProgramCounter:X4}",
+                cpu.NmiServiced,
+                cpu.IrqServiced,
+                cpu.BrkExecuted,
+                cpu.RtiExecuted,
+                ppu.VBlankStarts,
+                ppu.NmiEdges,
+                ppu.StatusReads,
+                $"{snapshot.BankSelect:X2}",
+                string.Join('-', snapshot.Registers.Select(value => value.ToString("X2"))),
+                string.Join('-', snapshot.PrgBanks),
+                string.Join('-', snapshot.ChrBanks),
+                snapshot.IrqLatch,
+                snapshot.IrqCounter,
+                snapshot.IrqReloadPending ? 1 : 0,
+                snapshot.IrqEnabled ? 1 : 0,
+                snapshot.IrqAsserted ? 1 : 0,
+                snapshot.ScanlineClocks,
+                snapshot.IrqAssertions,
+                snapshot.Mirroring));
+            lastTracedFrame = ppu.Frame;
+
+            if (cpu.ProgramCounter == lastObservedPc) unchangedPcFrames++;
+            else
+            {
+                lastObservedPc = cpu.ProgramCounter;
+                unchangedPcFrames = 0;
+            }
+            if (unchangedPcFrames == 120)
+                trace.WriteLine($"# STALL-SUSPECT frame={ppu.Frame} pc=${cpu.ProgramCounter:X4} unchangedForFrames={unchangedPcFrames}");
         }
 
         var now = timer.Elapsed;
@@ -260,6 +332,8 @@ catch (UnsupportedCpuOpcodeException exception)
     Console.Error.WriteLine($"PC=${cpu.ProgramCounter:X4} opcode=${cpu.LastOpcode:X2} frame={ppu.Frame:N0}");
     return 5;
 }
+
+mapperTrace?.Dispose();
 
 if (persistentMemory is { HasBattery: true })
     await File.WriteAllBytesAsync(savePath, persistentMemory.SavePersistent());

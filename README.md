@@ -9,7 +9,7 @@
 
 ## Project status
 
-The project is currently at **v0.21.0**. Supported cartridge images run in an AxetosOS-owned native desktop window with keyboard input, PCM audio, automatic console timing selection and live performance diagnostics.
+The project is currently at **v0.22.0**. Supported cartridge images run in an AxetosOS-owned native desktop window with keyboard input, PCM audio, automatic console timing selection and live performance diagnostics.
 
 Current highlights:
 
@@ -17,7 +17,7 @@ Current highlights:
 - all documented RP2A03 CPU opcodes and addressing modes;
 - background and sprite rendering;
 - native desktop video, audio and keyboard input;
-- NROM, MMC1 and UxROM cartridge support;
+- broad cartridge support across Nintendo, discrete and common third-party board families;
 - battery-backed MMC1 save RAM persistence;
 - automatic NTSC, PAL and Dendy timing selection;
 - data-driven cartridge-board definitions;
@@ -78,6 +78,14 @@ Accepted timing values are `auto`, `ntsc`, `pal`, and `dendy`. Auto mode prefers
 | 0 | NROM | Supported |
 | 1 | MMC1 | Supported |
 | 2 | UxROM | Supported |
+| 3 | CNROM | Supported |
+| 4 | MMC3 / MMC6 foundation | Supported |
+| 7 | AxROM | Supported |
+| 11 | Color Dreams | Supported |
+| 66 | GxROM | Supported |
+| 71 | Camerica | Supported |
+| 79 | NINA-03 / NINA-06 | Supported |
+| 206 | DxROM | Supported |
 
 Additional cartridge boards will be added through the same modular board-definition system. Unsupported boards are reported through a native error dialog rather than terminating with an unhandled exception.
 
@@ -153,7 +161,7 @@ Completed:
 - [x] controller input and OAM DMA
 - [x] pulse, triangle, noise and DMC audio
 - [x] native desktop video and audio
-- [x] NROM, MMC1 and UxROM support
+- [x] NROM, MMC1, UxROM and broad discrete/MMC3-family mapper support
 - [x] battery-backed save RAM persistence
 - [x] NTSC, PAL and Dendy timing profiles
 - [x] native unsupported-mapper reporting
@@ -162,7 +170,7 @@ Completed:
 
 Planned:
 
-- [ ] broader mapper coverage;
+- [ ] additional licensed, expansion-audio and uncommon mapper families;
 - [ ] further PPU timing accuracy;
 - [ ] further APU accuracy and lower latency;
 - [ ] save states;

@@ -1,0 +1,18 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.axrom",
+  "name": "AxROM",
+  "mapper": 7,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "ReusableMapperHardware",
+      "role": "axrom"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu"
+  ],
+  "notes": "Composable AxROM board built from shared PRG, CHR, mirroring, RAM and IRQ components."
+}
