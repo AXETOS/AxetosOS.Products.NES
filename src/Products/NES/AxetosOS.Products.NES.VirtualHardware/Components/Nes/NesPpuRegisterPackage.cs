@@ -32,12 +32,14 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         Data = new DigitalBus($"{componentId}.D", dataPins);
         ReadWrite = AddPin("R/W", PinDirection.Input);
         Vblank = AddPin("VBLANK", PinDirection.Input);
+        NmiEnable = AddPin("NMI_ENABLE", PinDirection.Output);
     }
 
     public DigitalBus Address { get; }
     public DigitalBus Data { get; }
     public DigitalPin ReadWrite { get; }
     public DigitalPin Vblank { get; }
+    public DigitalPin NmiEnable { get; }
 
     public byte Control { get; private set; }
     public byte Mask { get; private set; }
@@ -70,6 +72,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         RegisterReadCount = 0;
         RegisterWriteCount = 0;
         Data.Release();
+        NmiEnable.Drive(DigitalLevel.Low);
     }
 
     public override void Reset()
@@ -176,6 +179,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         {
             case 0: // PPUCTRL
                 Control = value;
+                NmiEnable.Drive((value & 0x80) != 0 ? DigitalLevel.High : DigitalLevel.Low);
                 TemporaryVramAddress = (ushort)((TemporaryVramAddress & 0xF3FF) | ((value & 0x03) << 10));
                 break;
             case 1: // PPUMASK

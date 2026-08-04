@@ -2,6 +2,7 @@ using AxetosOS.Products.NES.VirtualHardware.Components.Clock;
 using AxetosOS.Products.NES.VirtualHardware.Components.Instrumentation;
 using AxetosOS.Products.NES.VirtualHardware.Components.Logic;
 using AxetosOS.Products.NES.VirtualHardware.Components.Memory;
+using AxetosOS.Products.NES.VirtualHardware.Components.Passives;
 using AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Components.Power;
 using AxetosOS.Products.NES.VirtualHardware.Components.Processors.Mos6502;
@@ -18,6 +19,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
 public sealed class NesCpuMotherboard
 {
     public const long NtscCpuClockHertz = 1_789_773;
+    public const long NtscPpuClockHertz = 5_369_318;
     public const int WorkRamSize = 2 * 1024;
     public const int PrgRomSize = 32 * 1024;
 
@@ -44,6 +46,7 @@ public sealed class NesCpuMotherboard
         Vcc = Board.Add(new DigitalPowerRail("nes.vcc", DigitalLevel.High));
         Ground = Board.Add(new DigitalPowerRail("nes.ground", DigitalLevel.Low));
         Clock = Board.Add(new DigitalOscillator("nes.cpu-clock", NtscCpuClockHertz));
+        PpuClock = Board.Add(new DigitalOscillator("nes.ppu-clock", NtscPpuClockHertz));
         ResetCircuit = Board.Add(new PowerOnResetCircuit("nes.reset"));
         Cpu = Board.Add(new Mos6502Processor("nes.cpu"));
         WorkRam = Board.Add(new StaticRamChip("nes.work-ram", 11));
@@ -53,11 +56,13 @@ public sealed class NesCpuMotherboard
         ReadInverter = Board.Add(new NotGate("nes.read-inverter"));
         IrqHigh = Board.Add(new DigitalPowerRail("nes.irq-pullup", DigitalLevel.High));
         NmiHigh = Board.Add(new DigitalPowerRail("nes.nmi-pullup", DigitalLevel.High));
+        NmiPullup = Board.Add(new PullResistor("nes.nmi-resistor"));
         ReadyHigh = Board.Add(new DigitalPowerRail("nes.ready-pullup", DigitalLevel.High));
         Analyzer = Board.Add(new Mos6502BusAnalyzer("nes.cpu-bus-analyzer"));
         ControllerIo = Board.Add(new NesControllerIoPackage("nes.controller-io"));
         PpuRegisters = Board.Add(new NesPpuRegisterPackage("nes.ppu-registers"));
-        PpuVblank = Board.Add(new DigitalSignalSource("nes.ppu-vblank", DigitalLevel.Low));
+        PpuTiming = Board.Add(new NesPpuTimingCore("nes.ppu-timing"));
+        PpuVblank = Board.Add(new DigitalSignalSource("nes.ppu-force-vblank", DigitalLevel.Low));
         Controller1Buttons = CreateControllerSources("nes.controller1");
         Controller2Buttons = CreateControllerSources("nes.controller2");
 
@@ -72,6 +77,7 @@ public sealed class NesCpuMotherboard
     public DigitalPowerRail Vcc { get; }
     public DigitalPowerRail Ground { get; }
     public DigitalOscillator Clock { get; }
+    public DigitalOscillator PpuClock { get; }
     public PowerOnResetCircuit ResetCircuit { get; }
     public Mos6502Processor Cpu { get; }
     public StaticRamChip WorkRam { get; }
@@ -81,10 +87,12 @@ public sealed class NesCpuMotherboard
     public NotGate ReadInverter { get; }
     public DigitalPowerRail IrqHigh { get; }
     public DigitalPowerRail NmiHigh { get; }
+    public PullResistor NmiPullup { get; }
     public DigitalPowerRail ReadyHigh { get; }
     public Mos6502BusAnalyzer Analyzer { get; }
     public NesControllerIoPackage ControllerIo { get; }
     public NesPpuRegisterPackage PpuRegisters { get; }
+    public NesPpuTimingCore PpuTiming { get; }
     public DigitalSignalSource PpuVblank { get; }
     public IReadOnlyList<DigitalSignalSource> Controller1Buttons { get; }
     public IReadOnlyList<DigitalSignalSource> Controller2Buttons { get; }
@@ -103,6 +111,15 @@ public sealed class NesCpuMotherboard
 
     public void AdvanceHalfCycle()
     {
+        // NTSC PPU clock is three times the CPU clock. Three PPU half-cycles
+        // per CPU half-cycle preserve that ratio while keeping both chips
+        // observable at each electrical transition.
+        for (var phase = 0; phase < 3; phase++)
+        {
+            PpuClock.AdvanceHalfCycle();
+            Simulator.Settle();
+        }
+
         Clock.AdvanceHalfCycle();
         Simulator.Settle();
     }
@@ -111,6 +128,20 @@ public sealed class NesCpuMotherboard
     {
         AdvanceHalfCycle();
         AdvanceHalfCycle();
+    }
+
+    public void AdvancePpuDot()
+    {
+        PpuClock.AdvanceHalfCycle();
+        Simulator.Settle();
+        PpuClock.AdvanceHalfCycle();
+        Simulator.Settle();
+    }
+
+    public void AdvancePpuDots(int count)
+    {
+        if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+        for (var dot = 0; dot < count; dot++) AdvancePpuDot();
     }
 
     public void SetPpuVblank(bool active)
@@ -173,12 +204,16 @@ public sealed class NesCpuMotherboard
         Board.Connect("PHI2", Clock.Output, Cpu.Clock, Analyzer.Clock);
         Board.Connect("/RESET", ResetCircuit.ResetBar, Cpu.ResetBar);
         Board.Connect("/IRQ", IrqHigh.Output, Cpu.IrqBar);
-        Board.Connect("/NMI", NmiHigh.Output, Cpu.NmiBar);
+        Board.Connect("NMI_PULLUP_RAIL", NmiHigh.Output, NmiPullup.Rail);
+        Board.Connect("/NMI", NmiPullup.Node, PpuTiming.NmiBar, Cpu.NmiBar);
         Board.Connect("RDY", ReadyHigh.Output, Cpu.Ready);
         Board.Connect("R/W", Cpu.ReadWrite, WorkRam.WriteEnableBar, ReadInverter.Input, Analyzer.ReadWrite, ControllerIo.ReadWrite, PpuRegisters.ReadWrite);
         Board.Connect("/READ", ReadInverter.Output, WorkRam.OutputEnableBar, PrgRom.OutputEnableBar);
         Board.Connect("SYNC", Cpu.Sync, Analyzer.Sync);
-        Board.Connect("PPU_VBLANK", PpuVblank.Output, PpuRegisters.Vblank);
+        Board.Connect("PPU_CLK", PpuClock.Output, PpuTiming.Clock);
+        Board.Connect("PPU_NMI_ENABLE", PpuRegisters.NmiEnable, PpuTiming.NmiEnable);
+        Board.Connect("PPU_FORCE_VBLANK", PpuVblank.Output, PpuTiming.ForceVblank);
+        Board.Connect("PPU_VBLANK", PpuTiming.Vblank, PpuRegisters.Vblank);
 
         // A15 selects the cartridge PRG region at $8000-$FFFF.
         Board.Connect("A15", PrgDecoder.Address.Pins[0]);

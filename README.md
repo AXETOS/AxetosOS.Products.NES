@@ -352,6 +352,11 @@ The independent pin-driven MOS 6502 now includes a reusable execution core built
 The independent pin-driven motherboard now includes an NES controller I/O package connected directly to the CPU address, data and R/W nets. Writes to `$4016` control the shared strobe, while reads from `$4016` and `$4017` shift the two independent eight-button registers in NES order: A, B, Select, Start, Up, Down, Left and Right. External button sources affect the package only through pins, and every controller access remains visible to the passive CPU bus analyzer.
 
 
-## v0.28.0 VirtualHardware PPU register interface
+## v0.29.0 VirtualHardware PPU register interface
 
 The independent pin-wired NES motherboard now includes the CPU-facing RP2C02 register interface at $2000-$3FFF, including eight-register mirroring, PPUCTRL/PPUMASK, PPUSTATUS vblank clearing, OAMADDR/OAMDATA, PPUSCROLL/PPUADDR write-latch behavior, buffered PPUDATA reads, palette immediate reads, and 1/32 VRAM address increments. The component observes only bus pins and an external vblank signal; rendering remains outside this milestone.
+
+
+### VirtualHardware v0.29.0 — clocked PPU timing and NMI foundation
+
+The independent pin-driven motherboard now includes an NTSC RP2C02 timing core. It advances at three PPU cycles per CPU cycle, tracks all 341 dots across 262 scanlines, raises vblank at scanline 241 dot 1, and clears it at pre-render scanline 261 dot 1. `PPUCTRL` bit 7 is exported as an electrical NMI-enable signal. During vblank the PPU pulls the shared open-drain `/NMI` line low; otherwise the motherboard resistor pulls it high. The existing external vblank source remains available as a diagnostic force input and no legacy PPU implementation is invoked.
