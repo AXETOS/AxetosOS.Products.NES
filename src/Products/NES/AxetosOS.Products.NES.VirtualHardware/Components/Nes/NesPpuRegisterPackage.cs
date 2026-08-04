@@ -28,6 +28,26 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     private bool _dotTickWasHigh;
     private bool _dmaWriteWasHigh;
     private readonly byte[] _frameBuffer = new byte[256 * 240];
+    private RenderFetchState _renderFetchState;
+    private int _renderX;
+    private int _renderY;
+    private int _renderFineX;
+    private int _renderFineY;
+    private int _renderPaletteSelect;
+    private byte _renderTileIndex;
+    private byte _renderAttribute;
+    private byte _renderLowPlane;
+    private byte _renderHighPlane;
+    private PixelSample _renderBackground;
+    private SpriteSample _renderSprite;
+    private int _renderSpriteIndex;
+    private SpriteEntry _renderSpriteEntry;
+    private int _renderSpriteColumn;
+    private int _renderSpriteRow;
+    private byte _renderSpriteLow;
+    private byte _renderSpriteHigh;
+    private bool _renderReadIssued;
+    private ushort _renderReadAddress;
 
     public NesPpuRegisterPackage(string componentId) : base(componentId)
     {
@@ -109,6 +129,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     public ulong DmaWriteCount { get; private set; }
     public ulong ExternalPpuReadCount { get; private set; }
     public ulong ExternalPpuWriteCount { get; private set; }
+    public ulong RenderBusReadCount { get; private set; }
     public bool SpriteZeroHit => _spriteZeroHit;
     public bool SpriteOverflow => _spriteOverflow;
     public int SecondarySpriteCount => _secondarySpriteCount;
@@ -172,6 +193,9 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         DmaWriteCount = 0;
         ExternalPpuReadCount = 0;
         ExternalPpuWriteCount = 0;
+        RenderBusReadCount = 0;
+        _renderFetchState = RenderFetchState.Idle;
+        _renderReadIssued = false;
         _secondarySpriteCount = 0;
         _spriteZeroHit = false;
         _spriteOverflow = false;
@@ -190,12 +214,15 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         _transactionActive = false;
         _writeToggle = false;
         Data.Release();
+        _renderFetchState = RenderFetchState.Idle;
+        _renderReadIssued = false;
         EndExternalPpuTransaction();
     }
 
     public override void Evaluate()
     {
         EvaluateOamDmaWrite();
+        AdvanceRenderFetch();
         EvaluateBackgroundPixel();
         var vblankPinHigh = Vblank.SampledLevel == DigitalLevel.High;
         if (vblankPinHigh && !_vblankPinLast) _vblank = true;
@@ -268,16 +295,11 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         var dotTickHigh = DotTick.SampledLevel == DigitalLevel.High;
         if (dotTickHigh == _dotTickWasHigh)
         {
-            PixelValid.Drive(DigitalLevel.Low);
+            if (_renderFetchState == RenderFetchState.Idle) PixelValid.Drive(DigitalLevel.Low);
             return;
         }
 
         _dotTickWasHigh = dotTickHigh;
-
-        // DOT_TICK changes exactly once after each PPU clock rising edge. The
-        // timing core has already advanced and driven the scanline/dot buses,
-        // so one toggle corresponds to one settled PPU dot regardless of how
-        // many simulator evaluations are needed for the multi-bit buses.
         if (!Scanline.TrySample(out var rawScanline) || !Dot.TrySample(out var rawDot))
         {
             PixelValid.Drive(DigitalLevel.Low);
@@ -298,28 +320,28 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
             return;
         }
 
-        var x = dot - 1;
-        if (x == 0) EvaluateSpritesForScanline(scanline);
-        var background = RenderBackgroundPixel(x, scanline);
-        var sprite = RenderSpritePixel(x, scanline);
-        var color = ComposePixel(x, background, sprite);
-        _frameBuffer[(scanline * 256) + x] = color;
-        Pixel.Drive(color);
-        PixelValid.Drive(DigitalLevel.High);
-        RenderedPixelCount++;
-    }
+        if (_renderFetchState != RenderFetchState.Idle)
+            throw new InvalidOperationException("RP2C02 rendering fetch did not complete before the next PPU dot.");
 
-    private PixelSample RenderBackgroundPixel(int screenX, int screenY)
-    {
-        if ((Mask & 0x08) == 0) return new PixelSample(ReadPalette(0), false);
-        if (screenX < 8 && (Mask & 0x02) == 0) return new PixelSample(ReadPalette(0), false);
+        _renderX = dot - 1;
+        _renderY = scanline;
+        if (_renderX == 0) EvaluateSpritesForScanline(scanline);
+        _renderBackground = default;
+        _renderSprite = default;
+        _renderSpriteIndex = 0;
+        PixelValid.Drive(DigitalLevel.Low);
+
+        if ((Mask & 0x08) == 0 || (_renderX < 8 && (Mask & 0x02) == 0))
+        {
+            QueueRenderRead(0x3F00, RenderFetchState.AwaitBackgroundPalette);
+            return;
+        }
 
         var coarseX = TemporaryVramAddress & 0x001F;
         var coarseY = (TemporaryVramAddress >> 5) & 0x001F;
         var fineYScroll = (TemporaryVramAddress >> 12) & 0x0007;
-        var worldX = screenX + (coarseX * 8) + FineX;
-        var worldY = screenY + (coarseY * 8) + fineYScroll;
-
+        var worldX = _renderX + (coarseX * 8) + FineX;
+        var worldY = _renderY + (coarseY * 8) + fineYScroll;
         var baseNametable = Control & 0x03;
         var nametableX = (baseNametable & 1) ^ ((worldX / 256) & 1);
         var nametableY = ((baseNametable >> 1) & 1) ^ ((worldY / 240) & 1);
@@ -328,24 +350,164 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         var localY = worldY % 240;
         var tileX = localX >> 3;
         var tileY = localY >> 3;
-        var fineX = localX & 7;
-        var fineY = localY & 7;
-
+        _renderFineX = localX & 7;
+        _renderFineY = localY & 7;
         var nametableBase = 0x2000 + (nametable * 0x400);
-        var tileIndex = _vram[(nametableBase + (tileY * 32) + tileX) & 0x3FFF];
-        var attribute = _vram[(nametableBase + 0x3C0 + ((tileY >> 2) * 8) + (tileX >> 2)) & 0x3FFF];
-        var quadrantShift = ((tileY & 2) << 1) | (tileX & 2);
-        var paletteSelect = (attribute >> quadrantShift) & 0x03;
-        var patternBase = (Control & 0x10) != 0 ? 0x1000 : 0x0000;
-        var patternAddress = patternBase + (tileIndex * 16) + fineY;
-        var lowPlane = _vram[patternAddress & 0x3FFF];
-        var highPlane = _vram[(patternAddress + 8) & 0x3FFF];
-        var bit = 7 - fineX;
-        var pixel = ((lowPlane >> bit) & 1) | (((highPlane >> bit) & 1) << 1);
-        BackgroundFetchCount += 4;
-        return pixel == 0
-            ? new PixelSample(ReadPalette(0), false)
-            : new PixelSample(ReadPalette((paletteSelect * 4) + pixel), true);
+        _renderReadAddress = (ushort)(nametableBase + (tileY * 32) + tileX);
+        _renderAttribute = 0;
+        _renderPaletteSelect = ((tileY & 2) << 1) | (tileX & 2);
+        QueueRenderRead(_renderReadAddress, RenderFetchState.AwaitNametable);
+    }
+
+    private void AdvanceRenderFetch()
+    {
+        if (_renderFetchState == RenderFetchState.Idle) return;
+
+        if (!_renderReadIssued)
+        {
+            PpuAddress.Drive((ulong)(_renderReadAddress & 0x3FFF));
+            PpuData.Release();
+            PpuWriteBar.Drive(DigitalLevel.High);
+            PpuReadBar.Drive(DigitalLevel.Low);
+            _renderReadIssued = true;
+            ExternalPpuReadCount++;
+            RenderBusReadCount++;
+            return;
+        }
+
+        if (!PpuData.TrySample(out var rawValue)) return;
+        var value = (byte)rawValue;
+        PpuReadBar.Drive(DigitalLevel.High);
+        PpuAddress.Release();
+        PpuData.Release();
+        _renderReadIssued = false;
+
+        switch (_renderFetchState)
+        {
+            case RenderFetchState.AwaitNametable:
+            {
+                _renderTileIndex = value;
+                BackgroundFetchCount++;
+                var coarseX = TemporaryVramAddress & 0x001F;
+                var coarseY = (TemporaryVramAddress >> 5) & 0x001F;
+                var worldX = _renderX + (coarseX * 8) + FineX;
+                var worldY = _renderY + (coarseY * 8) + ((TemporaryVramAddress >> 12) & 7);
+                var baseNametable = Control & 0x03;
+                var nametableX = (baseNametable & 1) ^ ((worldX / 256) & 1);
+                var nametableY = ((baseNametable >> 1) & 1) ^ ((worldY / 240) & 1);
+                var nametable = nametableX | (nametableY << 1);
+                var tileX = (worldX % 256) >> 3;
+                var tileY = (worldY % 240) >> 3;
+                var address = 0x2000 + (nametable * 0x400) + 0x3C0 + ((tileY >> 2) * 8) + (tileX >> 2);
+                QueueRenderRead((ushort)address, RenderFetchState.AwaitAttribute);
+                break;
+            }
+            case RenderFetchState.AwaitAttribute:
+                _renderAttribute = value;
+                BackgroundFetchCount++;
+                _renderPaletteSelect = (_renderAttribute >> _renderPaletteSelect) & 0x03;
+                QueueRenderRead((ushort)(((Control & 0x10) != 0 ? 0x1000 : 0x0000) + (_renderTileIndex * 16) + _renderFineY), RenderFetchState.AwaitBackgroundLow);
+                break;
+            case RenderFetchState.AwaitBackgroundLow:
+                _renderLowPlane = value;
+                BackgroundFetchCount++;
+                QueueRenderRead((ushort)((_renderReadAddress + 8) & 0x3FFF), RenderFetchState.AwaitBackgroundHigh);
+                break;
+            case RenderFetchState.AwaitBackgroundHigh:
+            {
+                _renderHighPlane = value;
+                BackgroundFetchCount++;
+                var bit = 7 - _renderFineX;
+                var pixel = ((_renderLowPlane >> bit) & 1) | (((_renderHighPlane >> bit) & 1) << 1);
+                var paletteAddress = pixel == 0 ? 0x3F00 : 0x3F00 + (_renderPaletteSelect * 4) + pixel;
+                _renderBackground = new PixelSample(0, pixel != 0);
+                QueueRenderRead((ushort)paletteAddress, RenderFetchState.AwaitBackgroundPalette);
+                break;
+            }
+            case RenderFetchState.AwaitBackgroundPalette:
+                _renderBackground = new PixelSample((byte)(value & 0x3F), _renderBackground.Opaque);
+                BeginNextSpriteFetchOrFinalize();
+                break;
+            case RenderFetchState.AwaitSpriteLow:
+                _renderSpriteLow = value;
+                SpriteFetchCount++;
+                QueueRenderRead((ushort)((_renderReadAddress + 8) & 0x3FFF), RenderFetchState.AwaitSpriteHigh);
+                break;
+            case RenderFetchState.AwaitSpriteHigh:
+            {
+                _renderSpriteHigh = value;
+                SpriteFetchCount++;
+                var bit = 7 - _renderSpriteColumn;
+                var pixel = ((_renderSpriteLow >> bit) & 1) | (((_renderSpriteHigh >> bit) & 1) << 1);
+                if (pixel == 0)
+                {
+                    _renderSpriteIndex++;
+                    BeginNextSpriteFetchOrFinalize();
+                    break;
+                }
+
+                SpritePixelCount++;
+                _renderSprite = new SpriteSample(0, true, (_renderSpriteEntry.Attributes & 0x20) != 0, _renderSpriteEntry.OriginalIndex == 0);
+                var palette = _renderSpriteEntry.Attributes & 0x03;
+                QueueRenderRead((ushort)(0x3F10 + (palette * 4) + pixel), RenderFetchState.AwaitSpritePalette);
+                break;
+            }
+            case RenderFetchState.AwaitSpritePalette:
+                _renderSprite = _renderSprite with { Color = (byte)(value & 0x3F) };
+                FinalizeRenderedPixel();
+                break;
+        }
+    }
+
+    private void BeginNextSpriteFetchOrFinalize()
+    {
+        if ((Mask & 0x10) == 0 || (_renderX < 8 && (Mask & 0x04) == 0))
+        {
+            FinalizeRenderedPixel();
+            return;
+        }
+
+        var height = (Control & 0x20) != 0 ? 16 : 8;
+        while (_renderSpriteIndex < _secondarySpriteCount)
+        {
+            var sprite = _secondaryOam[_renderSpriteIndex];
+            var column = _renderX - sprite.X;
+            var row = _renderY - (sprite.Y + 1);
+            if (column < 0 || column >= 8 || row < 0 || row >= height)
+            {
+                _renderSpriteIndex++;
+                continue;
+            }
+
+            if ((sprite.Attributes & 0x40) != 0) column = 7 - column;
+            if ((sprite.Attributes & 0x80) != 0) row = height - 1 - row;
+            _renderSpriteEntry = sprite;
+            _renderSpriteColumn = column;
+            _renderSpriteRow = row;
+            QueueRenderRead((ushort)SpritePatternAddress(sprite.Tile, row, height), RenderFetchState.AwaitSpriteLow);
+            return;
+        }
+
+        FinalizeRenderedPixel();
+    }
+
+    private void FinalizeRenderedPixel()
+    {
+        var color = ComposePixel(_renderX, _renderBackground, _renderSprite);
+        _frameBuffer[(_renderY * 256) + _renderX] = color;
+        Pixel.Drive(color);
+        PixelValid.Drive(DigitalLevel.High);
+        RenderedPixelCount++;
+        _renderFetchState = RenderFetchState.Idle;
+        _renderReadIssued = false;
+        EndExternalPpuTransaction();
+    }
+
+    private void QueueRenderRead(ushort address, RenderFetchState nextState)
+    {
+        _renderReadAddress = (ushort)(address & 0x3FFF);
+        _renderFetchState = nextState;
+        _renderReadIssued = false;
     }
 
     private void EvaluateSpritesForScanline(int scanline)
@@ -374,39 +536,6 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
                 break;
             }
         }
-    }
-
-    private SpriteSample RenderSpritePixel(int screenX, int screenY)
-    {
-        if ((Mask & 0x10) == 0) return default;
-        if (screenX < 8 && (Mask & 0x04) == 0) return default;
-
-        var height = (Control & 0x20) != 0 ? 16 : 8;
-        for (var index = 0; index < _secondarySpriteCount; index++)
-        {
-            var sprite = _secondaryOam[index];
-            var column = screenX - sprite.X;
-            if (column < 0 || column >= 8) continue;
-            var row = screenY - (sprite.Y + 1);
-            if (row < 0 || row >= height) continue;
-            if ((sprite.Attributes & 0x40) != 0) column = 7 - column;
-            if ((sprite.Attributes & 0x80) != 0) row = height - 1 - row;
-
-            var patternAddress = SpritePatternAddress(sprite.Tile, row, height);
-            var low = _vram[patternAddress & 0x3FFF];
-            var high = _vram[(patternAddress + 8) & 0x3FFF];
-            var bit = 7 - column;
-            var pixel = ((low >> bit) & 1) | (((high >> bit) & 1) << 1);
-            SpriteFetchCount += 2;
-            if (pixel == 0) continue;
-
-            SpritePixelCount++;
-            var palette = sprite.Attributes & 0x03;
-            return new SpriteSample(ReadPalette(0x10 + (palette * 4) + pixel), true,
-                (sprite.Attributes & 0x20) != 0, sprite.OriginalIndex == 0);
-        }
-
-        return default;
     }
 
     private int SpritePatternAddress(byte tile, int row, int height)
@@ -439,13 +568,6 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         }
 
         return sprite.BehindBackground ? background.Color : sprite.Color;
-    }
-
-    private byte ReadPalette(int index)
-    {
-        var address = 0x3F00 + (index & 0x1F);
-        if ((address & 0x13) == 0x10) address &= ~0x10;
-        return (byte)(_vram[address & 0x3FFF] & 0x3F);
     }
 
     private byte ReadRegister(ushort cpuAddress)
@@ -570,6 +692,19 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     {
         _transactionActive = false;
         Data.Release();
-        EndExternalPpuTransaction();
+        if (_renderFetchState == RenderFetchState.Idle) EndExternalPpuTransaction();
+    }
+
+    private enum RenderFetchState
+    {
+        Idle,
+        AwaitNametable,
+        AwaitAttribute,
+        AwaitBackgroundLow,
+        AwaitBackgroundHigh,
+        AwaitBackgroundPalette,
+        AwaitSpriteLow,
+        AwaitSpriteHigh,
+        AwaitSpritePalette
     }
 }

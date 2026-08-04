@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.36.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.37.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -40,6 +40,10 @@ Current highlights:
 ### VirtualHardware NES
 
 
+### External background and sprite fetch bus (v0.37.0)
+
+The clocked RP2C02 background and sprite pipelines now fetch nametable, attribute, CHR pattern and palette bytes through the motherboard-owned PPU address/data nets and active-low `/RD` strobe. Visible pixels are assembled by a settling fetch microsequence against the independent CHR/CIRAM/palette device; the renderer no longer reads its compatibility VRAM array directly.
+
 ### RP2C02 external PPU bus integration (v0.36.0)
 
 The CPU-facing RP2C02 register package now owns a fourteen-bit PPU address bus, bidirectional eight-bit data bus, and active-low read/write strobes. Motherboard wiring connects those pins to the independent CHR/CIRAM/palette component introduced in v0.35.0. CPU PPUDATA accesses therefore appear as real electrical PPU-memory transactions, with diagnostics counting external reads and writes. The existing clocked renderer remains compatible while the next milestone replaces its consolidated fetch storage with a per-dot bus sequencer.
@@ -53,7 +57,7 @@ The ROM factory now carries CHR data and cartridge mirroring into the selected m
 The independent VirtualHardware launch path now parses iNES and NES 2.0 cartridge metadata, resolves `Auto`, `NTSC-U`, `NTSC-J`, or `PAL`, and constructs the corresponding physical motherboard profile. Selection priority is explicit override, reliable header timing, filename refinement/fallback, then NTSC-U. The motherboard never inspects ROM filenames or headers itself. Current launch validation intentionally accepts NROM mapper 0 only while later cartridge boards remain unwired.
 
 
-**Current development version: v0.36.0**
+**Current development version: v0.37.0**
 
 VirtualHardware is an independent electrical simulation. Components react only to power, clocks, pin levels, connected nets and their own internal state. The motherboard owns all wiring, and no execution is delegated to the playable emulator's CPU, PPU or APU classes.
 
@@ -400,6 +404,13 @@ The demonstration processor drives address, data and read/write pins, samples me
 
 The separate `VirtualHardware` implementation now contains a reusable 6502-family processor boundary under `Components/Processors/Mos6502`. It exposes a 16-bit address bus, bidirectional 8-bit data bus, `R/W`, `SYNC`, `PHI2`, `/RESET`, `/IRQ`, `/NMI`, and `RDY` pins. Reset now executes as an explicit seven-cycle pin-driven sequence. IRQ and falling-edge-latched NMI entry perform observable stack writes and vector reads through the external buses, with hardware-interrupt status semantics and read-cycle-only `RDY` stalls. The processor has no RAM, ROM, motherboard, or NES-bus dependency. The executable subset intentionally remains small while the pin-level cycle engine is validated independently from the working emulator.
 
+
+
+### External RP2C02 rendering fetch bus (v0.37.0)
+
+The VirtualHardware background and sprite pixel pipelines now obtain nametable, attribute, CHR pattern and palette bytes through the motherboard-owned fourteen-bit PPU address bus, bidirectional data bus and active-low `/RD` strobe. Rendering no longer reads the RP2C02 register package's compatibility VRAM array. Each visible pixel is assembled by a settling fetch microsequence that drives and samples the same CHR/CIRAM/palette hardware used by CPU `PPUDATA` transactions.
+
+The compatibility array remains temporarily limited to CPU-register inspection and buffered `PPUDATA` behavior while that final read-buffer path is migrated.
 
 ### VirtualHardware NES CPU motherboard slice (v0.26.0)
 

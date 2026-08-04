@@ -10,8 +10,8 @@ public sealed class VirtualHardwareNesPpuSpriteTests
     {
         var machine = CreateMachine(mask: 0x14);
         LoadSingleSprite(machine, y: 0, tile: 1, attributes: 0, x: 0);
-        machine.PpuRegisters.LoadPpuMemory(0x0010, new byte[] { 0x80 });
-        machine.PpuRegisters.LoadPpuMemory(0x3F11, new byte[] { 0x2A });
+        machine.PpuMemory.LoadForDiagnostics(0x0010, new byte[] { 0x80 });
+        machine.PpuMemory.LoadForDiagnostics(0x3F11, new byte[] { 0x2A });
 
         machine.AdvancePpuDots(342);
 
@@ -26,11 +26,11 @@ public sealed class VirtualHardwareNesPpuSpriteTests
     {
         var machine = CreateMachine(mask: 0x1E);
         LoadSingleSprite(machine, y: 0, tile: 2, attributes: 0x20, x: 0);
-        machine.PpuRegisters.LoadPpuMemory(0x2000, new byte[] { 1 });
-        machine.PpuRegisters.LoadPpuMemory(0x0011, new byte[] { 0x80 });
-        machine.PpuRegisters.LoadPpuMemory(0x0020, new byte[] { 0x80 });
-        machine.PpuRegisters.LoadPpuMemory(0x3F00, new byte[] { 0x0F, 0x21 });
-        machine.PpuRegisters.LoadPpuMemory(0x3F11, new byte[] { 0x2A });
+        machine.PpuMemory.LoadForDiagnostics(0x2000, new byte[] { 1 });
+        machine.PpuMemory.LoadForDiagnostics(0x0011, new byte[] { 0x80 });
+        machine.PpuMemory.LoadForDiagnostics(0x0020, new byte[] { 0x80 });
+        machine.PpuMemory.LoadForDiagnostics(0x3F00, new byte[] { 0x0F, 0x21 });
+        machine.PpuMemory.LoadForDiagnostics(0x3F11, new byte[] { 0x2A });
 
         machine.AdvancePpuDots(342);
 
@@ -46,8 +46,8 @@ public sealed class VirtualHardwareNesPpuSpriteTests
         LoadSingleSprite(machine, y: 0, tile: 1, attributes: 0xC0, x: 0);
         var pattern = new byte[16];
         pattern[7] = 0x01;
-        machine.PpuRegisters.LoadPpuMemory(0x0010, pattern);
-        machine.PpuRegisters.LoadPpuMemory(0x3F11, new byte[] { 0x35 });
+        machine.PpuMemory.LoadForDiagnostics(0x0010, pattern);
+        machine.PpuMemory.LoadForDiagnostics(0x3F11, new byte[] { 0x35 });
 
         machine.AdvancePpuDots(342);
 
