@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.30.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.31.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -39,7 +39,7 @@ Current highlights:
 
 ### VirtualHardware NES
 
-**Current development version: v0.30.0**
+**Current development version: v0.31.0**
 
 VirtualHardware is an independent electrical simulation. Components react only to power, clocks, pin levels, connected nets and their own internal state. The motherboard owns all wiring, and no execution is delegated to the playable emulator's CPU, PPU or APU classes.
 
@@ -52,7 +52,8 @@ Current foundation:
 - pin-driven controller I/O at `$4016/$4017`;
 - CPU-facing RP2C02 register interface, VRAM, OAM and buffered PPUDATA behavior;
 - clocked NTSC PPU timing, vblank and open-drain NMI generation;
-- first background-rendering pipeline with nametable, attribute, pattern-plane, palette, scrolling and pixel-output behavior.
+- background-rendering pipeline with nametable, attribute, pattern-plane, palette, scrolling and pixel-output behavior;
+- first sprite-rendering pipeline with eight-entry secondary OAM, sprite pattern fetches, transparency, priority, flips, overflow and sprite-zero hit behavior.
 
 VirtualHardware is not yet a replacement for the playable emulator. It is the active hardware-reconstruction track and will eventually produce a complete NES through component behavior and motherboard wiring alone.
 
@@ -214,6 +215,11 @@ Planned:
 - [ ] native gamepad support;
 - [ ] fullscreen and presentation settings;
 - [ ] expanded compatibility testing.
+
+
+## v0.31.0 VirtualHardware sprite pipeline
+
+The independent RP2C02 now performs clock-driven sprite evaluation at the start of each visible scanline. Primary OAM is filtered into an eight-entry secondary OAM, with the ninth in-range sprite setting the overflow flag. The selected sprites fetch 8×8 or 8×16 pattern data from PPU memory, apply horizontal and vertical flipping, choose sprite palettes, and produce transparent or opaque sprite pixels. Sprite/background composition observes front/behind priority and raises sprite-zero hit when non-transparent sprite zero and background pixels overlap before dot 255. PPUSTATUS now exposes sprite overflow and sprite-zero hit alongside vblank. The framebuffer remains an inspection surface; rendering state is owned by the new VirtualHardware RP2C02 and does not call the playable emulator.
 
 ## Technology
 

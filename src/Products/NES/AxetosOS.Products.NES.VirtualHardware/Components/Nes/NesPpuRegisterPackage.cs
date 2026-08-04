@@ -5,13 +5,18 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 /// <summary>
 /// CPU-facing RP2C02 register package. It reacts only to the CPU address/data
 /// bus, R/W and the external vblank signal. Register mirrors, write latch,
-/// buffered PPUDATA reads, OAM access and VRAM incrementing are modelled here;
-/// rendering remains a later independent PPU component.
+/// buffered PPUDATA reads, OAM access, VRAM incrementing, and the first
+/// background/sprite pixel pipelines are modelled here without using the
+/// playable emulator PPU.
 /// </summary>
 public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
 {
     private readonly byte[] _vram = new byte[0x4000];
     private readonly byte[] _oam = new byte[256];
+    private readonly SpriteEntry[] _secondaryOam = new SpriteEntry[8];
+    private int _secondarySpriteCount;
+    private bool _spriteZeroHit;
+    private bool _spriteOverflow;
     private bool _transactionActive;
     private bool _transactionRead;
     private ushort _transactionAddress;
@@ -75,14 +80,36 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     public ulong RegisterWriteCount { get; private set; }
     public ulong BackgroundFetchCount { get; private set; }
     public ulong RenderedPixelCount { get; private set; }
+    public ulong SpriteEvaluationCount { get; private set; }
+    public ulong SpriteFetchCount { get; private set; }
+    public ulong SpritePixelCount { get; private set; }
+    public ulong SpriteZeroHitCount { get; private set; }
+    public ulong SpriteOverflowCount { get; private set; }
+    public bool SpriteZeroHit => _spriteZeroHit;
+    public bool SpriteOverflow => _spriteOverflow;
+    public int SecondarySpriteCount => _secondarySpriteCount;
     public ReadOnlyMemory<byte> FrameBuffer => _frameBuffer;
 
     public byte InspectVram(ushort address) => _vram[address & 0x3FFF];
     public byte InspectOam(byte address) => _oam[address];
+    public byte InspectSecondaryOam(int sprite, int field)
+    {
+        if ((uint)sprite >= 8 || (uint)field >= 4) throw new ArgumentOutOfRangeException();
+        var entry = _secondaryOam[sprite];
+        return field switch { 0 => entry.Y, 1 => entry.Tile, 2 => entry.Attributes, _ => entry.X };
+    }
     public byte InspectPixel(int x, int y)
     {
         if ((uint)x >= 256 || (uint)y >= 240) throw new ArgumentOutOfRangeException();
         return _frameBuffer[(y * 256) + x];
+    }
+
+    public void LoadOamMemory(byte address, ReadOnlySpan<byte> data)
+    {
+        for (var index = 0; index < data.Length; index++)
+        {
+            _oam[(byte)(address + index)] = data[index];
+        }
     }
 
     public void LoadPpuMemory(ushort address, ReadOnlySpan<byte> data)
@@ -113,6 +140,15 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         RegisterWriteCount = 0;
         BackgroundFetchCount = 0;
         RenderedPixelCount = 0;
+        SpriteEvaluationCount = 0;
+        SpriteFetchCount = 0;
+        SpritePixelCount = 0;
+        SpriteZeroHitCount = 0;
+        SpriteOverflowCount = 0;
+        _secondarySpriteCount = 0;
+        _spriteZeroHit = false;
+        _spriteOverflow = false;
+        Array.Clear(_secondaryOam);
         _dotTickWasHigh = false;
         Data.Release();
         NmiEnable.Drive(DigitalLevel.Low);
@@ -207,6 +243,12 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
 
         var scanline = (int)rawScanline;
         var dot = (int)rawDot;
+        if (scanline == 261 && dot == 1)
+        {
+            _spriteZeroHit = false;
+            _spriteOverflow = false;
+        }
+
         if (scanline is < 0 or >= 240 || dot is < 1 or > 256)
         {
             PixelValid.Drive(DigitalLevel.Low);
@@ -214,17 +256,20 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         }
 
         var x = dot - 1;
-        var color = RenderBackgroundPixel(x, scanline);
+        if (x == 0) EvaluateSpritesForScanline(scanline);
+        var background = RenderBackgroundPixel(x, scanline);
+        var sprite = RenderSpritePixel(x, scanline);
+        var color = ComposePixel(x, background, sprite);
         _frameBuffer[(scanline * 256) + x] = color;
         Pixel.Drive(color);
         PixelValid.Drive(DigitalLevel.High);
         RenderedPixelCount++;
     }
 
-    private byte RenderBackgroundPixel(int screenX, int screenY)
+    private PixelSample RenderBackgroundPixel(int screenX, int screenY)
     {
-        if ((Mask & 0x08) == 0) return ReadPalette(0);
-        if (screenX < 8 && (Mask & 0x02) == 0) return ReadPalette(0);
+        if ((Mask & 0x08) == 0) return new PixelSample(ReadPalette(0), false);
+        if (screenX < 8 && (Mask & 0x02) == 0) return new PixelSample(ReadPalette(0), false);
 
         var coarseX = TemporaryVramAddress & 0x001F;
         var coarseY = (TemporaryVramAddress >> 5) & 0x001F;
@@ -255,7 +300,102 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         var bit = 7 - fineX;
         var pixel = ((lowPlane >> bit) & 1) | (((highPlane >> bit) & 1) << 1);
         BackgroundFetchCount += 4;
-        return pixel == 0 ? ReadPalette(0) : ReadPalette((paletteSelect * 4) + pixel);
+        return pixel == 0
+            ? new PixelSample(ReadPalette(0), false)
+            : new PixelSample(ReadPalette((paletteSelect * 4) + pixel), true);
+    }
+
+    private void EvaluateSpritesForScanline(int scanline)
+    {
+        _secondarySpriteCount = 0;
+        _spriteOverflow = false;
+        Array.Clear(_secondaryOam);
+        var height = (Control & 0x20) != 0 ? 16 : 8;
+        for (var spriteIndex = 0; spriteIndex < 64; spriteIndex++)
+        {
+            SpriteEvaluationCount++;
+            var offset = spriteIndex * 4;
+            var y = _oam[offset];
+            var row = scanline - (y + 1);
+            if (row < 0 || row >= height) continue;
+
+            if (_secondarySpriteCount < 8)
+            {
+                _secondaryOam[_secondarySpriteCount++] = new SpriteEntry(
+                    y, _oam[offset + 1], _oam[offset + 2], _oam[offset + 3], spriteIndex);
+            }
+            else
+            {
+                _spriteOverflow = true;
+                SpriteOverflowCount++;
+                break;
+            }
+        }
+    }
+
+    private SpriteSample RenderSpritePixel(int screenX, int screenY)
+    {
+        if ((Mask & 0x10) == 0) return default;
+        if (screenX < 8 && (Mask & 0x04) == 0) return default;
+
+        var height = (Control & 0x20) != 0 ? 16 : 8;
+        for (var index = 0; index < _secondarySpriteCount; index++)
+        {
+            var sprite = _secondaryOam[index];
+            var column = screenX - sprite.X;
+            if (column < 0 || column >= 8) continue;
+            var row = screenY - (sprite.Y + 1);
+            if (row < 0 || row >= height) continue;
+            if ((sprite.Attributes & 0x40) != 0) column = 7 - column;
+            if ((sprite.Attributes & 0x80) != 0) row = height - 1 - row;
+
+            var patternAddress = SpritePatternAddress(sprite.Tile, row, height);
+            var low = _vram[patternAddress & 0x3FFF];
+            var high = _vram[(patternAddress + 8) & 0x3FFF];
+            var bit = 7 - column;
+            var pixel = ((low >> bit) & 1) | (((high >> bit) & 1) << 1);
+            SpriteFetchCount += 2;
+            if (pixel == 0) continue;
+
+            SpritePixelCount++;
+            var palette = sprite.Attributes & 0x03;
+            return new SpriteSample(ReadPalette(0x10 + (palette * 4) + pixel), true,
+                (sprite.Attributes & 0x20) != 0, sprite.OriginalIndex == 0);
+        }
+
+        return default;
+    }
+
+    private int SpritePatternAddress(byte tile, int row, int height)
+    {
+        if (height == 8)
+        {
+            var patternBase = (Control & 0x08) != 0 ? 0x1000 : 0x0000;
+            return patternBase + (tile * 16) + row;
+        }
+
+        var table = (tile & 1) * 0x1000;
+        var tileIndex = tile & 0xFE;
+        if (row >= 8)
+        {
+            tileIndex++;
+            row -= 8;
+        }
+        return table + (tileIndex * 16) + row;
+    }
+
+    private byte ComposePixel(int screenX, PixelSample background, SpriteSample sprite)
+    {
+        if (!sprite.Opaque) return background.Color;
+        if (!background.Opaque) return sprite.Color;
+
+        if (sprite.SpriteZero && screenX < 255 && (Mask & 0x18) == 0x18)
+        {
+            if (!_spriteZeroHit) SpriteZeroHitCount++;
+            _spriteZeroHit = true;
+        }
+
+        return sprite.BehindBackground ? background.Color : sprite.Color;
     }
 
     private byte ReadPalette(int index)
@@ -271,7 +411,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         {
             case 2: // PPUSTATUS
             {
-                var result = (byte)((_vblank ? 0x80 : 0x00) | (_readBuffer & 0x1F));
+                var result = (byte)((_vblank ? 0x80 : 0x00) | (_spriteZeroHit ? 0x40 : 0x00) | (_spriteOverflow ? 0x20 : 0x00) | (_readBuffer & 0x1F));
                 _vblank = false;
                 _writeToggle = false;
                 return result;
@@ -350,6 +490,10 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     }
 
     private void IncrementVramAddress() => VramAddress = (ushort)((VramAddress + ((Control & 0x04) != 0 ? 32 : 1)) & 0x7FFF);
+
+    private readonly record struct PixelSample(byte Color, bool Opaque);
+    private readonly record struct SpriteSample(byte Color, bool Opaque, bool BehindBackground, bool SpriteZero);
+    private readonly record struct SpriteEntry(byte Y, byte Tile, byte Attributes, byte X, int OriginalIndex);
 
     private void EndTransaction()
     {
