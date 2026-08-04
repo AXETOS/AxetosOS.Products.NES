@@ -1,7 +1,7 @@
 # AxetosOS Products / NES
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#project-status)
-[![Version](https://img.shields.io/badge/version-v0.22.0-blue)](#project-status)
+[![Version](https://img.shields.io/badge/version-v0.23.0-blue)](#project-status)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -12,7 +12,7 @@
 
 ## Project status
 
-The project is currently at **v0.22.0**. Supported cartridge images run in an AxetosOS-owned native desktop window with keyboard input, PCM audio, automatic console timing selection and live performance diagnostics.
+The project is currently at **v0.23.0**. Supported cartridge images run in an AxetosOS-owned native desktop window with keyboard input, PCM audio, automatic console timing selection and live performance diagnostics.
 
 Current highlights:
 
@@ -334,4 +334,4 @@ The demonstration processor drives address, data and read/write pins, samples me
 
 ### Pin-driven 6502-family processor foundation
 
-The separate `VirtualHardware` implementation now contains a reusable 6502-family processor boundary under `Components/Processors/Mos6502`. It exposes a 16-bit address bus, bidirectional 8-bit data bus, `R/W`, `SYNC`, `PHI2`, `/RESET`, `/IRQ`, `/NMI`, and `RDY` pins. Reset-vector reads and instruction fetches occur through those pins and resolved board nets only; the processor has no RAM, ROM, motherboard, or NES-bus dependency. The initial executable subset intentionally remains small while the pin-level cycle engine is validated independently from the working emulator.
+The separate `VirtualHardware` implementation now contains a reusable 6502-family processor boundary under `Components/Processors/Mos6502`. It exposes a 16-bit address bus, bidirectional 8-bit data bus, `R/W`, `SYNC`, `PHI2`, `/RESET`, `/IRQ`, `/NMI`, and `RDY` pins. Reset now executes as an explicit seven-cycle pin-driven sequence. IRQ and falling-edge-latched NMI entry perform observable stack writes and vector reads through the external buses, with hardware-interrupt status semantics and read-cycle-only `RDY` stalls. The processor has no RAM, ROM, motherboard, or NES-bus dependency. The executable subset intentionally remains small while the pin-level cycle engine is validated independently from the working emulator.
