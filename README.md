@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.34.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.35.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -39,12 +39,17 @@ Current highlights:
 
 ### VirtualHardware NES
 
+
+### Pin-driven NROM PPU memory (v0.35.0)
+
+The ROM factory now carries CHR data and cartridge mirroring into the selected motherboard. A new pin-driven PPU memory component exposes a fourteen-bit address bus, bidirectional data bus and active-low read/write strobes. It provides 8 KiB CHR ROM or CHR RAM, CIRAM with horizontal, vertical or four-screen wiring, palette RAM mirroring and write protection for cartridge CHR ROM. This is the electrical memory foundation that the RP2C02 fetch pipeline will consume in the next integration stage.
+
 ### Automatic ROM-to-motherboard selection (v0.34.0)
 
 The independent VirtualHardware launch path now parses iNES and NES 2.0 cartridge metadata, resolves `Auto`, `NTSC-U`, `NTSC-J`, or `PAL`, and constructs the corresponding physical motherboard profile. Selection priority is explicit override, reliable header timing, filename refinement/fallback, then NTSC-U. The motherboard never inspects ROM filenames or headers itself. Current launch validation intentionally accepts NROM mapper 0 only while later cartridge boards remain unwired.
 
 
-**Current development version: v0.34.0**
+**Current development version: v0.35.0**
 
 VirtualHardware is an independent electrical simulation. Components react only to power, clocks, pin levels, connected nets and their own internal state. The motherboard owns all wiring, and no execution is delegated to the playable emulator's CPU, PPU or APU classes.
 

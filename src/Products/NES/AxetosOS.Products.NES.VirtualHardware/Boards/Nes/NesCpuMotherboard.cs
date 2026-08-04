@@ -26,6 +26,15 @@ public sealed class NesCpuMotherboard
     public NesCpuMotherboard(
         ReadOnlySpan<byte> prgRom,
         NesHardwareRegion region = NesHardwareRegion.NtscNorthAmerica)
+        : this(prgRom, ReadOnlySpan<byte>.Empty, NesNametableMirroring.Horizontal, region)
+    {
+    }
+
+    public NesCpuMotherboard(
+        ReadOnlySpan<byte> prgRom,
+        ReadOnlySpan<byte> chrRom,
+        NesNametableMirroring mirroring,
+        NesHardwareRegion region = NesHardwareRegion.NtscNorthAmerica)
     {
         TimingProfile = NesHardwareTimingProfile.For(region);
         if (prgRom.Length > PrgRomSize)
@@ -68,6 +77,7 @@ public sealed class NesCpuMotherboard
         Analyzer = Board.Add(new Mos6502BusAnalyzer("nes.cpu-bus-analyzer"));
         ControllerIo = Board.Add(new NesControllerIoPackage("nes.controller-io"));
         PpuRegisters = Board.Add(new NesPpuRegisterPackage("nes.ppu-registers"));
+        PpuMemory = Board.Add(new NesPpuMemoryDevice("nes.ppu-memory", chrRom, mirroring));
         PpuTiming = Board.Add(new NesPpuTimingCore(
             "nes.ppu-timing",
             TimingProfile.DotsPerScanline,
@@ -110,6 +120,7 @@ public sealed class NesCpuMotherboard
     public Mos6502BusAnalyzer Analyzer { get; }
     public NesControllerIoPackage ControllerIo { get; }
     public NesPpuRegisterPackage PpuRegisters { get; }
+    public NesPpuMemoryDevice PpuMemory { get; }
     public NesPpuTimingCore PpuTiming { get; }
     public DigitalSignalSource PpuVblank { get; }
     public IReadOnlyList<DigitalSignalSource> Controller1Buttons { get; }

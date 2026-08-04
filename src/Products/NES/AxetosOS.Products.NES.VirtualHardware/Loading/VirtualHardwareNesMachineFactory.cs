@@ -40,7 +40,14 @@ public static class VirtualHardwareNesMachineFactory
         ArgumentNullException.ThrowIfNull(image);
         ValidateCurrentCartridgeSupport(image);
         var resolved = NesHardwareRegionResolver.Resolve(image, fileName, regionSelection);
-        var motherboard = new NesCpuMotherboard(image.PrgRom, resolved.Region);
+        var mirroring = image.Mirroring switch
+        {
+            VirtualHardwareNesMirroring.Horizontal => NesNametableMirroring.Horizontal,
+            VirtualHardwareNesMirroring.Vertical => NesNametableMirroring.Vertical,
+            VirtualHardwareNesMirroring.FourScreen => NesNametableMirroring.FourScreen,
+            _ => throw new InvalidOperationException($"Unknown mirroring mode {image.Mirroring}.")
+        };
+        var motherboard = new NesCpuMotherboard(image.PrgRom, image.ChrRom, mirroring, resolved.Region);
         return new VirtualHardwareNesMachine(image, resolved, motherboard);
     }
 
