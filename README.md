@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.39.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.43.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -482,3 +482,7 @@ all transfer data enters and leaves through the RP2A03 package pins.
 ### VirtualHardware v0.42.0
 
 The standalone RP2A03 now includes its four/five-step APU frame sequencer and both pulse-channel circuits (timer, duty sequencer, envelope, length counter, sweep, status and frame IRQ). These remain internal to the individual chip; no motherboard binding was added.
+
+### VirtualHardware v0.43.0 — standalone RP2A03 triangle and noise channels
+
+The standalone Ricoh `RP2A03` package now contains independent triangle and noise channel circuits. The triangle section implements the 32-step waveform sequencer, 11-bit timer, length counter, linear counter, control/reload behavior, and `$4008/$400A/$400B` register interface. The noise section implements the 15-bit linear-feedback shift register, long/short tap selection, NTSC period table, envelope, length counter, and `$400C/$400E/$400F` register interface. `$4015` now enables, disables, and reports all four completed non-DMC channels. Both circuits advance only from the chip's internal APU clocks and contribute to the package audio output without motherboard or device references.

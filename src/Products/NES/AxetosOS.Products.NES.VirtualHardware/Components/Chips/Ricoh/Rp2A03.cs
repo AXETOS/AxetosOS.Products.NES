@@ -76,6 +76,8 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     // Internal APU circuits of the standalone RP2A03 package.
     private readonly PulseChannel _pulse1 = new(onesComplementNegate: true);
     private readonly PulseChannel _pulse2 = new(onesComplementNegate: false);
+    private readonly TriangleChannel _triangle = new();
+    private readonly NoiseChannel _noise = new();
     private ulong _apuCpuCycles;
     private int _frameSequenceCycle;
     private bool _frameFiveStepMode;
@@ -157,6 +159,14 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     public ushort Pulse2TimerPeriod => _pulse2.TimerPeriod;
     public byte Pulse1LengthCounter => _pulse1.LengthCounter;
     public byte Pulse2LengthCounter => _pulse2.LengthCounter;
+    public byte TriangleOutputLevel => _triangle.Output;
+    public ushort TriangleTimerPeriod => _triangle.TimerPeriod;
+    public byte TriangleLengthCounter => _triangle.LengthCounter;
+    public byte TriangleLinearCounter => _triangle.LinearCounter;
+    public byte NoiseOutputLevel => _noise.Output;
+    public ushort NoiseTimerPeriod => _noise.TimerPeriod;
+    public byte NoiseLengthCounter => _noise.LengthCounter;
+    public ushort NoiseShiftRegister => _noise.ShiftRegister;
 
     public override void PowerOn()
     {
@@ -176,6 +186,8 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _controllerRead1Valid = _controllerRead2Valid = false;
         _pulse1.Reset();
         _pulse2.Reset();
+        _triangle.Reset();
+        _noise.Reset();
         _apuCpuCycles = 0;
         _frameSequenceCycle = 0;
         _frameFiveStepMode = false;
@@ -750,6 +762,8 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         {
             value = (byte)((_pulse1.LengthCounter > 0 ? 0x01 : 0) |
                            (_pulse2.LengthCounter > 0 ? 0x02 : 0) |
+                           (_triangle.LengthCounter > 0 ? 0x04 : 0) |
+                           (_noise.LengthCounter > 0 ? 0x08 : 0) |
                            (_frameIrqPending ? 0x40 : 0));
             _frameIrqPending = false;
             return true;
@@ -822,10 +836,36 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         {
             _pulse2.WriteRegister(_busAddress - 0x4004, _busWriteValue);
         }
+        else if (_busAddress == 0x4008)
+        {
+            _triangle.WriteControl(_busWriteValue);
+        }
+        else if (_busAddress == 0x400A)
+        {
+            _triangle.WriteTimerLow(_busWriteValue);
+        }
+        else if (_busAddress == 0x400B)
+        {
+            _triangle.WriteTimerHighAndLength(_busWriteValue);
+        }
+        else if (_busAddress == 0x400C)
+        {
+            _noise.WriteEnvelope(_busWriteValue);
+        }
+        else if (_busAddress == 0x400E)
+        {
+            _noise.WritePeriodAndMode(_busWriteValue);
+        }
+        else if (_busAddress == 0x400F)
+        {
+            _noise.WriteLength(_busWriteValue);
+        }
         else if (_busAddress == 0x4015)
         {
             _pulse1.SetEnabled((_busWriteValue & 0x01) != 0);
             _pulse2.SetEnabled((_busWriteValue & 0x02) != 0);
+            _triangle.SetEnabled((_busWriteValue & 0x04) != 0);
+            _noise.SetEnabled((_busWriteValue & 0x08) != 0);
         }
         else if (_busAddress == 0x4017)
         {
@@ -846,10 +886,12 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _apuCpuCycles++;
         _frameSequenceCycle++;
         _apuTimerPhase = !_apuTimerPhase;
+        _triangle.ClockTimer();
         if (_apuTimerPhase)
         {
             _pulse1.ClockTimer();
             _pulse2.ClockTimer();
+            _noise.ClockTimer();
         }
 
         if (_frameFiveStepMode)
@@ -889,7 +931,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             }
         }
 
-        _audioDacLevel = (byte)(_pulse1.Output + _pulse2.Output);
+        _audioDacLevel = (byte)(_pulse1.Output + _pulse2.Output + _triangle.Output + _noise.Output);
         AudioOut.Drive(_audioDacLevel == 0 ? DigitalLevel.Low : DigitalLevel.High);
     }
 
@@ -897,12 +939,16 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     {
         _pulse1.ClockEnvelope();
         _pulse2.ClockEnvelope();
+        _triangle.ClockLinearCounter();
+        _noise.ClockEnvelope();
     }
 
     private void ClockHalfFrame()
     {
         _pulse1.ClockLengthCounter();
         _pulse2.ClockLengthCounter();
+        _triangle.ClockLengthCounter();
+        _noise.ClockLengthCounter();
         _pulse1.ClockSweep();
         _pulse2.ClockSweep();
     }
@@ -1105,5 +1151,203 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             return (ushort)(TimerPeriod - change - (_onesComplementNegate ? 1 : 0));
         }
     }
+
+    private sealed class TriangleChannel
+    {
+        private static readonly byte[] LengthTable =
+        [
+            10, 254, 20, 2, 40, 4, 80, 6,
+            160, 8, 60, 10, 14, 12, 26, 14,
+            12, 16, 24, 18, 48, 20, 96, 22,
+            192, 24, 72, 26, 16, 28, 32, 30
+        ];
+
+        private static readonly byte[] Sequence =
+        [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+          0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+        private bool _enabled;
+        private bool _controlFlag;
+        private byte _linearReloadValue;
+        private bool _linearReloadFlag;
+        private ushort _timerCounter;
+        private byte _sequenceStep;
+
+        public ushort TimerPeriod { get; private set; }
+        public byte LengthCounter { get; private set; }
+        public byte LinearCounter { get; private set; }
+        public byte Output => _enabled && LengthCounter > 0 && LinearCounter > 0 && TimerPeriod > 1
+            ? Sequence[_sequenceStep]
+            : (byte)0;
+
+        public void Reset()
+        {
+            _enabled = false;
+            _controlFlag = false;
+            _linearReloadValue = 0;
+            _linearReloadFlag = false;
+            _timerCounter = 0;
+            _sequenceStep = 0;
+            TimerPeriod = 0;
+            LengthCounter = 0;
+            LinearCounter = 0;
+        }
+
+        public void SetEnabled(bool enabled)
+        {
+            _enabled = enabled;
+            if (!enabled) LengthCounter = 0;
+        }
+
+        public void WriteControl(byte value)
+        {
+            _controlFlag = (value & 0x80) != 0;
+            _linearReloadValue = (byte)(value & 0x7F);
+        }
+
+        public void WriteTimerLow(byte value) =>
+            TimerPeriod = (ushort)((TimerPeriod & 0x0700) | value);
+
+        public void WriteTimerHighAndLength(byte value)
+        {
+            TimerPeriod = (ushort)((TimerPeriod & 0x00FF) | ((value & 0x07) << 8));
+            if (_enabled) LengthCounter = LengthTable[value >> 3];
+            _linearReloadFlag = true;
+        }
+
+        public void ClockTimer()
+        {
+            if (_timerCounter == 0)
+            {
+                _timerCounter = TimerPeriod;
+                if (LengthCounter > 0 && LinearCounter > 0 && TimerPeriod > 1)
+                    _sequenceStep = (byte)((_sequenceStep + 1) & 0x1F);
+            }
+            else _timerCounter--;
+        }
+
+        public void ClockLinearCounter()
+        {
+            if (_linearReloadFlag) LinearCounter = _linearReloadValue;
+            else if (LinearCounter > 0) LinearCounter--;
+            if (!_controlFlag) _linearReloadFlag = false;
+        }
+
+        public void ClockLengthCounter()
+        {
+            if (!_controlFlag && LengthCounter > 0) LengthCounter--;
+        }
+    }
+
+    private sealed class NoiseChannel
+    {
+        private static readonly byte[] LengthTable =
+        [
+            10, 254, 20, 2, 40, 4, 80, 6,
+            160, 8, 60, 10, 14, 12, 26, 14,
+            12, 16, 24, 18, 48, 20, 96, 22,
+            192, 24, 72, 26, 16, 28, 32, 30
+        ];
+
+        private static readonly ushort[] PeriodTable =
+        [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068];
+
+        private bool _enabled;
+        private bool _lengthHalt;
+        private bool _constantVolume;
+        private byte _volume;
+        private bool _envelopeStart;
+        private byte _envelopeDivider;
+        private byte _envelopeDecay;
+        private bool _mode;
+        private ushort _timerCounter;
+
+        public ushort TimerPeriod { get; private set; }
+        public byte LengthCounter { get; private set; }
+        public ushort ShiftRegister { get; private set; }
+        public byte Output
+        {
+            get
+            {
+                if (!_enabled || LengthCounter == 0 || (ShiftRegister & 1) != 0) return 0;
+                return _constantVolume ? _volume : _envelopeDecay;
+            }
+        }
+
+        public void Reset()
+        {
+            _enabled = false;
+            _lengthHalt = _constantVolume = false;
+            _volume = 0;
+            _envelopeStart = false;
+            _envelopeDivider = _envelopeDecay = 0;
+            _mode = false;
+            _timerCounter = TimerPeriod = 0;
+            LengthCounter = 0;
+            ShiftRegister = 1;
+        }
+
+        public void SetEnabled(bool enabled)
+        {
+            _enabled = enabled;
+            if (!enabled) LengthCounter = 0;
+        }
+
+        public void WriteEnvelope(byte value)
+        {
+            _lengthHalt = (value & 0x20) != 0;
+            _constantVolume = (value & 0x10) != 0;
+            _volume = (byte)(value & 0x0F);
+        }
+
+        public void WritePeriodAndMode(byte value)
+        {
+            _mode = (value & 0x80) != 0;
+            TimerPeriod = PeriodTable[value & 0x0F];
+        }
+
+        public void WriteLength(byte value)
+        {
+            if (_enabled) LengthCounter = LengthTable[value >> 3];
+            _envelopeStart = true;
+        }
+
+        public void ClockTimer()
+        {
+            if (_timerCounter == 0)
+            {
+                _timerCounter = TimerPeriod;
+                var tap = _mode ? 6 : 1;
+                var feedback = (ushort)((ShiftRegister & 1) ^ ((ShiftRegister >> tap) & 1));
+                ShiftRegister = (ushort)((ShiftRegister >> 1) | (feedback << 14));
+            }
+            else _timerCounter--;
+        }
+
+        public void ClockEnvelope()
+        {
+            if (_envelopeStart)
+            {
+                _envelopeStart = false;
+                _envelopeDecay = 15;
+                _envelopeDivider = _volume;
+                return;
+            }
+            if (_envelopeDivider > 0)
+            {
+                _envelopeDivider--;
+                return;
+            }
+            _envelopeDivider = _volume;
+            if (_envelopeDecay > 0) _envelopeDecay--;
+            else if (_lengthHalt) _envelopeDecay = 15;
+        }
+
+        public void ClockLengthCounter()
+        {
+            if (!_lengthHalt && LengthCounter > 0) LengthCounter--;
+        }
+    }
+
 
 }
