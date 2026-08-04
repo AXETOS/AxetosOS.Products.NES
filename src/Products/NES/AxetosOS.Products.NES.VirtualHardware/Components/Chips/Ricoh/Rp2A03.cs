@@ -57,6 +57,21 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private ushort _pointerAddress;
     private byte _readModifyValue;
     private bool _nmiPending;
+    private ushort _busAddress;
+    private byte _busWriteValue;
+    private bool _busRead;
+    private bool _dmaPending;
+    private bool _dmaActive;
+    private bool _dmaReadPhase;
+    private byte _dmaPage;
+    private byte _dmaIndex;
+    private byte _dmaLatch;
+    private int _dmaDummyCycles;
+    private byte _controllerOutputLatch;
+    private byte _controllerRead1Latch;
+    private byte _controllerRead2Latch;
+    private bool _controllerRead1Valid;
+    private bool _controllerRead2Valid;
 
     public Rp2A03(string componentId) : base(componentId)
     {
@@ -119,6 +134,9 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     public ulong CompletedInstructionCount { get; private set; }
     public ulong CompletedInterruptCount { get; private set; }
     public ulong ReadyStallCount { get; private set; }
+    public bool DmaActive => _dmaActive || _dmaPending;
+    public ulong DmaTransferCount { get; private set; }
+    public byte ControllerOutputLatch => _controllerOutputLatch;
 
     public override void PowerOn()
     {
@@ -126,10 +144,16 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         Accumulator = X = Y = CurrentOpcode = 0; _lowByte = _operand = 0; _effectiveAddress = 0;
         _activeInterrupt = InterruptKind.None; _operation = Operation.None; _addressingMode = AddressingMode.None; _nmiPending = false;
         RisingEdgeCount = CompletedInstructionCount = CompletedInterruptCount = ReadyStallCount = 0;
+        DmaTransferCount = 0;
         MasterClockRisingEdgeCount = 0;
         _masterClockRisingEdges = 0;
         _m2Level = DigitalLevel.Low;
         _sync = false;
+        _busAddress = 0; _busWriteValue = 0; _busRead = true;
+        _dmaPending = _dmaActive = false; _dmaReadPhase = true; _dmaPage = _dmaIndex = _dmaLatch = 0; _dmaDummyCycles = 0;
+        _controllerOutputLatch = 0;
+        _controllerRead1Latch = _controllerRead2Latch = 0;
+        _controllerRead1Valid = _controllerRead2Valid = false;
         _previousClock = DigitalLevel.Low; _previousNmi = DigitalLevel.High;
         M2.Drive(DigitalLevel.Low);
         ControllerRead1Bar.Drive(DigitalLevel.High);
@@ -152,6 +176,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             return;
         }
 
+        SampleControllerInputs();
         SampleNmiEdge();
         var clock = MasterClock.SampledLevel;
         var masterRising = _previousClock == DigitalLevel.Low && clock == DigitalLevel.High;
@@ -196,6 +221,14 @@ public sealed class Rp2A03 : VirtualHardwareComponent
 
     private void ExecuteBusCycle()
     {
+        if (_dmaPending || _dmaActive)
+        {
+            ExecuteDmaCycle();
+            return;
+        }
+
+        ServiceInternalWriteCycle();
+
         switch (_state)
         {
             case CycleState.ResetDummyRead1: _state = CycleState.ResetDummyRead2; BeginRead(ProgramCounter); break;
@@ -616,8 +649,38 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     }
 
     private void BeginOpcodeFetch() { _operation = Operation.None; _addressingMode = AddressingMode.None; _state = CycleState.FetchOpcode; BeginRead(ProgramCounter, true); }
-    private void BeginRead(ushort address, bool sync = false) { Data.Release(); ReadWrite.Drive(DigitalLevel.High); _sync = sync; Address.Drive(address); }
-    private void BeginWrite(ushort address, byte value) { _sync = false; Address.Drive(address); Data.Drive(value); ReadWrite.Drive(DigitalLevel.Low); }
+    private void BeginRead(ushort address, bool sync = false)
+    {
+        Data.Release();
+        ReadWrite.Drive(DigitalLevel.High);
+        _sync = sync;
+        Address.Drive(address);
+        _busAddress = address;
+        _busRead = true;
+
+        // The RP2A03 controller output-enable pins are bus-cycle signals.
+        // Assert the selected line for the full $4016/$4017 read cycle so an
+        // external controller shift register has time to place its serial bit
+        // on IN0/IN1 before the CPU samples it.
+        var readController1 = address == 0x4016;
+        var readController2 = address == 0x4017;
+        if (readController1) _controllerRead1Valid = false;
+        if (readController2) _controllerRead2Valid = false;
+        ControllerRead1Bar.Drive(readController1 ? DigitalLevel.Low : DigitalLevel.High);
+        ControllerRead2Bar.Drive(readController2 ? DigitalLevel.Low : DigitalLevel.High);
+    }
+    private void BeginWrite(ushort address, byte value)
+    {
+        ControllerRead1Bar.Drive(DigitalLevel.High);
+        ControllerRead2Bar.Drive(DigitalLevel.High);
+        _sync = false;
+        Address.Drive(address);
+        Data.Drive(value);
+        ReadWrite.Drive(DigitalLevel.Low);
+        _busAddress = address;
+        _busWriteValue = value;
+        _busRead = false;
+    }
     private bool IsReadCycle() => ReadWrite.DriveLevel != DigitalLevel.Low;
     private ushort StackAddress => (ushort)(0x0100 | StackPointer);
     private ushort VectorAddress => _activeInterrupt == InterruptKind.Nmi ? (ushort)0xFFFA : (ushort)0xFFFE;
@@ -625,5 +688,132 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private bool IsFlagSet(byte flag) => (Status & flag) != 0;
     private void SetFlag(byte flag, bool set) { Status = set ? (byte)(Status | flag) : (byte)(Status & ~flag); Status |= UnusedFlag; }
     private void SetZeroAndNegativeFlags(byte value) { SetFlag(ZeroFlag, value == 0); SetFlag(NegativeFlag, (value & 0x80) != 0); }
-    private bool TrySampleData(out byte value) { if (Data.TrySample(out var raw)) { value = (byte)raw; return true; } value = 0; return false; }
+    private void SampleControllerInputs()
+    {
+        // /OE1 and /OE2 are asserted for the complete CPU read cycle.  Sample
+        // the corresponding package input during propagation settling and
+        // retain it until the CPU consumes the cycle.  This models the input
+        // latch inside the RP2A03 and avoids depending on component evaluation
+        // order at the exact M2 edge.
+        if (ControllerRead1Bar.DriveLevel == DigitalLevel.Low &&
+            ControllerData1.SampledLevel is DigitalLevel.Low or DigitalLevel.High)
+        {
+            _controllerRead1Latch = (byte)(ControllerData1.SampledLevel == DigitalLevel.High ? 1 : 0);
+            _controllerRead1Valid = true;
+        }
+
+        if (ControllerRead2Bar.DriveLevel == DigitalLevel.Low &&
+            ControllerData2.SampledLevel is DigitalLevel.Low or DigitalLevel.High)
+        {
+            _controllerRead2Latch = (byte)(ControllerData2.SampledLevel == DigitalLevel.High ? 1 : 0);
+            _controllerRead2Valid = true;
+        }
+    }
+
+    private bool TrySampleData(out byte value)
+    {
+        if (_busRead && _busAddress == 0x4016)
+        {
+            return TrySampleControllerInput(
+                ControllerData1,
+                ref _controllerRead1Latch,
+                ref _controllerRead1Valid,
+                out value);
+        }
+
+        if (_busRead && _busAddress == 0x4017)
+        {
+            return TrySampleControllerInput(
+                ControllerData2,
+                ref _controllerRead2Latch,
+                ref _controllerRead2Valid,
+                out value);
+        }
+
+        if (Data.TrySample(out var raw)) { value = (byte)raw; return true; }
+        value = 0;
+        return false;
+    }
+
+    private static bool TrySampleControllerInput(
+        DigitalPin input,
+        ref byte latchedValue,
+        ref bool latchedValueValid,
+        out byte value)
+    {
+        // IN0/IN1 are package inputs, not values supplied through the external
+        // CPU data bus.  At the completion of a $4016/$4017 read, sample the
+        // resolved input pin directly.  The retained value is only a fallback
+        // for a propagation pass where the pin is temporarily unresolved.
+        if (input.SampledLevel is DigitalLevel.Low or DigitalLevel.High)
+        {
+            latchedValue = (byte)(input.SampledLevel == DigitalLevel.High ? 1 : 0);
+            latchedValueValid = true;
+        }
+
+        value = latchedValue;
+        return latchedValueValid;
+    }
+
+    private void ServiceInternalWriteCycle()
+    {
+        if (_busRead) return;
+
+        if (_busAddress == 0x4016)
+        {
+            _controllerOutputLatch = (byte)(_busWriteValue & 0x07);
+            ControllerOut0.Drive((_controllerOutputLatch & 0x01) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+            ControllerOut1.Drive((_controllerOutputLatch & 0x02) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+            ControllerOut2.Drive((_controllerOutputLatch & 0x04) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+        }
+        else if (_busAddress == 0x4014)
+        {
+            _dmaPage = _busWriteValue;
+            _dmaPending = true;
+        }
+    }
+
+    private void ExecuteDmaCycle()
+    {
+        if (_dmaPending)
+        {
+            _dmaPending = false;
+            _dmaActive = true;
+            _dmaIndex = 0;
+            _dmaReadPhase = true;
+            _dmaDummyCycles = 1 + ((RisingEdgeCount & 1UL) != 0 ? 1 : 0);
+            BeginRead(ProgramCounter);
+            return;
+        }
+
+        if (_dmaDummyCycles > 0)
+        {
+            _dmaDummyCycles--;
+            if (_dmaDummyCycles == 0)
+            {
+                BeginRead((ushort)((_dmaPage << 8) | _dmaIndex));
+            }
+            return;
+        }
+
+        if (_dmaReadPhase)
+        {
+            if (!TrySampleData(out _dmaLatch)) return;
+            BeginWrite(0x2004, _dmaLatch);
+            _dmaReadPhase = false;
+            return;
+        }
+
+        DmaTransferCount++;
+        _dmaIndex++;
+        if (_dmaIndex == 0)
+        {
+            _dmaActive = false;
+            BeginOpcodeFetch();
+            return;
+        }
+
+        BeginRead((ushort)((_dmaPage << 8) | _dmaIndex));
+        _dmaReadPhase = true;
+    }
 }

@@ -467,3 +467,13 @@ This phase adds the physical package power, clock, CPU bus, interrupt, controlle
 the NTSC divide-by-12 M2 clock path; and the integrated 6502-derived execution section. The chip
 has no motherboard, RAM, PPU, cartridge or renderer references. APU and controller-register internals
 remain subsequent work on this same individual chip.
+
+
+### VirtualHardware v0.41.0 — standalone RP2A03 controller I/O and OAM DMA
+
+The standalone Ricoh RP2A03 package now implements its own internal `$4016` controller output register,
+controller input reads through `IN0`/`IN1` with the corresponding `/OE1` and `/OE2` package strobes,
+and the `$4014` OAM-DMA controller. DMA electrically owns the external CPU address/data bus for the
+alignment cycle and 256 alternating source reads and `$2004` writes, then returns execution to the CPU
+section. No motherboard, PPU, RAM, cartridge, controller device or renderer is referenced by the chip;
+all transfer data enters and leaves through the RP2A03 package pins.
