@@ -2,6 +2,7 @@ using AxetosOS.Products.NES.VirtualHardware.Components.Clock;
 using AxetosOS.Products.NES.VirtualHardware.Components.Instrumentation;
 using AxetosOS.Products.NES.VirtualHardware.Components.Logic;
 using AxetosOS.Products.NES.VirtualHardware.Components.Memory;
+using AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Components.Power;
 using AxetosOS.Products.NES.VirtualHardware.Components.Processors.Mos6502;
 using AxetosOS.Products.NES.VirtualHardware.Components.Reset;
@@ -54,6 +55,9 @@ public sealed class NesCpuMotherboard
         NmiHigh = Board.Add(new DigitalPowerRail("nes.nmi-pullup", DigitalLevel.High));
         ReadyHigh = Board.Add(new DigitalPowerRail("nes.ready-pullup", DigitalLevel.High));
         Analyzer = Board.Add(new Mos6502BusAnalyzer("nes.cpu-bus-analyzer"));
+        ControllerIo = Board.Add(new NesControllerIoPackage("nes.controller-io"));
+        Controller1Buttons = CreateControllerSources("nes.controller1");
+        Controller2Buttons = CreateControllerSources("nes.controller2");
 
         WireControlSignals();
         WireAddressBus();
@@ -77,6 +81,9 @@ public sealed class NesCpuMotherboard
     public DigitalPowerRail NmiHigh { get; }
     public DigitalPowerRail ReadyHigh { get; }
     public Mos6502BusAnalyzer Analyzer { get; }
+    public NesControllerIoPackage ControllerIo { get; }
+    public IReadOnlyList<DigitalSignalSource> Controller1Buttons { get; }
+    public IReadOnlyList<DigitalSignalSource> Controller2Buttons { get; }
 
     public void PowerOn()
     {
@@ -102,6 +109,23 @@ public sealed class NesCpuMotherboard
         AdvanceHalfCycle();
     }
 
+    public void SetControllerButtons(int port, byte buttons)
+    {
+        var sources = port switch
+        {
+            1 => Controller1Buttons,
+            2 => Controller2Buttons,
+            _ => throw new ArgumentOutOfRangeException(nameof(port), "Controller port must be 1 or 2.")
+        };
+
+        for (var bit = 0; bit < 8; bit++)
+        {
+            sources[bit].Set((buttons & (1 << bit)) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+        }
+
+        Simulator.Settle();
+    }
+
     public void RunUntilHalted(int maximumCycles = 100_000)
     {
         for (var cycle = 0; cycle < maximumCycles && !Cpu.IsHalted; cycle++)
@@ -115,6 +139,23 @@ public sealed class NesCpuMotherboard
         }
     }
 
+
+    private IReadOnlyList<DigitalSignalSource> CreateControllerSources(string prefix)
+    {
+        var sources = new DigitalSignalSource[8];
+        for (var bit = 0; bit < sources.Length; bit++)
+        {
+            var source = Board.Add(new DigitalSignalSource($"{prefix}.button{bit}", DigitalLevel.Low));
+            sources[bit] = source;
+            var target = prefix.EndsWith("1", StringComparison.Ordinal)
+                ? ControllerIo.Controller1.Pins[bit]
+                : ControllerIo.Controller2.Pins[bit];
+            Board.Connect($"{prefix}.B{bit}", source.Output, target);
+        }
+
+        return sources;
+    }
+
     private void WireControlSignals()
     {
         Board.Connect("VCC", Vcc.Output, ResetCircuit.Vcc);
@@ -124,7 +165,7 @@ public sealed class NesCpuMotherboard
         Board.Connect("/IRQ", IrqHigh.Output, Cpu.IrqBar);
         Board.Connect("/NMI", NmiHigh.Output, Cpu.NmiBar);
         Board.Connect("RDY", ReadyHigh.Output, Cpu.Ready);
-        Board.Connect("R/W", Cpu.ReadWrite, WorkRam.WriteEnableBar, ReadInverter.Input, Analyzer.ReadWrite);
+        Board.Connect("R/W", Cpu.ReadWrite, WorkRam.WriteEnableBar, ReadInverter.Input, Analyzer.ReadWrite, ControllerIo.ReadWrite);
         Board.Connect("/READ", ReadInverter.Output, WorkRam.OutputEnableBar, PrgRom.OutputEnableBar);
         Board.Connect("SYNC", Cpu.Sync, Analyzer.Sync);
 
@@ -144,7 +185,7 @@ public sealed class NesCpuMotherboard
     {
         for (var bit = 0; bit < 16; bit++)
         {
-            Board.Connect($"A{bit}", Cpu.Address.Pins[bit], Analyzer.Address.Pins[bit]);
+            Board.Connect($"A{bit}", Cpu.Address.Pins[bit], Analyzer.Address.Pins[bit], ControllerIo.Address.Pins[bit]);
         }
 
         for (var bit = 0; bit < 11; bit++)
@@ -162,7 +203,7 @@ public sealed class NesCpuMotherboard
     {
         for (var bit = 0; bit < 8; bit++)
         {
-            Board.Connect($"D{bit}", Cpu.Data.Pins[bit], WorkRam.Data.Pins[bit], PrgRom.Data.Pins[bit], Analyzer.Data.Pins[bit]);
+            Board.Connect($"D{bit}", Cpu.Data.Pins[bit], WorkRam.Data.Pins[bit], PrgRom.Data.Pins[bit], Analyzer.Data.Pins[bit], ControllerIo.Data.Pins[bit]);
         }
     }
 }
