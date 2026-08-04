@@ -251,6 +251,12 @@ public sealed class NesCpuMotherboard
         Board.Connect("PPU_FORCE_VBLANK", PpuVblank.Output, PpuTiming.ForceVblank);
         Board.Connect("PPU_VBLANK", PpuTiming.Vblank, PpuRegisters.Vblank);
         Board.Connect("PPU_DOT_TICK", PpuTiming.DotTick, PpuRegisters.DotTick);
+        Board.Connect("PPU_/RD", PpuRegisters.PpuReadBar, PpuMemory.ReadBar);
+        Board.Connect("PPU_/WR", PpuRegisters.PpuWriteBar, PpuMemory.WriteBar);
+        for (var bit = 0; bit < 14; bit++)
+            Board.Connect($"PPU_A{bit}", PpuRegisters.PpuAddress.Pins[bit], PpuMemory.Address.Pins[bit]);
+        for (var bit = 0; bit < 8; bit++)
+            Board.Connect($"PPU_D{bit}", PpuRegisters.PpuData.Pins[bit], PpuMemory.Data.Pins[bit]);
         Board.Connect("PPU_OAM_DMA_WRITE", OamDma.OamWrite, PpuRegisters.DmaWrite);
         for (var bit = 0; bit < 8; bit++)
         {

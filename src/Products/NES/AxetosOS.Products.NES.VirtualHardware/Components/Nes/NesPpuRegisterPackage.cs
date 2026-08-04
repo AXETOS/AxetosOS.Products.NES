@@ -57,6 +57,16 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         Pixel = new DigitalBus($"{componentId}.PIXEL", pixelPins);
         PixelValid = AddPin("PIXEL_VALID", PinDirection.Output);
         DotTick = AddPin("DOT_TICK", PinDirection.Input);
+
+        var ppuAddressPins = new DigitalPin[14];
+        for (var bit = 0; bit < 14; bit++) ppuAddressPins[bit] = AddPin($"PPU_A{bit}", PinDirection.Output);
+        PpuAddress = new DigitalBus($"{componentId}.PPU_A", ppuAddressPins);
+        var ppuDataPins = new DigitalPin[8];
+        for (var bit = 0; bit < 8; bit++) ppuDataPins[bit] = AddPin($"PPU_D{bit}", PinDirection.Bidirectional);
+        PpuData = new DigitalBus($"{componentId}.PPU_D", ppuDataPins);
+        PpuReadBar = AddPin("PPU_/RD", PinDirection.Output);
+        PpuWriteBar = AddPin("PPU_/WR", PinDirection.Output);
+
         var dmaDataPins = new DigitalPin[8];
         for (var bit = 0; bit < 8; bit++) dmaDataPins[bit] = AddPin($"DMA_D{bit}", PinDirection.Input);
         DmaData = new DigitalBus($"{componentId}.DMA_D", dmaDataPins);
@@ -73,6 +83,10 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     public DigitalBus Pixel { get; }
     public DigitalPin PixelValid { get; }
     public DigitalPin DotTick { get; }
+    public DigitalBus PpuAddress { get; }
+    public DigitalBus PpuData { get; }
+    public DigitalPin PpuReadBar { get; }
+    public DigitalPin PpuWriteBar { get; }
     public DigitalBus DmaData { get; }
     public DigitalPin DmaWrite { get; }
 
@@ -93,6 +107,8 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     public ulong SpriteZeroHitCount { get; private set; }
     public ulong SpriteOverflowCount { get; private set; }
     public ulong DmaWriteCount { get; private set; }
+    public ulong ExternalPpuReadCount { get; private set; }
+    public ulong ExternalPpuWriteCount { get; private set; }
     public bool SpriteZeroHit => _spriteZeroHit;
     public bool SpriteOverflow => _spriteOverflow;
     public int SecondarySpriteCount => _secondarySpriteCount;
@@ -154,6 +170,8 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         SpriteZeroHitCount = 0;
         SpriteOverflowCount = 0;
         DmaWriteCount = 0;
+        ExternalPpuReadCount = 0;
+        ExternalPpuWriteCount = 0;
         _secondarySpriteCount = 0;
         _spriteZeroHit = false;
         _spriteOverflow = false;
@@ -164,6 +182,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         NmiEnable.Drive(DigitalLevel.Low);
         Pixel.Drive(0);
         PixelValid.Drive(DigitalLevel.Low);
+        EndExternalPpuTransaction();
     }
 
     public override void Reset()
@@ -171,6 +190,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         _transactionActive = false;
         _writeToggle = false;
         Data.Release();
+        EndExternalPpuTransaction();
     }
 
     public override void Evaluate()
@@ -444,6 +464,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
             case 7: // PPUDATA
             {
                 var address = (ushort)(VramAddress & 0x3FFF);
+                BeginExternalPpuRead(address);
                 var value = _vram[address];
                 byte result;
                 if (address >= 0x3F00)
@@ -505,6 +526,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
                 _writeToggle = !_writeToggle;
                 break;
             case 7: // PPUDATA
+                BeginExternalPpuWrite((ushort)(VramAddress & 0x3FFF), value);
                 _vram[VramAddress & 0x3FFF] = value;
                 _readBuffer = value;
                 IncrementVramAddress();
@@ -518,9 +540,36 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     private readonly record struct SpriteSample(byte Color, bool Opaque, bool BehindBackground, bool SpriteZero);
     private readonly record struct SpriteEntry(byte Y, byte Tile, byte Attributes, byte X, int OriginalIndex);
 
+    private void BeginExternalPpuRead(ushort address)
+    {
+        PpuAddress.Drive((ulong)(address & 0x3FFF));
+        PpuData.Release();
+        PpuWriteBar.Drive(DigitalLevel.High);
+        PpuReadBar.Drive(DigitalLevel.Low);
+        ExternalPpuReadCount++;
+    }
+
+    private void BeginExternalPpuWrite(ushort address, byte value)
+    {
+        PpuAddress.Drive((ulong)(address & 0x3FFF));
+        PpuData.Drive(value);
+        PpuReadBar.Drive(DigitalLevel.High);
+        PpuWriteBar.Drive(DigitalLevel.Low);
+        ExternalPpuWriteCount++;
+    }
+
+    private void EndExternalPpuTransaction()
+    {
+        PpuReadBar.Drive(DigitalLevel.High);
+        PpuWriteBar.Drive(DigitalLevel.High);
+        PpuAddress.Release();
+        PpuData.Release();
+    }
+
     private void EndTransaction()
     {
         _transactionActive = false;
         Data.Release();
+        EndExternalPpuTransaction();
     }
 }
