@@ -313,6 +313,7 @@ The motherboard topology now includes the physical console-facing boundary: cont
 ## New pin-driven virtual hardware implementation
 
 The validated emulator remains available as the working reference machine. A separate `AxetosOS.Products.NES.VirtualHardware` project now begins the true hardware-composition implementation.
+- v0.26.0 adds a pin-wired NES CPU motherboard slice, NES RAM/PRG mapping and passive CPU-bus analysis.
 - v0.25.0 expands the pin-driven MOS 6502 with indexed/indirect addressing, RMW cycles, shifts/rotates, BIT and RTI.
 
 The new implementation starts below the NES level. Components communicate only through pins and resolved electrical nets. The first foundation includes digital levels, high-impedance outputs, weak and strong drivers, contention detection, power and ground rails, pull resistors, logic components, explicit board wiring, and a propagation-settling simulator.
@@ -336,6 +337,11 @@ The demonstration processor drives address, data and read/write pins, samples me
 ### Pin-driven 6502-family processor foundation
 
 The separate `VirtualHardware` implementation now contains a reusable 6502-family processor boundary under `Components/Processors/Mos6502`. It exposes a 16-bit address bus, bidirectional 8-bit data bus, `R/W`, `SYNC`, `PHI2`, `/RESET`, `/IRQ`, `/NMI`, and `RDY` pins. Reset now executes as an explicit seven-cycle pin-driven sequence. IRQ and falling-edge-latched NMI entry perform observable stack writes and vector reads through the external buses, with hardware-interrupt status semantics and read-cycle-only `RDY` stalls. The processor has no RAM, ROM, motherboard, or NES-bus dependency. The executable subset intentionally remains small while the pin-level cycle engine is validated independently from the working emulator.
+
+
+### VirtualHardware NES CPU motherboard slice (v0.26.0)
+
+Version 0.26.0 moves the independent hardware simulator beyond isolated CPU fixtures. A reusable `NesCpuMotherboard` now composes the pin-driven MOS 6502, NTSC CPU oscillator, power-on reset circuit, control-line pull-ups, 2 KiB static work RAM, 32 KiB PRG ROM, address decoders and read-control inverter entirely through motherboard-owned nets. The board reproduces the NES internal RAM mirrors at `$0000-$1FFF` by leaving RAM address pins A11 and A12 physically unconnected, and supports NROM-128 16 KiB PRG mirroring into both `$8000-$BFFF` and `$C000-$FFFF` banks. A passive `Mos6502BusAnalyzer` observes resolved address, data, R/W, SYNC and PHI2 pins without direct component references and records external bus cycles for diagnostics and future compatibility comparison.
 
 ### VirtualHardware MOS 6502 execution core (v0.25.0)
 
