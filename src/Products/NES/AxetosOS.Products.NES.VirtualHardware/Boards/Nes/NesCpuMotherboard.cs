@@ -56,6 +56,8 @@ public sealed class NesCpuMotherboard
         ReadyHigh = Board.Add(new DigitalPowerRail("nes.ready-pullup", DigitalLevel.High));
         Analyzer = Board.Add(new Mos6502BusAnalyzer("nes.cpu-bus-analyzer"));
         ControllerIo = Board.Add(new NesControllerIoPackage("nes.controller-io"));
+        PpuRegisters = Board.Add(new NesPpuRegisterPackage("nes.ppu-registers"));
+        PpuVblank = Board.Add(new DigitalSignalSource("nes.ppu-vblank", DigitalLevel.Low));
         Controller1Buttons = CreateControllerSources("nes.controller1");
         Controller2Buttons = CreateControllerSources("nes.controller2");
 
@@ -82,6 +84,8 @@ public sealed class NesCpuMotherboard
     public DigitalPowerRail ReadyHigh { get; }
     public Mos6502BusAnalyzer Analyzer { get; }
     public NesControllerIoPackage ControllerIo { get; }
+    public NesPpuRegisterPackage PpuRegisters { get; }
+    public DigitalSignalSource PpuVblank { get; }
     public IReadOnlyList<DigitalSignalSource> Controller1Buttons { get; }
     public IReadOnlyList<DigitalSignalSource> Controller2Buttons { get; }
 
@@ -107,6 +111,12 @@ public sealed class NesCpuMotherboard
     {
         AdvanceHalfCycle();
         AdvanceHalfCycle();
+    }
+
+    public void SetPpuVblank(bool active)
+    {
+        PpuVblank.Set(active ? DigitalLevel.High : DigitalLevel.Low);
+        Simulator.Settle();
     }
 
     public void SetControllerButtons(int port, byte buttons)
@@ -165,9 +175,10 @@ public sealed class NesCpuMotherboard
         Board.Connect("/IRQ", IrqHigh.Output, Cpu.IrqBar);
         Board.Connect("/NMI", NmiHigh.Output, Cpu.NmiBar);
         Board.Connect("RDY", ReadyHigh.Output, Cpu.Ready);
-        Board.Connect("R/W", Cpu.ReadWrite, WorkRam.WriteEnableBar, ReadInverter.Input, Analyzer.ReadWrite, ControllerIo.ReadWrite);
+        Board.Connect("R/W", Cpu.ReadWrite, WorkRam.WriteEnableBar, ReadInverter.Input, Analyzer.ReadWrite, ControllerIo.ReadWrite, PpuRegisters.ReadWrite);
         Board.Connect("/READ", ReadInverter.Output, WorkRam.OutputEnableBar, PrgRom.OutputEnableBar);
         Board.Connect("SYNC", Cpu.Sync, Analyzer.Sync);
+        Board.Connect("PPU_VBLANK", PpuVblank.Output, PpuRegisters.Vblank);
 
         // A15 selects the cartridge PRG region at $8000-$FFFF.
         Board.Connect("A15", PrgDecoder.Address.Pins[0]);
@@ -185,7 +196,7 @@ public sealed class NesCpuMotherboard
     {
         for (var bit = 0; bit < 16; bit++)
         {
-            Board.Connect($"A{bit}", Cpu.Address.Pins[bit], Analyzer.Address.Pins[bit], ControllerIo.Address.Pins[bit]);
+            Board.Connect($"A{bit}", Cpu.Address.Pins[bit], Analyzer.Address.Pins[bit], ControllerIo.Address.Pins[bit], PpuRegisters.Address.Pins[bit]);
         }
 
         for (var bit = 0; bit < 11; bit++)
@@ -203,7 +214,7 @@ public sealed class NesCpuMotherboard
     {
         for (var bit = 0; bit < 8; bit++)
         {
-            Board.Connect($"D{bit}", Cpu.Data.Pins[bit], WorkRam.Data.Pins[bit], PrgRom.Data.Pins[bit], Analyzer.Data.Pins[bit], ControllerIo.Data.Pins[bit]);
+            Board.Connect($"D{bit}", Cpu.Data.Pins[bit], WorkRam.Data.Pins[bit], PrgRom.Data.Pins[bit], Analyzer.Data.Pins[bit], ControllerIo.Data.Pins[bit], PpuRegisters.Data.Pins[bit]);
         }
     }
 }

@@ -350,3 +350,8 @@ The independent pin-driven MOS 6502 now includes a reusable execution core built
 ## v0.27.0 VirtualHardware controller I/O slice
 
 The independent pin-driven motherboard now includes an NES controller I/O package connected directly to the CPU address, data and R/W nets. Writes to `$4016` control the shared strobe, while reads from `$4016` and `$4017` shift the two independent eight-button registers in NES order: A, B, Select, Start, Up, Down, Left and Right. External button sources affect the package only through pins, and every controller access remains visible to the passive CPU bus analyzer.
+
+
+## v0.28.0 VirtualHardware PPU register interface
+
+The independent pin-wired NES motherboard now includes the CPU-facing RP2C02 register interface at $2000-$3FFF, including eight-register mirroring, PPUCTRL/PPUMASK, PPUSTATUS vblank clearing, OAMADDR/OAMDATA, PPUSCROLL/PPUADDR write-latch behavior, buffered PPUDATA reads, palette immediate reads, and 1/32 VRAM address increments. The component observes only bus pins and an external vblank signal; rendering remains outside this milestone.
