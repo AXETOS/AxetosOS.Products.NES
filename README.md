@@ -458,3 +458,12 @@ The RP2C02 is now being decomposed into explicit pin-connected internal hardware
 - `Rp2C02BusSequencer`: CPU/render request arbitration and external PPU address/data/read/write bus sequencing.
 
 These components contain no cartridge, CIRAM, palette or framebuffer arrays. They communicate only through pins and resolved nets. Integration into the complete RP2C02 package follows in subsequent milestones.
+
+
+### VirtualHardware v0.40.0 — standalone RP2A03 package, phase 1
+
+The Ricoh RP2A03 now exists as its own standalone chip package under `Components/Chips/Ricoh`.
+This phase adds the physical package power, clock, CPU bus, interrupt, controller and audio pins;
+the NTSC divide-by-12 M2 clock path; and the integrated 6502-derived execution section. The chip
+has no motherboard, RAM, PPU, cartridge or renderer references. APU and controller-register internals
+remain subsequent work on this same individual chip.
