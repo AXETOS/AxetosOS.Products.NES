@@ -16,6 +16,7 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
     public const int PreRenderScanline = 261;
 
     private bool _clockWasHigh;
+    private bool _dotTickHigh;
     private bool _vblank;
 
     public NesPpuTimingCore(string componentId) : base(componentId)
@@ -25,6 +26,16 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
         ForceVblank = AddPin("FORCE_VBLANK", PinDirection.Input);
         Vblank = AddPin("VBLANK", PinDirection.Output);
         NmiBar = AddPin("/NMI", PinDirection.Output);
+        DotTick = AddPin("DOT_TICK", PinDirection.Output);
+        var scanlinePins = new DigitalPin[9];
+        var dotPins = new DigitalPin[9];
+        for (var bit = 0; bit < 9; bit++)
+        {
+            scanlinePins[bit] = AddPin($"SCANLINE{bit}", PinDirection.Output);
+            dotPins[bit] = AddPin($"DOT{bit}", PinDirection.Output);
+        }
+        ScanlineBus = new DigitalBus($"{componentId}.SCANLINE", scanlinePins);
+        DotBus = new DigitalBus($"{componentId}.DOT", dotPins);
     }
 
     public DigitalPin Clock { get; }
@@ -32,6 +43,9 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
     public DigitalPin ForceVblank { get; }
     public DigitalPin Vblank { get; }
     public DigitalPin NmiBar { get; }
+    public DigitalPin DotTick { get; }
+    public DigitalBus ScanlineBus { get; }
+    public DigitalBus DotBus { get; }
 
     public int Scanline { get; private set; }
     public int Dot { get; private set; }
@@ -45,6 +59,8 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
         Frame = 0;
         _vblank = false;
         _clockWasHigh = false;
+        _dotTickHigh = false;
+        DotTick.Drive(DigitalLevel.Low);
         DriveOutputs();
     }
 
@@ -64,6 +80,8 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
 
     private void AdvanceDot()
     {
+        _dotTickHigh = !_dotTickHigh;
+        DotTick.Drive(_dotTickHigh ? DigitalLevel.High : DigitalLevel.Low);
         Dot++;
         if (Dot >= DotsPerScanline)
         {
@@ -88,6 +106,8 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
 
     private void DriveOutputs()
     {
+        ScanlineBus.Drive((ulong)Scanline);
+        DotBus.Drive((ulong)Dot);
         var active = IsVblank;
         Vblank.Drive(active ? DigitalLevel.High : DigitalLevel.Low);
 

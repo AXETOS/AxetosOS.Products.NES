@@ -1,18 +1,23 @@
 # AxetosOS Products / NES
 
-[![Status](https://img.shields.io/badge/status-playable-brightgreen)](#project-status)
-[![Version](https://img.shields.io/badge/version-v0.23.0-blue)](#project-status)
+[![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
+[![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.30.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-> A modular, cycle-driven NES hardware emulator implemented as a native AxetosOS product.
-
-- Cycle-accurate PPU background fetch pipeline with nametable, attribute, pattern-plane, shift-register, coarse/fine scroll, and prefetch behavior.
+> This repository contains two NES implementations: the established playable emulator and a new independent VirtualHardware implementation that reconstructs the machine from electrically connected, reusable components.
 
 ## Project status
 
-The project is currently at **v0.23.0**. Supported cartridge images run in an AxetosOS-owned native desktop window with keyboard input, PCM audio, automatic console timing selection and live performance diagnostics.
+The repository now has two separately versioned development tracks. The playable emulator remains the stable reference implementation while VirtualHardware advances independently toward a complete pin-driven NES.
+
+### Playable NES emulator
+
+**Current stable version: v0.23.0**
+
+Supported cartridge images run in an AxetosOS-owned native desktop window with keyboard input, PCM audio, automatic console timing selection and live performance diagnostics. This implementation remains intact and acts as the working compatibility oracle for the independent hardware simulation.
 
 Current highlights:
 
@@ -31,6 +36,25 @@ Current highlights:
 - headless diagnostics, framebuffer export and WAV export;
 - native ROM selection dialog;
 - automated hardware and compatibility tests.
+
+### VirtualHardware NES
+
+**Current development version: v0.30.0**
+
+VirtualHardware is an independent electrical simulation. Components react only to power, clocks, pin levels, connected nets and their own internal state. The motherboard owns all wiring, and no execution is delegated to the playable emulator's CPU, PPU or APU classes.
+
+Current foundation:
+
+- digital pins, nets, drive strengths, contention, buses, rails and pull resistors;
+- reusable logic, memory, clock, reset and instrumentation components;
+- pin-driven MOS 6502 with official opcode decoding, interrupts, stack cycles and external bus traffic;
+- NES CPU motherboard slice with mirrored work RAM and NROM PRG mapping;
+- pin-driven controller I/O at `$4016/$4017`;
+- CPU-facing RP2C02 register interface, VRAM, OAM and buffered PPUDATA behavior;
+- clocked NTSC PPU timing, vblank and open-drain NMI generation;
+- first background-rendering pipeline with nametable, attribute, pattern-plane, palette, scrolling and pixel-output behavior.
+
+VirtualHardware is not yet a replacement for the playable emulator. It is the active hardware-reconstruction track and will eventually produce a complete NES through component behavior and motherboard wiring alone.
 
 ## Run
 
@@ -352,11 +376,16 @@ The independent pin-driven MOS 6502 now includes a reusable execution core built
 The independent pin-driven motherboard now includes an NES controller I/O package connected directly to the CPU address, data and R/W nets. Writes to `$4016` control the shared strobe, while reads from `$4016` and `$4017` shift the two independent eight-button registers in NES order: A, B, Select, Start, Up, Down, Left and Right. External button sources affect the package only through pins, and every controller access remains visible to the passive CPU bus analyzer.
 
 
-## v0.29.0 VirtualHardware PPU register interface
+## v0.30.0 VirtualHardware PPU register interface
 
 The independent pin-wired NES motherboard now includes the CPU-facing RP2C02 register interface at $2000-$3FFF, including eight-register mirroring, PPUCTRL/PPUMASK, PPUSTATUS vblank clearing, OAMADDR/OAMDATA, PPUSCROLL/PPUADDR write-latch behavior, buffered PPUDATA reads, palette immediate reads, and 1/32 VRAM address increments. The component observes only bus pins and an external vblank signal; rendering remains outside this milestone.
 
 
-### VirtualHardware v0.29.0 — clocked PPU timing and NMI foundation
+### VirtualHardware v0.30.0 — clocked PPU timing and NMI foundation
 
 The independent pin-driven motherboard now includes an NTSC RP2C02 timing core. It advances at three PPU cycles per CPU cycle, tracks all 341 dots across 262 scanlines, raises vblank at scanline 241 dot 1, and clears it at pre-render scanline 261 dot 1. `PPUCTRL` bit 7 is exported as an electrical NMI-enable signal. During vblank the PPU pulls the shared open-drain `/NMI` line low; otherwise the motherboard resistor pulls it high. The existing external vblank source remains available as a diagnostic force input and no legacy PPU implementation is invoked.
+
+
+## v0.30.0 VirtualHardware background pipeline
+
+The independent RP2C02 model now consumes clocked scanline and dot pins to fetch nametable, attribute, pattern and palette data, shifts out visible background pixels, and records a 256x240 inspection framebuffer without calling the legacy emulator PPU.

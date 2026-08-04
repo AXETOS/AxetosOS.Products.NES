@@ -214,6 +214,12 @@ public sealed class NesCpuMotherboard
         Board.Connect("PPU_NMI_ENABLE", PpuRegisters.NmiEnable, PpuTiming.NmiEnable);
         Board.Connect("PPU_FORCE_VBLANK", PpuVblank.Output, PpuTiming.ForceVblank);
         Board.Connect("PPU_VBLANK", PpuTiming.Vblank, PpuRegisters.Vblank);
+        Board.Connect("PPU_DOT_TICK", PpuTiming.DotTick, PpuRegisters.DotTick);
+        for (var bit = 0; bit < 9; bit++)
+        {
+            Board.Connect($"PPU_SCANLINE{bit}", PpuTiming.ScanlineBus.Pins[bit], PpuRegisters.Scanline.Pins[bit]);
+            Board.Connect($"PPU_DOT{bit}", PpuTiming.DotBus.Pins[bit], PpuRegisters.Dot.Pins[bit]);
+        }
 
         // A15 selects the cartridge PRG region at $8000-$FFFF.
         Board.Connect("A15", PrgDecoder.Address.Pins[0]);
