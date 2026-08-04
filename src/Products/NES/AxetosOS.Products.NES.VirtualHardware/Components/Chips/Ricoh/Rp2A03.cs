@@ -73,6 +73,17 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private bool _controllerRead1Valid;
     private bool _controllerRead2Valid;
 
+    // Internal APU circuits of the standalone RP2A03 package.
+    private readonly PulseChannel _pulse1 = new(onesComplementNegate: true);
+    private readonly PulseChannel _pulse2 = new(onesComplementNegate: false);
+    private ulong _apuCpuCycles;
+    private int _frameSequenceCycle;
+    private bool _frameFiveStepMode;
+    private bool _frameIrqInhibit;
+    private bool _frameIrqPending;
+    private bool _apuTimerPhase;
+    private byte _audioDacLevel;
+
     public Rp2A03(string componentId) : base(componentId)
     {
         Vcc = AddPin("VCC", PinDirection.Input);
@@ -137,6 +148,15 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     public bool DmaActive => _dmaActive || _dmaPending;
     public ulong DmaTransferCount { get; private set; }
     public byte ControllerOutputLatch => _controllerOutputLatch;
+    public ulong ApuCpuCycleCount => _apuCpuCycles;
+    public bool FrameIrqPending => _frameIrqPending;
+    public byte AudioDacLevel => _audioDacLevel;
+    public byte Pulse1OutputLevel => _pulse1.Output;
+    public byte Pulse2OutputLevel => _pulse2.Output;
+    public ushort Pulse1TimerPeriod => _pulse1.TimerPeriod;
+    public ushort Pulse2TimerPeriod => _pulse2.TimerPeriod;
+    public byte Pulse1LengthCounter => _pulse1.LengthCounter;
+    public byte Pulse2LengthCounter => _pulse2.LengthCounter;
 
     public override void PowerOn()
     {
@@ -154,6 +174,15 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _controllerOutputLatch = 0;
         _controllerRead1Latch = _controllerRead2Latch = 0;
         _controllerRead1Valid = _controllerRead2Valid = false;
+        _pulse1.Reset();
+        _pulse2.Reset();
+        _apuCpuCycles = 0;
+        _frameSequenceCycle = 0;
+        _frameFiveStepMode = false;
+        _frameIrqInhibit = false;
+        _frameIrqPending = false;
+        _apuTimerPhase = false;
+        _audioDacLevel = 0;
         _previousClock = DigitalLevel.Low; _previousNmi = DigitalLevel.High;
         M2.Drive(DigitalLevel.Low);
         ControllerRead1Bar.Drive(DigitalLevel.High);
@@ -199,6 +228,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         }
 
         RisingEdgeCount++;
+        ClockApuCpuCycle();
         ExecuteBusCycle();
     }
 
@@ -639,7 +669,11 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private bool TryBeginPendingInterrupt()
     {
         if (_nmiPending) { _nmiPending = false; BeginInterrupt(InterruptKind.Nmi); return true; }
-        if (IrqBar.SampledLevel == DigitalLevel.Low && !InterruptDisable) { BeginInterrupt(InterruptKind.Irq); return true; }
+        if ((IrqBar.SampledLevel == DigitalLevel.Low || _frameIrqPending) && !InterruptDisable)
+        {
+            BeginInterrupt(InterruptKind.Irq);
+            return true;
+        }
         return false;
     }
 
@@ -712,6 +746,15 @@ public sealed class Rp2A03 : VirtualHardwareComponent
 
     private bool TrySampleData(out byte value)
     {
+        if (_busRead && _busAddress == 0x4015)
+        {
+            value = (byte)((_pulse1.LengthCounter > 0 ? 0x01 : 0) |
+                           (_pulse2.LengthCounter > 0 ? 0x02 : 0) |
+                           (_frameIrqPending ? 0x40 : 0));
+            _frameIrqPending = false;
+            return true;
+        }
+
         if (_busRead && _busAddress == 0x4016)
         {
             return TrySampleControllerInput(
@@ -771,6 +814,97 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             _dmaPage = _busWriteValue;
             _dmaPending = true;
         }
+        else if (_busAddress is >= 0x4000 and <= 0x4003)
+        {
+            _pulse1.WriteRegister(_busAddress - 0x4000, _busWriteValue);
+        }
+        else if (_busAddress is >= 0x4004 and <= 0x4007)
+        {
+            _pulse2.WriteRegister(_busAddress - 0x4004, _busWriteValue);
+        }
+        else if (_busAddress == 0x4015)
+        {
+            _pulse1.SetEnabled((_busWriteValue & 0x01) != 0);
+            _pulse2.SetEnabled((_busWriteValue & 0x02) != 0);
+        }
+        else if (_busAddress == 0x4017)
+        {
+            _frameFiveStepMode = (_busWriteValue & 0x80) != 0;
+            _frameIrqInhibit = (_busWriteValue & 0x40) != 0;
+            if (_frameIrqInhibit) _frameIrqPending = false;
+            _frameSequenceCycle = 0;
+            if (_frameFiveStepMode)
+            {
+                ClockQuarterFrame();
+                ClockHalfFrame();
+            }
+        }
+    }
+
+    private void ClockApuCpuCycle()
+    {
+        _apuCpuCycles++;
+        _frameSequenceCycle++;
+        _apuTimerPhase = !_apuTimerPhase;
+        if (_apuTimerPhase)
+        {
+            _pulse1.ClockTimer();
+            _pulse2.ClockTimer();
+        }
+
+        if (_frameFiveStepMode)
+        {
+            switch (_frameSequenceCycle)
+            {
+                case 7457:
+                case 22371:
+                    ClockQuarterFrame();
+                    break;
+                case 14913:
+                case 37281:
+                    ClockQuarterFrame();
+                    ClockHalfFrame();
+                    if (_frameSequenceCycle == 37281) _frameSequenceCycle = 0;
+                    break;
+            }
+        }
+        else
+        {
+            switch (_frameSequenceCycle)
+            {
+                case 7457:
+                case 22371:
+                    ClockQuarterFrame();
+                    break;
+                case 14913:
+                    ClockQuarterFrame();
+                    ClockHalfFrame();
+                    break;
+                case 29829:
+                    ClockQuarterFrame();
+                    ClockHalfFrame();
+                    if (!_frameIrqInhibit) _frameIrqPending = true;
+                    _frameSequenceCycle = 0;
+                    break;
+            }
+        }
+
+        _audioDacLevel = (byte)(_pulse1.Output + _pulse2.Output);
+        AudioOut.Drive(_audioDacLevel == 0 ? DigitalLevel.Low : DigitalLevel.High);
+    }
+
+    private void ClockQuarterFrame()
+    {
+        _pulse1.ClockEnvelope();
+        _pulse2.ClockEnvelope();
+    }
+
+    private void ClockHalfFrame()
+    {
+        _pulse1.ClockLengthCounter();
+        _pulse2.ClockLengthCounter();
+        _pulse1.ClockSweep();
+        _pulse2.ClockSweep();
     }
 
     private void ExecuteDmaCycle()
@@ -816,4 +950,160 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         BeginRead((ushort)((_dmaPage << 8) | _dmaIndex));
         _dmaReadPhase = true;
     }
+
+    private sealed class PulseChannel
+    {
+        private static readonly byte[] LengthTable =
+        [
+            10, 254, 20, 2, 40, 4, 80, 6,
+            160, 8, 60, 10, 14, 12, 26, 14,
+            12, 16, 24, 18, 48, 20, 96, 22,
+            192, 24, 72, 26, 16, 28, 32, 30
+        ];
+
+        private static readonly byte[,] DutyTable =
+        {
+            { 0, 1, 0, 0, 0, 0, 0, 0 },
+            { 0, 1, 1, 0, 0, 0, 0, 0 },
+            { 0, 1, 1, 1, 1, 0, 0, 0 },
+            { 1, 0, 0, 1, 1, 1, 1, 1 }
+        };
+
+        private readonly bool _onesComplementNegate;
+        private bool _enabled;
+        private byte _duty;
+        private byte _sequenceStep;
+        private bool _lengthHalt;
+        private bool _constantVolume;
+        private byte _volume;
+        private bool _envelopeStart;
+        private byte _envelopeDivider;
+        private byte _envelopeDecay;
+        private bool _sweepEnabled;
+        private byte _sweepPeriod;
+        private bool _sweepNegate;
+        private byte _sweepShift;
+        private bool _sweepReload;
+        private byte _sweepDivider;
+        private ushort _timerCounter;
+
+        public PulseChannel(bool onesComplementNegate) => _onesComplementNegate = onesComplementNegate;
+        public ushort TimerPeriod { get; private set; }
+        public byte LengthCounter { get; private set; }
+        public byte Output
+        {
+            get
+            {
+                if (!_enabled || LengthCounter == 0 || TimerPeriod < 8 || IsSweepMuted()) return 0;
+                if (DutyTable[_duty, _sequenceStep] == 0) return 0;
+                return _constantVolume ? _volume : _envelopeDecay;
+            }
+        }
+
+        public void Reset()
+        {
+            _enabled = false;
+            _duty = _sequenceStep = 0;
+            _lengthHalt = _constantVolume = false;
+            _volume = 0;
+            _envelopeStart = false;
+            _envelopeDivider = _envelopeDecay = 0;
+            _sweepEnabled = _sweepNegate = _sweepReload = false;
+            _sweepPeriod = _sweepShift = _sweepDivider = 0;
+            _timerCounter = TimerPeriod = 0;
+            LengthCounter = 0;
+        }
+
+        public void SetEnabled(bool enabled)
+        {
+            _enabled = enabled;
+            if (!enabled) LengthCounter = 0;
+        }
+
+        public void WriteRegister(int register, byte value)
+        {
+            switch (register)
+            {
+                case 0:
+                    _duty = (byte)((value >> 6) & 0x03);
+                    _lengthHalt = (value & 0x20) != 0;
+                    _constantVolume = (value & 0x10) != 0;
+                    _volume = (byte)(value & 0x0F);
+                    break;
+                case 1:
+                    _sweepEnabled = (value & 0x80) != 0;
+                    _sweepPeriod = (byte)((value >> 4) & 0x07);
+                    _sweepNegate = (value & 0x08) != 0;
+                    _sweepShift = (byte)(value & 0x07);
+                    _sweepReload = true;
+                    break;
+                case 2:
+                    TimerPeriod = (ushort)((TimerPeriod & 0x0700) | value);
+                    break;
+                case 3:
+                    TimerPeriod = (ushort)((TimerPeriod & 0x00FF) | ((value & 0x07) << 8));
+                    if (_enabled) LengthCounter = LengthTable[value >> 3];
+                    _sequenceStep = 0;
+                    _envelopeStart = true;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(register));
+            }
+        }
+
+        public void ClockTimer()
+        {
+            if (_timerCounter == 0)
+            {
+                _timerCounter = TimerPeriod;
+                _sequenceStep = (byte)((_sequenceStep + 1) & 0x07);
+            }
+            else _timerCounter--;
+        }
+
+        public void ClockEnvelope()
+        {
+            if (_envelopeStart)
+            {
+                _envelopeStart = false;
+                _envelopeDecay = 15;
+                _envelopeDivider = _volume;
+                return;
+            }
+            if (_envelopeDivider > 0)
+            {
+                _envelopeDivider--;
+                return;
+            }
+            _envelopeDivider = _volume;
+            if (_envelopeDecay > 0) _envelopeDecay--;
+            else if (_lengthHalt) _envelopeDecay = 15;
+        }
+
+        public void ClockLengthCounter()
+        {
+            if (!_lengthHalt && LengthCounter > 0) LengthCounter--;
+        }
+
+        public void ClockSweep()
+        {
+            if (_sweepDivider == 0 && _sweepEnabled && _sweepShift > 0 && !IsSweepMuted())
+                TimerPeriod = SweepTarget();
+            if (_sweepDivider == 0 || _sweepReload)
+            {
+                _sweepDivider = _sweepPeriod;
+                _sweepReload = false;
+            }
+            else _sweepDivider--;
+        }
+
+        private bool IsSweepMuted() => TimerPeriod < 8 || SweepTarget() > 0x07FF;
+        private ushort SweepTarget()
+        {
+            var change = TimerPeriod >> _sweepShift;
+            if (!_sweepNegate) return (ushort)(TimerPeriod + change);
+            return (ushort)(TimerPeriod - change - (_onesComplementNegate ? 1 : 0));
+        }
+    }
+
 }

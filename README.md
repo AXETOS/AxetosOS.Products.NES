@@ -469,7 +469,7 @@ has no motherboard, RAM, PPU, cartridge or renderer references. APU and controll
 remain subsequent work on this same individual chip.
 
 
-### VirtualHardware v0.41.0 — standalone RP2A03 controller I/O and OAM DMA
+### VirtualHardware v0.42.0 — standalone RP2A03 controller I/O and OAM DMA
 
 The standalone Ricoh RP2A03 package now implements its own internal `$4016` controller output register,
 controller input reads through `IN0`/`IN1` with the corresponding `/OE1` and `/OE2` package strobes,
@@ -477,3 +477,8 @@ and the `$4014` OAM-DMA controller. DMA electrically owns the external CPU addre
 alignment cycle and 256 alternating source reads and `$2004` writes, then returns execution to the CPU
 section. No motherboard, PPU, RAM, cartridge, controller device or renderer is referenced by the chip;
 all transfer data enters and leaves through the RP2A03 package pins.
+
+
+### VirtualHardware v0.42.0
+
+The standalone RP2A03 now includes its four/five-step APU frame sequencer and both pulse-channel circuits (timer, duty sequencer, envelope, length counter, sweep, status and frame IRQ). These remain internal to the individual chip; no motherboard binding was added.
