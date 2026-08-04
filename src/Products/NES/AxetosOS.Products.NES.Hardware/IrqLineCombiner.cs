@@ -12,6 +12,9 @@ public sealed class IrqLineCombiner
         _output = output ?? throw new ArgumentNullException(nameof(output));
     }
 
+    public int SourceCount => _states.Count;
+    public bool IsAsserted => _asserted;
+
     public Action<bool> CreateSource()
     {
         var index = _states.Count;

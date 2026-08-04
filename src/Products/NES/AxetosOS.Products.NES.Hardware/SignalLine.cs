@@ -4,6 +4,8 @@ namespace AxetosOS.Products.NES.Hardware;
 
 public sealed class SignalLine : ISignalLine
 {
+    public SignalLine(bool initiallyAsserted = false) => IsAsserted = initiallyAsserted;
+
     public bool IsAsserted { get; private set; }
     public event Action? Asserted;
     public event Action? Released;

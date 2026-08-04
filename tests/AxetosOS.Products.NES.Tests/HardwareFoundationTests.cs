@@ -82,6 +82,62 @@ public sealed class HardwareFoundationTests
     }
 
     [Fact]
+    public void CpuDefersStoreBusWriteUntilTheFinalInstructionCycle()
+    {
+        var memory = new RecordingCpuMemory();
+        memory.Bytes[0xFFFC] = 0x00;
+        memory.Bytes[0xFFFD] = 0x80;
+        memory.Bytes[0x8000] = 0xA9; // LDA #$42
+        memory.Bytes[0x8001] = 0x42;
+        memory.Bytes[0x8002] = 0x8D; // STA $0002
+        memory.Bytes[0x8003] = 0x02;
+        memory.Bytes[0x8004] = 0x00;
+        var bus = new CpuBus();
+        bus.Attach(memory);
+        var cpu = new Rp2A03Cpu(bus);
+        cpu.PowerOn();
+
+        for (var cycle = 0; cycle < 9; cycle++) cpu.Clock(); // reset + LDA
+        cpu.Clock(); // STA opcode fetch
+        cpu.Clock(); // STA cycle 2
+        cpu.Clock(); // STA cycle 3
+
+        Assert.Empty(memory.WritesTo(0x0002));
+
+        cpu.Clock(); // STA cycle 4: actual bus write
+
+        Assert.Equal(new byte[] { 0x42 }, memory.WritesTo(0x0002));
+    }
+
+    [Fact]
+    public void CpuDefersMemoryMappedReadUntilTheFinalInstructionCycle()
+    {
+        var memory = new RecordingCpuMemory();
+        memory.Bytes[0xFFFC] = 0x00;
+        memory.Bytes[0xFFFD] = 0x80;
+        memory.Bytes[0x8000] = 0xAD; // LDA $2002
+        memory.Bytes[0x8001] = 0x02;
+        memory.Bytes[0x8002] = 0x20;
+        memory.Bytes[0x2002] = 0x80;
+        var bus = new CpuBus();
+        bus.Attach(memory);
+        var cpu = new Rp2A03Cpu(bus);
+        cpu.PowerOn();
+
+        for (var cycle = 0; cycle < 7; cycle++) cpu.Clock();
+        cpu.Clock(); // opcode fetch
+        cpu.Clock(); // cycle 2
+        cpu.Clock(); // cycle 3
+
+        Assert.Empty(memory.ReadsFrom(0x2002));
+
+        cpu.Clock(); // cycle 4: memory-mapped read
+
+        Assert.Single(memory.ReadsFrom(0x2002));
+        Assert.Equal(0x80, cpu.Accumulator);
+    }
+
+    [Fact]
     public void MasterClockRunsCpuAtOneThirdOfPpuRate()
     {
         var cpu = new CountingClockedModule();
@@ -97,6 +153,65 @@ public sealed class HardwareFoundationTests
         Assert.Equal(4UL, clock.CpuCycles);
         Assert.Equal(12, ppu.ClockCount);
         Assert.Equal(4, cpu.ClockCount);
+    }
+
+
+    [Theory]
+    [InlineData(NesTimingMode.Ntsc)]
+    [InlineData(NesTimingMode.Pal)]
+    [InlineData(NesTimingMode.Dendy)]
+    public void OptimizedPpuTickMatchesRawMasterClockStepping(NesTimingMode mode)
+    {
+        var timing = NesTimingProfile.For(mode);
+        var fastCpu = new CountingClockedModule();
+        var fastPpu = new CountingClockedModule();
+        var fastApu = new CountingClockedModule();
+        var referenceCpu = new CountingClockedModule();
+        var referencePpu = new CountingClockedModule();
+        var referenceApu = new CountingClockedModule();
+        var fast = new NesMasterClock(fastCpu, fastPpu, fastApu, timing);
+        var reference = new NesMasterClock(referenceCpu, referencePpu, referenceApu, timing);
+
+        for (var ppuTick = 0; ppuTick < 10_000; ppuTick++)
+        {
+            fast.Tick();
+            var targetPpuCycles = reference.PpuCycles + 1;
+            while (reference.PpuCycles < targetPpuCycles)
+            {
+                reference.TickMaster();
+            }
+
+            Assert.Equal(reference.MasterCycles, fast.MasterCycles);
+            Assert.Equal(reference.PpuCycles, fast.PpuCycles);
+            Assert.Equal(reference.CpuCycles, fast.CpuCycles);
+            Assert.Equal(reference.PpuMasterPhase, fast.PpuMasterPhase);
+            Assert.Equal(reference.CpuMasterPhase, fast.CpuMasterPhase);
+        }
+
+        Assert.Equal(referenceCpu.ClockCount, fastCpu.ClockCount);
+        Assert.Equal(referencePpu.ClockCount, fastPpu.ClockCount);
+        Assert.Equal(referenceApu.ClockCount, fastApu.ClockCount);
+    }
+
+
+    [Fact]
+    public void MasterClockCanAdvanceExactlyOnePpuFrame()
+    {
+        var timing = NesTimingProfile.For(NesTimingMode.Ntsc);
+        var cpu = new CountingClockedModule();
+        var ppuBus = new PpuBus();
+        var ppu = new Rp2C02Ppu(ppuBus, new SignalLine(), timing);
+        ppu.PowerOn();
+        var clock = new NesMasterClock(cpu, ppu, timing: timing);
+        var startingFrame = ppu.Frame;
+        var startingPpuCycles = clock.PpuCycles;
+        var startingCpuCycles = clock.CpuCycles;
+
+        clock.TickFrame(ppu);
+
+        Assert.Equal(startingFrame + 1, ppu.Frame);
+        Assert.True(clock.PpuCycles > startingPpuCycles);
+        Assert.True(clock.CpuCycles > startingCpuCycles);
     }
 
 
@@ -470,6 +585,45 @@ public sealed class HardwareFoundationTests
         Assert.False(nmi.IsAsserted);
     }
 
+
+    [Fact]
+    public void NtscPpuSkipsOneClockOnOddRenderedFrames()
+    {
+        var (ppu, _, _) = CreatePpu(NesTimingProfile.For(NesTimingMode.Ntsc));
+        ppu.CpuWrite(0x2001, 0x18);
+
+        var evenFrameClocks = ClockUntilFrameCompleted(ppu);
+        var oddFrameClocks = ClockUntilFrameCompleted(ppu);
+
+        Assert.Equal(262 * 341, evenFrameClocks);
+        Assert.Equal((262 * 341) - 1, oddFrameClocks);
+    }
+
+    [Fact]
+    public void NtscPpuKeepsFullOddFrameWhenRenderingIsDisabled()
+    {
+        var (ppu, _, _) = CreatePpu(NesTimingProfile.For(NesTimingMode.Ntsc));
+
+        var evenFrameClocks = ClockUntilFrameCompleted(ppu);
+        var oddFrameClocks = ClockUntilFrameCompleted(ppu);
+
+        Assert.Equal(262 * 341, evenFrameClocks);
+        Assert.Equal(262 * 341, oddFrameClocks);
+    }
+
+    [Fact]
+    public void PalPpuDoesNotUseTheNtscOddFrameSkip()
+    {
+        var (ppu, _, _) = CreatePpu(NesTimingProfile.For(NesTimingMode.Pal));
+        ppu.CpuWrite(0x2001, 0x18);
+
+        var firstFrameClocks = ClockUntilFrameCompleted(ppu);
+        var secondFrameClocks = ClockUntilFrameCompleted(ppu);
+
+        Assert.Equal(312 * 341, firstFrameClocks);
+        Assert.Equal(312 * 341, secondFrameClocks);
+    }
+
     [Fact]
     public void PpuCompletesAFrameAndProducesFramebufferPixels()
     {
@@ -516,7 +670,9 @@ public sealed class HardwareFoundationTests
         ppu.PowerOn();
         ppu.CpuWrite(0x2001, 0x0A);
 
-        for (var i = 0; i < 9; i++)
+        // The hardware background pipeline is primed during the pre-render
+        // scanline. Advance through the initial frame, then render the first tile.
+        for (var i = 0; i < (262 * 341) + 9; i++)
         {
             ppu.Clock();
         }
@@ -548,9 +704,10 @@ public sealed class HardwareFoundationTests
         ppu.CpuWrite(0x2000, 0x10);
         ppu.CpuWrite(0x2001, 0x0A);
 
-        ppu.Clock();
-        ppu.Clock();
-        ppu.Clock();
+        for (var i = 0; i < (262 * 341) + 3; i++)
+        {
+            ppu.Clock();
+        }
 
         Assert.NotEqual(ppu.Framebuffer[0], ppu.Framebuffer[1]);
     }
@@ -581,17 +738,28 @@ public sealed class HardwareFoundationTests
 
         cpuBus.Write(0x4014, 0x02);
 
-        Assert.Equal(0x00, ppu.ReadOamByte(0xFE));
-        Assert.Equal(0x01, ppu.ReadOamByte(0xFF));
-        Assert.Equal(0x02, ppu.ReadOamByte(0x00));
-        Assert.Equal(1UL, dma.Transfers);
+        Assert.True(dma.TransferActive);
+        Assert.Equal(0, dma.BytesTransferred);
         Assert.Equal(0x02, dma.LastPage);
+        Assert.Equal(0UL, dma.Transfers);
 
-        for (var cycle = 0; cycle < 513; cycle++)
+        for (var cycle = 0; cycle < 512; cycle++)
         {
             cpu.Clock();
         }
 
+        Assert.True(dma.TransferActive);
+        Assert.Equal(255, dma.BytesTransferred);
+        Assert.Equal(0UL, dma.Transfers);
+
+        cpu.Clock();
+
+        Assert.False(dma.TransferActive);
+        Assert.Equal(256, dma.BytesTransferred);
+        Assert.Equal(0x00, ppu.ReadOamByte(0xFE));
+        Assert.Equal(0x01, ppu.ReadOamByte(0xFF));
+        Assert.Equal(0x02, ppu.ReadOamByte(0x00));
+        Assert.Equal(1UL, dma.Transfers);
         Assert.Equal(0UL, cpu.InstructionsExecuted);
     }
 
@@ -628,13 +796,180 @@ public sealed class HardwareFoundationTests
         ppu.CpuWrite(0x2004, 0x00);
         ppu.CpuWrite(0x2001, 0x1E);
 
-        for (var cycle = 0; cycle < 343; cycle++)
+        for (var cycle = 0; cycle < (262 * 341) + 343; cycle++)
         {
             ppu.Clock();
         }
 
         Assert.True((ppu.Status & 0x40) != 0);
         Assert.NotEqual(0U, ppu.Framebuffer[0]);
+    }
+
+    [Fact]
+    public void PpuCanEnableSpritesAfterScanlinePreparationAndStillSetSpriteZeroHit()
+    {
+        var image = CreateNromImage(16 * 1024);
+        for (var row = 0; row < 8; row++)
+        {
+            image.ChrRom[16 + row] = 0xFF; // background tile 1
+            image.ChrRom[32 + row] = 0xFF; // sprite tile 2
+        }
+
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+        // Keep the entire background tile area opaque. The PPU has already advanced
+        // its scrolling address by the time scanline 1 is rendered, so initializing
+        // only $2000 makes this test depend on an unrelated coarse-X position.
+        for (var address = 0x2000; address < 0x3000; address++)
+        {
+            bus.Write((ushort)address, 1);
+        }
+
+        var ppu = new Rp2C02Ppu(bus, new SignalLine());
+        ppu.PowerOn();
+        ppu.CpuWrite(0x2003, 0x00);
+        ppu.CpuWrite(0x2004, 0x00); // visible from scanline 1
+        ppu.CpuWrite(0x2004, 0x02);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2004, 0x10);
+        ppu.CpuWrite(0x2001, 0x0A); // background enabled, sprites disabled
+
+        for (var cycle = 0; cycle < (262 * 341) + 343; cycle++)
+        {
+            ppu.Clock();
+        }
+
+        // Scanline 1, dot 1 has now prepared the sprite cache while sprites are off.
+        // Enabling them before X=16 must allow the normal pixel-time mask gating and
+        // sprite-zero hit detection to proceed.
+        for (var cycle = 0; cycle < 10; cycle++)
+        {
+            ppu.Clock();
+        }
+        ppu.CpuWrite(0x2001, 0x1E);
+        for (var cycle = 0; cycle < 16; cycle++)
+        {
+            ppu.Clock();
+        }
+
+        Assert.True((ppu.Status & 0x40) != 0);
+    }
+
+    [Fact]
+    public void PpuDiagnosticTraceReportsSpriteZeroOverlapInputs()
+    {
+        var image = CreateNromImage(16 * 1024);
+        for (var row = 0; row < 8; row++)
+        {
+            image.ChrRom[16 + row] = 0xFF;
+            image.ChrRom[32 + row] = 0xFF;
+        }
+
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+        // Prime every nametable tile with the opaque background tile. The cycle-accurate
+        // background pipeline fetches ahead during pre-render and advances coarse X, so
+        // a single tile at $2000 is not sufficient for a deterministic overlap trace.
+        for (var address = 0x2000; address < 0x3000; address++)
+        {
+            bus.Write((ushort)address, 1);
+        }
+
+        var ppu = new Rp2C02Ppu(bus, new SignalLine()) { DiagnosticsTraceEnabled = true };
+        SpriteZeroEvaluationTraceEvent? evaluation = null;
+        ppu.SpriteZeroEvaluated += evt => evaluation = evt;
+        ppu.PowerOn();
+        ppu.CpuWrite(0x2003, 0x00);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2004, 0x02);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2001, 0x1E);
+
+        // Run until the second frame has completed sprite-zero evaluation for
+        // scanline 1. A fixed frame-plus-two-dot count only reached dot 2 of the
+        // second scanline and therefore asserted against the unprimed first frame.
+        var safetyCycles = 2 * 262 * 341;
+        while ((ppu.Frame < 1 || ppu.Scanline < 1 || ppu.Dot <= 257) && safetyCycles-- > 0)
+        {
+            ppu.Clock();
+        }
+
+        Assert.True(safetyCycles > 0);
+        Assert.NotNull(evaluation);
+        Assert.True(evaluation!.SelectedForScanline);
+        Assert.Equal(1, evaluation.Scanline);
+        Assert.Equal(0xFF, evaluation.SpriteOpaqueMask);
+        Assert.Equal(0xFF, evaluation.BackgroundOpaqueMask);
+        Assert.Equal(0xFF, evaluation.OverlapMask);
+        Assert.Equal("hit-possible", evaluation.RejectionReason);
+    }
+
+    [Fact]
+    public void PpuDiagnosticTraceReportsOamWritesAndSpriteZeroSelection()
+    {
+        var image = CreateNromImage(16 * 1024);
+        for (var row = 0; row < 8; row++)
+        {
+            image.ChrRom[16 + row] = 0xFF;
+        }
+
+        var bus = new PpuBus();
+        var chr = new NromChrMemory(image);
+        var ciram = new CiramNametableRam(image.Mirroring);
+        var palette = new PpuPaletteRam();
+        chr.PowerOn();
+        ciram.PowerOn();
+        palette.PowerOn();
+        bus.Attach(chr);
+        bus.Attach(ciram);
+        bus.Attach(palette);
+
+        var ppu = new Rp2C02Ppu(bus, new SignalLine()) { DiagnosticsTraceEnabled = true };
+        var oamWrites = new List<OamWriteTraceEvent>();
+        SpriteScanlineSelectionTraceEvent? selection = null;
+        ppu.OamWritten += oamWrites.Add;
+        ppu.SpriteScanlineSelected += evt => selection = evt;
+        ppu.PowerOn();
+
+        ppu.CpuWrite(0x2003, 0x00);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2004, 0x01);
+        ppu.CpuWrite(0x2004, 0x00);
+        ppu.CpuWrite(0x2004, 0x10);
+        ppu.CpuWrite(0x2001, 0x10);
+
+        for (var cycle = 0; cycle < 343; cycle++)
+        {
+            ppu.Clock();
+        }
+
+        Assert.Equal(5, oamWrites.Count);
+        Assert.Equal("address", oamWrites[0].Source);
+        Assert.Equal("cpu", oamWrites[1].Source);
+        Assert.Equal((byte)0x00, oamWrites[1].Address);
+        Assert.Equal((byte)0x00, oamWrites[1].Value);
+        Assert.NotNull(selection);
+        Assert.True(selection!.SpriteZeroOnScanline);
+        Assert.True(selection.SpriteZeroSelected);
+        Assert.Equal(0, selection.SpriteZeroSelectionSlot);
+        Assert.Equal((byte)0x10, selection.OamX);
     }
 
     [Fact]
@@ -801,6 +1136,49 @@ public sealed class HardwareFoundationTests
     }
 
     [Fact]
+    public void PpuDoesNotRewindTilesWhenPrefetchWasDisabled()
+    {
+        var (ppu, _, _) = CreatePpu();
+        ppu.CpuWrite(0x2006, 0x20);
+        ppu.CpuWrite(0x2006, 0x00);
+
+        // Rendering remains disabled, so dots 328 and 336 perform no prefetch
+        // coarse-X increments. The next scanline must therefore start at the
+        // exact current address rather than being rewound by two tiles.
+        for (var cycle = 0; cycle < 343; cycle++)
+        {
+            ppu.Clock();
+        }
+
+        Assert.Equal((ushort)0x2000, ppu.ActiveScanlineVramAddress);
+    }
+
+    [Fact]
+    public void PpuAddressWriteAfterPrefetchCancelsPendingRewind()
+    {
+        var (ppu, _, _) = CreatePpu();
+        ppu.CpuWrite(0x2001, 0x08);
+
+        // Reach dot 337 after both next-scanline prefetch increments.
+        for (var cycle = 0; cycle < 338; cycle++)
+        {
+            ppu.Clock();
+        }
+
+        ppu.CpuWrite(0x2006, 0x23);
+        ppu.CpuWrite(0x2006, 0x45);
+
+        // Finish the scanline and latch the next visible scanline. The explicit
+        // $2006 address replaced v, so stale prefetch increments must not be undone.
+        for (var cycle = 0; cycle < 5; cycle++)
+        {
+            ppu.Clock();
+        }
+
+        Assert.Equal((ushort)0x2345, ppu.ActiveScanlineVramAddress);
+    }
+
+    [Fact]
     public void PpuAddressWritesCopyTemporaryAddressIntoCurrentAddress()
     {
         var (ppu, _, _) = CreatePpu();
@@ -826,6 +1204,24 @@ public sealed class HardwareFoundationTests
         var bits = Enumerable.Range(0, 8).Select(_ => controllers.CpuRead(0x4016) & 1).ToArray();
         Assert.Equal(new[] { 1, 0, 0, 1, 0, 0, 0, 1 }, bits);
         Assert.Equal(1, controllers.CpuRead(0x4016) & 1);
+    }
+
+    [Fact]
+    public void ControllerReadsPreserveTheNormalNesOpenBusHighBits()
+    {
+        var input = new MutableNesControllerInput();
+        var controllers = new NesControllerPorts(input);
+        controllers.PowerOn();
+
+        controllers.CpuWrite(0x4016, 1);
+        controllers.CpuWrite(0x4016, 0);
+        Assert.Equal(0x40, controllers.CpuRead(0x4016));
+
+        input.SetButtons(0, NesButtons.A);
+        controllers.CpuWrite(0x4016, 1);
+        Assert.Equal(0x41, controllers.CpuRead(0x4016));
+        controllers.CpuWrite(0x4016, 0);
+        Assert.Equal(0x41, controllers.CpuRead(0x4016));
     }
 
     [Fact]
@@ -1069,7 +1465,20 @@ public sealed class HardwareFoundationTests
         Assert.True(apu.DmcBytesRemaining > 0 || fetchStalls > 4);
     }
 
-    private static (Rp2C02Ppu Ppu, PpuBus Bus, SignalLine Nmi) CreatePpu()
+    private static int ClockUntilFrameCompleted(Rp2C02Ppu ppu)
+    {
+        var clocks = 0;
+        do
+        {
+            ppu.Clock();
+            clocks++;
+        }
+        while (!ppu.FrameCompleted);
+
+        return clocks;
+    }
+
+    private static (Rp2C02Ppu Ppu, PpuBus Bus, SignalLine Nmi) CreatePpu(NesTimingProfile? timing = null)
     {
         var image = CreateNromImage(16 * 1024);
         var bus = new PpuBus();
@@ -1083,7 +1492,7 @@ public sealed class HardwareFoundationTests
         bus.Attach(ciram);
         bus.Attach(palette);
         var nmi = new SignalLine();
-        var ppu = new Rp2C02Ppu(bus, nmi);
+        var ppu = new Rp2C02Ppu(bus, nmi, timing);
         ppu.PowerOn();
         return (ppu, bus, nmi);
     }
@@ -1235,6 +1644,74 @@ public sealed class HardwareFoundationTests
         WriteMmc1Register(mmc1, 0x8000, 0x0E);
 
         Assert.Equal(NametableMirroring.Vertical, mmc1.Mirroring);
+    }
+
+    [Fact]
+    public void Mmc1IgnoresSecondRegisterWriteFromSameCpuCycle()
+    {
+        var prg = new byte[4 * 16 * 1024];
+        for (var bank = 0; bank < 4; bank++) prg[bank * 16 * 1024] = (byte)(0x10 + bank);
+        var image = new NesRomImage(NesHeaderFormat.INes, 1, null, prg.Length, 0, false, false,
+            NametableMirroring.Horizontal, NesTimingMode.Unknown, prg, Array.Empty<byte>());
+        var mmc1 = new Mmc1CartridgeMemory(image);
+        var bus = new CpuBus();
+        bus.Attach(mmc1);
+
+        // Five accepted low bits select PRG bank 2. Each paired write models the
+        // original/final writes produced by an RMW instruction; the second must
+        // not advance the MMC1 serial register.
+        for (var bit = 0; bit < 5; bit++)
+        {
+            bus.SetCpuCycle((ulong)(100 + bit));
+            var serialBit = (byte)((2 >> bit) & 1);
+            bus.Write(0xE000, serialBit);
+            bus.Write(0xE000, (byte)(serialBit ^ 1));
+        }
+
+        Assert.Equal(0x12, mmc1.CpuRead(0x8000));
+        Assert.Equal(0x13, mmc1.CpuRead(0xC000));
+    }
+
+    [Fact]
+    public void Mmc1TraceReportsSerialWritesAndRegisterCommit()
+    {
+        var image = new NesRomImage(NesHeaderFormat.INes, 1, null, 4 * 16 * 1024, 0, false, false,
+            NametableMirroring.Horizontal, NesTimingMode.Unknown, new byte[4 * 16 * 1024], Array.Empty<byte>());
+        var mmc1 = new Mmc1CartridgeMemory(image) { DiagnosticsTraceEnabled = true };
+        var events = new List<Mmc1TraceEvent>();
+        mmc1.TraceEvent += events.Add;
+
+        for (var bit = 0; bit < 5; bit++)
+            mmc1.CpuWrite(0xE000, (byte)((2 >> bit) & 1), (ulong)(200 + bit));
+
+        Assert.Equal(5, events.Count);
+        Assert.Equal("serial", events[0].Kind);
+        Assert.Equal("commit-prg", events[^1].Kind);
+        Assert.Equal((byte)2, events[^1].RegisterValue);
+        Assert.Equal((byte)2, events[^1].PrgBank);
+        Assert.Equal((ulong)204, events[^1].CpuCycle);
+    }
+
+    [Fact]
+    public void CpuReadModifyWriteEmitsOriginalThenModifiedBusWrites()
+    {
+        var bus = new CpuBus();
+        var memory = new RecordingCpuMemory();
+        bus.Attach(memory);
+        memory.Bytes[0xFFFC] = 0x00;
+        memory.Bytes[0xFFFD] = 0x80;
+        memory.Bytes[0x8000] = 0xEE; // INC $9000
+        memory.Bytes[0x8001] = 0x00;
+        memory.Bytes[0x8002] = 0x90;
+        memory.Bytes[0x9000] = 0x7F;
+        var cpu = new Rp2A03Cpu(bus);
+        cpu.PowerOn();
+
+        while (!cpu.IsInstructionBoundary) cpu.Clock();
+        cpu.Clock();
+        while (!cpu.IsInstructionBoundary) cpu.Clock();
+
+        Assert.Equal([(byte)0x7F, (byte)0x80], memory.WritesTo(0x9000));
     }
 
     [Fact]
@@ -1437,5 +1914,174 @@ public sealed class HardwareFoundationTests
             Array.Fill(chr, (byte)bank, bank * 0x2000, 0x2000);
         return new NesRomImage(NesHeaderFormat.INes, mapper, 0, prg.Length, chr.Length, false, false,
             NametableMirroring.Horizontal, NesTimingMode.Unknown, prg, chr);
+    }
+    private sealed class RecordingCpuMemory : ICpuBusDevice
+    {
+        public byte[] Bytes { get; } = new byte[ushort.MaxValue + 1];
+        private readonly List<(ushort Address, byte Value)> _writes = [];
+        private readonly List<ushort> _reads = [];
+
+        public bool HandlesCpuAddress(ushort address) => true;
+        public byte CpuRead(ushort address)
+        {
+            _reads.Add(address);
+            return Bytes[address];
+        }
+
+        public void CpuWrite(ushort address, byte value)
+        {
+            _writes.Add((address, value));
+            Bytes[address] = value;
+        }
+
+        public byte[] WritesTo(ushort address) => _writes
+            .Where(item => item.Address == address)
+            .Select(item => item.Value)
+            .ToArray();
+
+        public ushort[] ReadsFrom(ushort address) => _reads
+            .Where(item => item == address)
+            .ToArray();
+    }
+
+    [Fact]
+    public void PpuSpriteEvaluatorClearsSecondaryOamOnEvenDots()
+    {
+        var evaluator = new Rp2C02SpriteEvaluator();
+        var primaryOam = new byte[256];
+        evaluator.BeginScanline(1, 8);
+
+        for (var dot = 1; dot <= 64; dot++)
+        {
+            evaluator.Clock(dot, primaryOam);
+        }
+
+        Assert.All(evaluator.SecondaryOam.ToArray(), value => Assert.Equal((byte)0xFF, value));
+    }
+
+    [Fact]
+    public void PpuSpriteEvaluatorSelectsTheFirstEightSpritesAndPreservesSpriteZeroIdentity()
+    {
+        var evaluator = new Rp2C02SpriteEvaluator();
+        var primaryOam = Enumerable.Repeat((byte)0xFF, 256).ToArray();
+        for (var sprite = 0; sprite < 9; sprite++)
+        {
+            var offset = sprite * 4;
+            primaryOam[offset] = 0x00;
+            primaryOam[offset + 1] = (byte)(0x20 + sprite);
+            primaryOam[offset + 2] = 0x00;
+            primaryOam[offset + 3] = (byte)(sprite * 8);
+        }
+
+        evaluator.BeginScanline(1, 8);
+        for (var dot = 1; dot <= 256; dot++)
+        {
+            evaluator.Clock(dot, primaryOam);
+        }
+
+        Assert.Equal(8, evaluator.SelectedSpriteCount);
+        Assert.True(evaluator.SpriteZeroSelected);
+        Assert.True(evaluator.OverflowDetected);
+        Assert.Equal((byte)0, evaluator.GetSelectedSprite(0).PrimaryOamIndex);
+        Assert.Equal((byte)7, evaluator.GetSelectedSprite(7).PrimaryOamIndex);
+    }
+
+    [Fact]
+    public void PpuSpriteEvaluatorUsesTheDiagonalOverflowComparatorPath()
+    {
+        var evaluator = new Rp2C02SpriteEvaluator();
+        var primaryOam = Enumerable.Repeat((byte)0xFF, 256).ToArray();
+        for (var sprite = 0; sprite < 8; sprite++)
+        {
+            primaryOam[sprite * 4] = 0x00;
+        }
+
+        // The ninth sprite's Y is out of range, but its tile byte is in range.
+        // After secondary OAM fills, the hardware bug advances m diagonally and
+        // eventually compares non-Y bytes as if they were Y coordinates.
+        primaryOam[8 * 4] = 0xF0;
+        primaryOam[8 * 4 + 1] = 0x00;
+        primaryOam[9 * 4] = 0x00;
+
+        evaluator.BeginScanline(1, 8);
+        for (var dot = 1; dot <= 256; dot++)
+        {
+            evaluator.Clock(dot, primaryOam);
+        }
+
+        Assert.True(evaluator.OverflowDetected);
+    }
+
+    [Fact]
+    public void ApuCanDrainIntoReusableBufferWithoutAllocatingResultArrays()
+    {
+        var apu = new Rp2A03Apu(sampleRate: 44_100);
+        apu.PowerOn();
+
+        for (var cycle = 0; cycle < 100_000; cycle++)
+        {
+            apu.Clock();
+        }
+
+        var available = apu.Samples.Count;
+        Assert.True(available > 0);
+        var buffer = new float[available];
+
+        var drained = apu.DrainSamples(buffer);
+
+        Assert.Equal(available, drained);
+        Assert.Empty(apu.Samples);
+        Assert.Equal(0, apu.DrainSamples(buffer));
+    }
+
+}
+
+public sealed class InspectableBusComponentTests
+{
+    [Fact]
+    public void CpuBusPublishesLiveReadAndWriteTransactionsWithoutChangingRouting()
+    {
+        var bus = new CpuBus();
+        var ram = new CpuWorkRam();
+        bus.Attach(ram);
+        bus.SetCpuCycle(123);
+
+        bus.Write(0x0007, 0x5A);
+        var write = bus.LastTransaction;
+
+        Assert.Equal("nes.bus.cpu", bus.ModuleId);
+        Assert.Equal(16, bus.AddressWidthBits);
+        Assert.Equal(BusAccessDirection.Write, write.Direction);
+        Assert.Equal((ushort)0x0007, write.Address);
+        Assert.Equal((byte)0x5A, write.Data);
+        Assert.Same(ram, write.PrimaryDevice);
+        Assert.Equal(1, write.ParticipantCount);
+        Assert.Equal((ulong)123, write.ClockCycle);
+
+        Assert.Equal((byte)0x5A, bus.Read(0x0807));
+        var read = bus.LastTransaction;
+        Assert.Equal(BusAccessDirection.Read, read.Direction);
+        Assert.Equal((ushort)0x0807, read.Address);
+        Assert.Same(ram, read.PrimaryDevice);
+        Assert.True(read.Sequence > write.Sequence);
+    }
+
+    [Fact]
+    public void PpuBusPublishesNormalizedLiveTransactions()
+    {
+        var bus = new PpuBus();
+        var palette = new PpuPaletteRam();
+        bus.Attach(palette);
+
+        bus.Write(0x7F10, 0x2C);
+        var write = bus.LastTransaction;
+
+        Assert.Equal("nes.bus.ppu", bus.ModuleId);
+        Assert.Equal(14, bus.AddressWidthBits);
+        Assert.Equal((ushort)0x3F10, write.Address);
+        Assert.Equal(BusAccessDirection.Write, write.Direction);
+        Assert.Same(palette, write.PrimaryDevice);
+        Assert.Equal((byte)0x2C, bus.Read(0x3F00));
+        Assert.Equal(BusAccessDirection.Read, bus.LastTransaction.Direction);
     }
 }

@@ -1,0 +1,64 @@
+namespace AxetosOS.Products.NES.VirtualHardware.Electrical;
+
+/// <summary>
+/// A physical digital pin. Components drive output-capable pins and sample the
+/// resolved level produced by the net attached to the pin.
+/// </summary>
+public sealed class DigitalPin
+{
+    private DigitalLevel _driveLevel = DigitalLevel.HighImpedance;
+    private DigitalDriveStrength _driveStrength = DigitalDriveStrength.Strong;
+    private DigitalLevel _sampledLevel = DigitalLevel.Unknown;
+
+    public DigitalPin(string name, PinDirection direction)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        Name = name;
+        Direction = direction;
+    }
+
+    public string Name { get; }
+    public PinDirection Direction { get; }
+    public DigitalNet? Net { get; internal set; }
+    public DigitalLevel DriveLevel => _driveLevel;
+    public DigitalDriveStrength DriveStrength => _driveStrength;
+    public DigitalLevel SampledLevel => _sampledLevel;
+    internal ulong Revision { get; private set; }
+
+    public void Drive(
+        DigitalLevel level,
+        DigitalDriveStrength strength = DigitalDriveStrength.Strong)
+    {
+        if (Direction == PinDirection.Input)
+        {
+            throw new InvalidOperationException($"Input pin '{Name}' cannot drive a net.");
+        }
+
+        if (level == DigitalLevel.Contention)
+        {
+            throw new ArgumentOutOfRangeException(nameof(level), "Contention is a resolved net state, not a drive state.");
+        }
+
+        if (_driveLevel == level && _driveStrength == strength)
+        {
+            return;
+        }
+
+        _driveLevel = level;
+        _driveStrength = strength;
+        Revision++;
+    }
+
+    public void Release() => Drive(DigitalLevel.HighImpedance);
+
+    internal void SetSampledLevel(DigitalLevel level)
+    {
+        if (_sampledLevel == level)
+        {
+            return;
+        }
+
+        _sampledLevel = level;
+        Revision++;
+    }
+}

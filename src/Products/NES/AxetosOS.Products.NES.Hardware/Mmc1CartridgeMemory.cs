@@ -3,6 +3,34 @@ using AxetosOS.Products.NES.Cartridges;
 
 namespace AxetosOS.Products.NES.Hardware;
 
+
+public sealed record Mmc1TraceEvent(
+    ulong CpuCycle,
+    ushort Address,
+    byte Value,
+    string Kind,
+    byte ShiftBefore,
+    byte ShiftAfter,
+    byte? RegisterValue,
+    byte Control,
+    byte ChrBank0,
+    byte ChrBank1,
+    byte PrgBank,
+    NametableMirroring Mirroring);
+
+public sealed record Mmc1DiagnosticsSnapshot(
+    byte ShiftRegister,
+    byte Control,
+    byte ChrBank0,
+    byte ChrBank1,
+    byte PrgBank,
+    bool PrgRamEnabled,
+    int PrgMode,
+    int ChrMode,
+    int[] PrgBanks,
+    int[] ChrBanks,
+    NametableMirroring Mirroring);
+
 public interface IBatteryBackedMemory
 {
     bool HasBattery { get; }
@@ -21,7 +49,7 @@ public interface ICartridgeMirroringProvider
 /// MMC1 (mapper 1) cartridge hardware. The CPU and PPU sides intentionally share
 /// one serial register set because they are pins on the same physical mapper chip.
 /// </summary>
-public sealed class Mmc1CartridgeMemory : INesHardwareModule, ICpuBusDevice, IPpuBusDevice,
+public sealed class Mmc1CartridgeMemory : INesHardwareModule, ICpuCycleAwareBusDevice, IPpuBusDevice,
     IBatteryBackedMemory, ICartridgeMirroringProvider
 {
     private const int PrgBankSize = 16 * 1024;
@@ -35,6 +63,8 @@ public sealed class Mmc1CartridgeMemory : INesHardwareModule, ICpuBusDevice, IPp
     private byte _chrBank0;
     private byte _chrBank1;
     private byte _prgBank;
+    private ulong _lastAcceptedRegisterWriteCycle;
+    private bool _hasAcceptedRegisterWriteCycle;
 
     public Mmc1CartridgeMemory(NesRomImage image)
     {
@@ -66,6 +96,8 @@ public sealed class Mmc1CartridgeMemory : INesHardwareModule, ICpuBusDevice, IPp
     };
 
     public event Action<NametableMirroring>? MirroringChanged;
+    public event Action<Mmc1TraceEvent>? TraceEvent;
+    public bool DiagnosticsTraceEnabled { get; set; }
 
     public void PowerOn()
     {
@@ -74,6 +106,8 @@ public sealed class Mmc1CartridgeMemory : INesHardwareModule, ICpuBusDevice, IPp
         _chrBank0 = 0;
         _chrBank1 = 0;
         _prgBank = 0;
+        _lastAcceptedRegisterWriteCycle = 0;
+        _hasAcceptedRegisterWriteCycle = false;
         if (_chrWritable) Array.Clear(_chrMemory);
         Array.Clear(_prgRam);
     }
@@ -115,7 +149,29 @@ public sealed class Mmc1CartridgeMemory : INesHardwareModule, ICpuBusDevice, IPp
         return _prgRom[offset % _prgRom.Length];
     }
 
-    public void CpuWrite(ushort address, byte value)
+    public void CpuWrite(ushort address, byte value) => CpuWriteCore(address, value, 0);
+
+    public void CpuWrite(ushort address, byte value, ulong cpuCycle)
+    {
+        if (address >= 0x8000)
+        {
+            // MMC1 ignores a register write on the CPU cycle immediately after
+            // another accepted register write. In this instruction-level CPU,
+            // both phases of an RMW bus sequence share the same cycle stamp.
+            if (_hasAcceptedRegisterWriteCycle && cpuCycle == _lastAcceptedRegisterWriteCycle)
+            {
+                EmitTrace(cpuCycle, address, value, "ignored-consecutive", _shiftRegister, _shiftRegister, null);
+                return;
+            }
+
+            _lastAcceptedRegisterWriteCycle = cpuCycle;
+            _hasAcceptedRegisterWriteCycle = true;
+        }
+
+        CpuWriteCore(address, value, cpuCycle);
+    }
+
+    private void CpuWriteCore(ushort address, byte value, ulong cpuCycle)
     {
         if (address < 0x8000)
         {
@@ -123,17 +179,23 @@ public sealed class Mmc1CartridgeMemory : INesHardwareModule, ICpuBusDevice, IPp
             return;
         }
 
+        var shiftBefore = _shiftRegister;
         if ((value & 0x80) != 0)
         {
             _shiftRegister = 0x10;
             _control |= 0x0C;
             MirroringChanged?.Invoke(Mirroring);
+            EmitTrace(cpuCycle, address, value, "reset", shiftBefore, _shiftRegister, null);
             return;
         }
 
         var complete = (_shiftRegister & 0x01) != 0;
         _shiftRegister = (byte)((_shiftRegister >> 1) | ((value & 0x01) << 4));
-        if (!complete) return;
+        if (!complete)
+        {
+            EmitTrace(cpuCycle, address, value, "serial", shiftBefore, _shiftRegister, null);
+            return;
+        }
 
         var registerValue = (byte)(_shiftRegister & 0x1F);
         if (address <= 0x9FFF)
@@ -147,6 +209,38 @@ public sealed class Mmc1CartridgeMemory : INesHardwareModule, ICpuBusDevice, IPp
         else _prgBank = registerValue;
 
         _shiftRegister = 0x10;
+        EmitTrace(cpuCycle, address, value, address switch
+        {
+            <= 0x9FFF => "commit-control",
+            <= 0xBFFF => "commit-chr0",
+            <= 0xDFFF => "commit-chr1",
+            _ => "commit-prg"
+        }, shiftBefore, _shiftRegister, registerValue);
+    }
+
+    private void EmitTrace(
+        ulong cpuCycle,
+        ushort address,
+        byte value,
+        string kind,
+        byte shiftBefore,
+        byte shiftAfter,
+        byte? registerValue)
+    {
+        if (!DiagnosticsTraceEnabled) return;
+        TraceEvent?.Invoke(new Mmc1TraceEvent(
+            cpuCycle,
+            address,
+            value,
+            kind,
+            shiftBefore,
+            shiftAfter,
+            registerValue,
+            _control,
+            _chrBank0,
+            _chrBank1,
+            _prgBank,
+            Mirroring));
     }
 
     public bool HandlesPpuAddress(ushort address) => address <= 0x1FFF;
@@ -164,6 +258,40 @@ public sealed class Mmc1CartridgeMemory : INesHardwareModule, ICpuBusDevice, IPp
     }
 
     public byte[] SavePersistent() => _prgRam.ToArray();
+
+    public Mmc1DiagnosticsSnapshot GetDiagnostics()
+    {
+        var prgBankCount = _prgRom.Length / PrgBankSize;
+        var prgMode = (_control >> 2) & 0x03;
+        int[] prgBanks = prgMode switch
+        {
+            0 or 1 =>
+            [
+                (((_prgBank & 0x0E) % prgBankCount) & ~1),
+                (((( _prgBank & 0x0E) % prgBankCount) & ~1) + 1) % prgBankCount
+            ],
+            2 => [0, (_prgBank & 0x0F) % prgBankCount],
+            _ => [(_prgBank & 0x0F) % prgBankCount, prgBankCount - 1]
+        };
+
+        var chrBankCount = Math.Max(1, _chrMemory.Length / ChrBankSize);
+        int[] chrBanks = (_control & 0x10) == 0
+            ? [((_chrBank0 & 0x1E) % chrBankCount), (((_chrBank0 & 0x1E) % chrBankCount) + 1) % chrBankCount]
+            : [_chrBank0 % chrBankCount, _chrBank1 % chrBankCount];
+
+        return new Mmc1DiagnosticsSnapshot(
+            _shiftRegister,
+            _control,
+            _chrBank0,
+            _chrBank1,
+            _prgBank,
+            PrgRamEnabled,
+            prgMode,
+            (_control >> 4) & 0x01,
+            prgBanks,
+            chrBanks,
+            Mirroring);
+    }
 
     private bool PrgRamEnabled => (_prgBank & 0x10) == 0;
 

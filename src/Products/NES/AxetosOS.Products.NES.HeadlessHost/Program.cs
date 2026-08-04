@@ -107,8 +107,8 @@ ppuBus.Attach(chr);
 ppuBus.Attach(ciram);
 ppuBus.Attach(palette);
 
-var nmi = new SignalLine();
-var ppu = new Rp2C02Ppu(ppuBus, nmi);
+var cpuSignals = new Rp2A03SignalLines();
+var ppu = new Rp2C02Ppu(ppuBus, cpuSignals.Nmi);
 var bus = new CpuBus();
 bus.Attach(ram);
 bus.Attach(ppu);
@@ -141,16 +141,19 @@ bus.Attach(apu);
 var controllers = new NesControllerPorts(input);
 controllers.PowerOn();
 bus.Attach(controllers);
-var cpu = new Rp2A03Cpu(bus);
-apu.AttachDmcMemory(bus, cpu.RequestDmaStall);
-var irqLines = new IrqLineCombiner(cpu.SetIrqLine);
+var cpu = new Rp2A03Cpu(bus, cpuSignals);
+var irqLines = new IrqLineCombiner(asserted =>
+{
+    if (asserted) cpuSignals.Irq.Assert();
+    else cpuSignals.Irq.Release();
+});
 apu.IrqLineChanged += irqLines.CreateSource();
 if (cartridge.PrgDevice is ICartridgeIrqProvider cartridgeIrq)
     cartridgeIrq.IrqLineChanged += irqLines.CreateSource();
 var oamDma = new OamDmaController(bus, ppu, cpu);
+oamDma.AttachDmc(apu);
 bus.Attach(oamDma);
 oamDma.PowerOn();
-nmi.Asserted += cpu.RequestNmi;
 ppu.PowerOn();
 cpu.PowerOn();
 var clock = new NesMasterClock(cpu, ppu, apu);

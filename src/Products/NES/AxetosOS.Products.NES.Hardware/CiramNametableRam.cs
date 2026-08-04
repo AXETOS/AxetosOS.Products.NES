@@ -3,7 +3,14 @@ using AxetosOS.Products.NES.Cartridges;
 
 namespace AxetosOS.Products.NES.Hardware;
 
-public sealed class CiramNametableRam : INesHardwareModule, IPpuBusDevice
+public sealed record CiramDiagnosticsSnapshot(
+    NametableMirroring Mirroring,
+    int LowerNonZeroBytes,
+    int UpperNonZeroBytes,
+    uint LowerHash,
+    uint UpperHash);
+
+public sealed class CiramNametableRam : IInspectableMemoryModule, IPpuBusDevice
 {
     private readonly byte[] _memory = new byte[2 * 1024];
 
@@ -18,6 +25,7 @@ public sealed class CiramNametableRam : INesHardwareModule, IPpuBusDevice
     }
 
     public string ModuleId => "nes.memory.ciram";
+    public int CapacityBytes => _memory.Length;
     public NametableMirroring Mirroring { get; private set; }
 
     public void SetMirroring(NametableMirroring mirroring)
@@ -35,6 +43,53 @@ public sealed class CiramNametableRam : INesHardwareModule, IPpuBusDevice
     public byte PpuRead(ushort address) => _memory[MapAddress(address)];
 
     public void PpuWrite(ushort address, byte value) => _memory[MapAddress(address)] = value;
+
+    public byte ReadPhysicalByte(int offset)
+    {
+        if ((uint)offset >= (uint)_memory.Length)
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        return _memory[offset];
+    }
+
+    public void CopyPhysicalBytes(Span<byte> destination)
+    {
+        if (destination.Length < _memory.Length)
+            throw new ArgumentException($"Destination must contain at least {_memory.Length} bytes.", nameof(destination));
+        _memory.AsSpan().CopyTo(destination);
+    }
+
+    public CiramDiagnosticsSnapshot GetDiagnostics()
+    {
+        var lower = _memory.AsSpan(0, 0x400);
+        var upper = _memory.AsSpan(0x400, 0x400);
+        return new CiramDiagnosticsSnapshot(
+            Mirroring,
+            CountNonZero(lower),
+            CountNonZero(upper),
+            Hash(lower),
+            Hash(upper));
+    }
+
+    private static int CountNonZero(ReadOnlySpan<byte> data)
+    {
+        var count = 0;
+        foreach (var value in data)
+            if (value != 0) count++;
+        return count;
+    }
+
+    private static uint Hash(ReadOnlySpan<byte> data)
+    {
+        const uint offsetBasis = 2166136261;
+        const uint prime = 16777619;
+        var hash = offsetBasis;
+        foreach (var value in data)
+        {
+            hash ^= value;
+            hash *= prime;
+        }
+        return hash;
+    }
 
     private int MapAddress(ushort address)
     {

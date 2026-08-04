@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using AxetosOS.Products.NES.Abstractions;
 
 namespace AxetosOS.Products.NES.Hardware;
@@ -47,6 +48,7 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
     private float _lowPass14kLastOutput;
     private CpuBus? _dmcBus;
     private Action<int>? _dmcStall;
+    private Action<ushort>? _dmcDmaRequest;
 
     public Rp2A03Apu(int sampleRate = DefaultSampleRate)
     {
@@ -56,9 +58,21 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         }
 
         _sampleRate = sampleRate;
+        FrameSequencer = new Rp2A03ApuFrameSequencer(this);
+        Pulse1 = new Rp2A03PulseChannelComponent(this, 1);
+        Pulse2 = new Rp2A03PulseChannelComponent(this, 2);
+        Triangle = new Rp2A03TriangleChannelComponent(this);
+        Noise = new Rp2A03NoiseChannelComponent(this);
+        Dmc = new Rp2A03DmcChannelComponent(this);
     }
 
     public string ModuleId => "nes.chip.rp2a03.apu";
+    public Rp2A03ApuFrameSequencer FrameSequencer { get; }
+    public Rp2A03PulseChannelComponent Pulse1 { get; }
+    public Rp2A03PulseChannelComponent Pulse2 { get; }
+    public Rp2A03TriangleChannelComponent Triangle { get; }
+    public Rp2A03NoiseChannelComponent Noise { get; }
+    public Rp2A03DmcChannelComponent Dmc { get; }
     public int SampleRate => _sampleRate;
     public ulong CpuCycles => _cpuCycles;
     public IReadOnlyList<float> Samples => _samples;
@@ -78,6 +92,19 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         (_dmc.BytesRemaining > 0 ? 0x10 : 0) |
         (_frameIrq ? 0x40 : 0) |
         (_dmc.IrqAsserted ? 0x80 : 0));
+
+    internal int FrameCycle => _frameCycle;
+    internal bool FiveStepMode => _fiveStepMode;
+    internal bool FrameIrqInhibit => _frameIrqInhibit;
+    internal ApuPulseSnapshot GetPulseSnapshot(int channel) => channel switch
+    {
+        1 => _pulse1.Snapshot,
+        2 => _pulse2.Snapshot,
+        _ => throw new ArgumentOutOfRangeException(nameof(channel))
+    };
+    internal ApuTriangleSnapshot TriangleSnapshot => _triangle.Snapshot;
+    internal ApuNoiseSnapshot NoiseSnapshot => _noise.Snapshot;
+    internal ApuDmcSnapshot DmcSnapshot => _dmc.Snapshot;
 
     public void PowerOn()
     {
@@ -108,6 +135,21 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
     {
         _dmcBus = bus ?? throw new ArgumentNullException(nameof(bus));
         _dmcStall = stallCpu ?? throw new ArgumentNullException(nameof(stallCpu));
+        _dmcDmaRequest = null;
+    }
+
+    public void AttachDmcDma(Action<ushort> requestDma)
+    {
+        _dmcDmaRequest = requestDma ?? throw new ArgumentNullException(nameof(requestDma));
+        _dmcBus = null;
+        _dmcStall = null;
+    }
+
+    public void CompleteDmcDma(byte value)
+    {
+        var irqBefore = IrqAsserted;
+        _dmc.CompleteDma(value);
+        if (irqBefore != IrqAsserted) NotifyIrqLine();
     }
 
     public bool HandlesCpuAddress(ushort address) =>
@@ -181,7 +223,7 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
 
         _triangle.ClockTimer();
         var irqBeforeDmcClock = IrqAsserted;
-        _dmc.ClockTimer(FetchDmcByte);
+        _dmc.ClockTimer(RequestDmcByte);
         if (irqBeforeDmcClock != IrqAsserted)
         {
             NotifyIrqLine();
@@ -206,10 +248,28 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         _samples.Add(LastMixedSample);
     }
 
+    public int DrainSamples(Span<float> destination)
+    {
+        if (destination.IsEmpty || _samples.Count == 0)
+        {
+            return 0;
+        }
+
+        var count = Math.Min(destination.Length, _samples.Count);
+        CollectionsMarshal.AsSpan(_samples)[..count].CopyTo(destination);
+        _samples.RemoveRange(0, count);
+        return count;
+    }
+
     public float[] DrainSamples()
     {
-        var result = _samples.ToArray();
-        _samples.Clear();
+        if (_samples.Count == 0)
+        {
+            return [];
+        }
+
+        var result = new float[_samples.Count];
+        DrainSamples(result);
         return result;
     }
 
@@ -265,17 +325,24 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         }
     }
 
-    private byte FetchDmcByte(ushort address)
+    private void RequestDmcByte(ushort address)
     {
+        if (_dmcDmaRequest is not null)
+        {
+            _dmcDmaRequest(address);
+            return;
+        }
+
+        // Compatibility path for tests and hosts not yet connected to the
+        // shared DMA bus owner. New console hosts use AttachDmcDma instead.
         if (_dmcBus is null || _dmcStall is null)
         {
-            return 0;
+            CompleteDmcDma(0);
+            return;
         }
 
         _dmcStall(4);
-        var value = _dmcBus.Read(address);
-        NotifyIrqLine();
-        return value;
+        CompleteDmcDma(_dmcBus.Read(address));
     }
 
     private void NotifyIrqLine() => IrqLineChanged?.Invoke(IrqAsserted);
@@ -353,6 +420,10 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         private bool _sweepReload;
 
         public byte LengthCounter { get; private set; }
+        public ApuPulseSnapshot Snapshot => new(
+            _enabled, _duty, _sequence, LengthCounter, _timerPeriod, _timer,
+            _constantVolume, _volume, _envelopeDecay, _sweepEnabled,
+            _sweepNegate, _sweepShift, Output);
 
         public byte Output
         {
@@ -528,6 +599,9 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
 
         public byte LengthCounter { get; private set; }
         public byte Output => _enabled && LengthCounter > 0 && _linearCounter > 0 && _timerPeriod > 1 ? Sequence[_sequence] : (byte)0;
+        public ApuTriangleSnapshot Snapshot => new(
+            _enabled, LengthCounter, _linearCounter, _linearReloadValue,
+            _timerPeriod, _timer, _sequence, Output);
 
         public void PowerOn()
         {
@@ -623,6 +697,9 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         public byte Output => _enabled && LengthCounter > 0 && (_shiftRegister & 1) == 0
             ? (_constantVolume ? _volume : _envelopeDecay)
             : (byte)0;
+        public ApuNoiseSnapshot Snapshot => new(
+            _enabled, LengthCounter, _mode, _timerPeriod, _timer,
+            _shiftRegister, _constantVolume, _volume, _envelopeDecay, Output);
 
         public void PowerOn()
         {
@@ -724,6 +801,10 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
         public ushort CurrentAddress { get; private set; }
         public ushort BytesRemaining { get; private set; }
         public byte Output { get; private set; }
+        public ApuDmcSnapshot Snapshot => new(
+            _enabled, _irqEnabled, _loop, _timerPeriod, _timer,
+            _sampleAddress, _sampleLength, CurrentAddress, BytesRemaining,
+            Output, _bitsRemaining, _silence, _dmaPending, IrqAsserted);
 
         public void PowerOn()
         {
@@ -735,6 +816,7 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
             _sampleAddress = 0xC000;
             _sampleLength = 1;
             _sampleBuffer = null;
+            _dmaPending = false;
             _shiftRegister = 0;
             _bitsRemaining = 8;
             _silence = true;
@@ -775,24 +857,14 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
             }
         }
 
-        public void ClockTimer(Func<ushort, byte> fetchByte)
+        private bool _dmaPending;
+
+        public void ClockTimer(Action<ushort> requestByte)
         {
-            if (_enabled && _sampleBuffer is null && BytesRemaining > 0)
+            if (_enabled && _sampleBuffer is null && BytesRemaining > 0 && !_dmaPending)
             {
-                _sampleBuffer = fetchByte(CurrentAddress);
-                CurrentAddress = CurrentAddress == 0xFFFF ? (ushort)0x8000 : (ushort)(CurrentAddress + 1);
-                BytesRemaining--;
-                if (BytesRemaining == 0)
-                {
-                    if (_loop)
-                    {
-                        RestartSample();
-                    }
-                    else if (_irqEnabled)
-                    {
-                        IrqAsserted = true;
-                    }
-                }
+                _dmaPending = true;
+                requestByte(CurrentAddress);
             }
 
             if (_timer > 0)
@@ -830,6 +902,27 @@ public sealed class Rp2A03Apu : INesHardwareModule, IClockedHardwareModule, ICpu
             else
             {
                 _silence = true;
+            }
+        }
+
+
+        public void CompleteDma(byte value)
+        {
+            if (!_dmaPending) return;
+
+            _dmaPending = false;
+            _sampleBuffer = value;
+            CurrentAddress = CurrentAddress == 0xFFFF ? (ushort)0x8000 : (ushort)(CurrentAddress + 1);
+            BytesRemaining--;
+            if (BytesRemaining != 0) return;
+
+            if (_loop)
+            {
+                RestartSample();
+            }
+            else if (_irqEnabled)
+            {
+                IrqAsserted = true;
             }
         }
 
