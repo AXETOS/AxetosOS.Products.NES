@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.32.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.33.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -39,7 +39,7 @@ Current highlights:
 
 ### VirtualHardware NES
 
-**Current development version: v0.32.0**
+**Current development version: v0.33.0**
 
 VirtualHardware is an independent electrical simulation. Components react only to power, clocks, pin levels, connected nets and their own internal state. The motherboard owns all wiring, and no execution is delegated to the playable emulator's CPU, PPU or APU classes.
 
@@ -217,6 +217,19 @@ Planned:
 - [ ] expanded compatibility testing.
 
 
+
+
+## v0.33.0 Regional VirtualHardware timing profiles
+
+The VirtualHardware motherboard now selects an explicit physical console family instead of assuming one hard-coded NTSC machine:
+
+- `NTSC-U` for North American NES hardware
+- `NTSC-J` for Japanese Famicom/NES timing
+- `PAL` for European and Australian NES hardware
+
+A ROM image is loaded once; it is not triplicated. The selected motherboard profile supplies the CPU clock, PPU clock, CPU-to-PPU phase ratio, scanline count, vblank boundary and pre-render line. NTSC-U and NTSC-J intentionally remain distinct profiles even where their current timing values match, leaving room for later regional I/O, palette and peripheral differences.
+
+PAL uses its non-integer 16:5 PPU-to-CPU half-cycle ratio through a phase accumulator rather than approximating it as 3:1. The timing core is now parameterized for both the 262-line NTSC raster and 312-line PAL raster.
 
 ## v0.32.0 VirtualHardware OAM DMA
 

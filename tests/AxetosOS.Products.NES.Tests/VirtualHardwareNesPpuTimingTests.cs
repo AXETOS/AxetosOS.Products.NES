@@ -13,9 +13,9 @@ public sealed class VirtualHardwareNesPpuTimingTests
         var machine = CreateMachine(0x00);
         machine.PowerOn();
 
-        machine.AdvancePpuDots(NesPpuTimingCore.VblankStartScanline * NesPpuTimingCore.DotsPerScanline + 1);
+        machine.AdvancePpuDots(machine.PpuTiming.VblankStartScanline * machine.PpuTiming.DotsPerScanline + 1);
 
-        Assert.Equal(NesPpuTimingCore.VblankStartScanline, machine.PpuTiming.Scanline);
+        Assert.Equal(machine.PpuTiming.VblankStartScanline, machine.PpuTiming.Scanline);
         Assert.Equal(1, machine.PpuTiming.Dot);
         Assert.True(machine.PpuTiming.IsVblank);
         Assert.Equal(DigitalLevel.High, machine.Board.Nets.Single(net => net.Name == "PPU_VBLANK").Level);
@@ -26,13 +26,13 @@ public sealed class VirtualHardwareNesPpuTimingTests
     {
         var machine = CreateMachine(0x00);
         machine.PowerOn();
-        machine.AdvancePpuDots(NesPpuTimingCore.VblankStartScanline * NesPpuTimingCore.DotsPerScanline + 1);
+        machine.AdvancePpuDots(machine.PpuTiming.VblankStartScanline * machine.PpuTiming.DotsPerScanline + 1);
 
-        var remainingDots = (NesPpuTimingCore.PreRenderScanline - NesPpuTimingCore.VblankStartScanline)
-            * NesPpuTimingCore.DotsPerScanline;
+        var remainingDots = (machine.PpuTiming.PreRenderScanline - machine.PpuTiming.VblankStartScanline)
+            * machine.PpuTiming.DotsPerScanline;
         machine.AdvancePpuDots(remainingDots);
 
-        Assert.Equal(NesPpuTimingCore.PreRenderScanline, machine.PpuTiming.Scanline);
+        Assert.Equal(machine.PpuTiming.PreRenderScanline, machine.PpuTiming.Scanline);
         Assert.Equal(1, machine.PpuTiming.Dot);
         Assert.False(machine.PpuTiming.IsVblank);
         Assert.Equal(DigitalLevel.Low, machine.Board.Nets.Single(net => net.Name == "PPU_VBLANK").Level);

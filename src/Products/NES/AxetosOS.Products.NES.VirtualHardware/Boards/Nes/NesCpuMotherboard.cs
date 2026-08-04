@@ -18,13 +18,16 @@ namespace AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
 /// </summary>
 public sealed class NesCpuMotherboard
 {
-    public const long NtscCpuClockHertz = 1_789_773;
-    public const long NtscPpuClockHertz = 5_369_318;
     public const int WorkRamSize = 2 * 1024;
     public const int PrgRomSize = 32 * 1024;
 
-    public NesCpuMotherboard(ReadOnlySpan<byte> prgRom)
+    private int _ppuHalfCycleAccumulator;
+
+    public NesCpuMotherboard(
+        ReadOnlySpan<byte> prgRom,
+        NesHardwareRegion region = NesHardwareRegion.NtscNorthAmerica)
     {
+        TimingProfile = NesHardwareTimingProfile.For(region);
         if (prgRom.Length > PrgRomSize)
         {
             throw new ArgumentException("PRG ROM exceeds the 32 KiB CPU window.", nameof(prgRom));
@@ -45,8 +48,8 @@ public sealed class NesCpuMotherboard
         Board = new VirtualHardwareBoard("nes.cpu-motherboard");
         Vcc = Board.Add(new DigitalPowerRail("nes.vcc", DigitalLevel.High));
         Ground = Board.Add(new DigitalPowerRail("nes.ground", DigitalLevel.Low));
-        Clock = Board.Add(new DigitalOscillator("nes.cpu-clock", NtscCpuClockHertz));
-        PpuClock = Board.Add(new DigitalOscillator("nes.ppu-clock", NtscPpuClockHertz));
+        Clock = Board.Add(new DigitalOscillator("nes.cpu-clock", TimingProfile.CpuClockHertz));
+        PpuClock = Board.Add(new DigitalOscillator("nes.ppu-clock", TimingProfile.PpuClockHertz));
         ResetCircuit = Board.Add(new PowerOnResetCircuit("nes.reset"));
         Cpu = Board.Add(new Mos6502Processor("nes.cpu"));
         WorkRam = Board.Add(new StaticRamChip("nes.work-ram", 11));
@@ -65,7 +68,12 @@ public sealed class NesCpuMotherboard
         Analyzer = Board.Add(new Mos6502BusAnalyzer("nes.cpu-bus-analyzer"));
         ControllerIo = Board.Add(new NesControllerIoPackage("nes.controller-io"));
         PpuRegisters = Board.Add(new NesPpuRegisterPackage("nes.ppu-registers"));
-        PpuTiming = Board.Add(new NesPpuTimingCore("nes.ppu-timing"));
+        PpuTiming = Board.Add(new NesPpuTimingCore(
+            "nes.ppu-timing",
+            TimingProfile.DotsPerScanline,
+            TimingProfile.ScanlinesPerFrame,
+            TimingProfile.VblankStartScanline,
+            TimingProfile.PreRenderScanline));
         PpuVblank = Board.Add(new DigitalSignalSource("nes.ppu-force-vblank", DigitalLevel.Low));
         Controller1Buttons = CreateControllerSources("nes.controller1");
         Controller2Buttons = CreateControllerSources("nes.controller2");
@@ -76,6 +84,8 @@ public sealed class NesCpuMotherboard
         Simulator = new VirtualHardwareSimulator(Board);
     }
 
+    public NesHardwareTimingProfile TimingProfile { get; }
+    public NesHardwareRegion Region => TimingProfile.Region;
     public VirtualHardwareBoard Board { get; }
     public VirtualHardwareSimulator Simulator { get; }
     public DigitalPowerRail Vcc { get; }
@@ -119,10 +129,14 @@ public sealed class NesCpuMotherboard
 
     public void AdvanceHalfCycle()
     {
-        // NTSC PPU clock is three times the CPU clock. Three PPU half-cycles
-        // per CPU half-cycle preserve that ratio while keeping both chips
-        // observable at each electrical transition.
-        for (var phase = 0; phase < 3; phase++)
+        // A phase accumulator preserves non-integer regional clock ratios.
+        // NTSC advances exactly 3 PPU half-cycles per CPU half-cycle; PAL
+        // advances 16/5, producing the repeating 3,3,3,3,4 sequence.
+        _ppuHalfCycleAccumulator += TimingProfile.PpuHalfCyclesPerCpuHalfCycleNumerator;
+        var ppuHalfCycles = _ppuHalfCycleAccumulator / TimingProfile.PpuHalfCyclesPerCpuHalfCycleDenominator;
+        _ppuHalfCycleAccumulator %= TimingProfile.PpuHalfCyclesPerCpuHalfCycleDenominator;
+
+        for (var phase = 0; phase < ppuHalfCycles; phase++)
         {
             PpuClock.AdvanceHalfCycle();
             Simulator.Settle();

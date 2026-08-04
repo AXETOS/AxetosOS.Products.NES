@@ -3,24 +3,33 @@ using AxetosOS.Products.NES.VirtualHardware.Electrical;
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 
 /// <summary>
-/// Clocked NTSC RP2C02 timing foundation. It advances scanline/dot counters on
-/// PPU clock rising edges, raises vblank at scanline 241 dot 1, clears it on
-/// the pre-render line at dot 1, and asserts the open-drain /NMI output while
+/// Clocked regional RP2C02 timing foundation. It advances scanline/dot counters
+/// on PPU clock rising edges, raises vblank at the configured boundary, clears
+/// it on the configured pre-render line, and asserts open-drain /NMI while
 /// vblank and the CPU-visible NMI-enable pin are both active.
 /// </summary>
 public sealed class NesPpuTimingCore : VirtualHardwareComponent
 {
-    public const int DotsPerScanline = 341;
-    public const int ScanlinesPerFrame = 262;
-    public const int VblankStartScanline = 241;
-    public const int PreRenderScanline = 261;
-
     private bool _clockWasHigh;
     private bool _dotTickHigh;
     private bool _vblank;
 
-    public NesPpuTimingCore(string componentId) : base(componentId)
+    public NesPpuTimingCore(
+        string componentId,
+        int dotsPerScanline = 341,
+        int scanlinesPerFrame = 262,
+        int vblankStartScanline = 241,
+        int preRenderScanline = 261) : base(componentId)
     {
+        if (dotsPerScanline <= 0) throw new ArgumentOutOfRangeException(nameof(dotsPerScanline));
+        if (scanlinesPerFrame <= 0) throw new ArgumentOutOfRangeException(nameof(scanlinesPerFrame));
+        if (vblankStartScanline < 0 || vblankStartScanline >= scanlinesPerFrame) throw new ArgumentOutOfRangeException(nameof(vblankStartScanline));
+        if (preRenderScanline < 0 || preRenderScanline >= scanlinesPerFrame) throw new ArgumentOutOfRangeException(nameof(preRenderScanline));
+
+        DotsPerScanline = dotsPerScanline;
+        ScanlinesPerFrame = scanlinesPerFrame;
+        VblankStartScanline = vblankStartScanline;
+        PreRenderScanline = preRenderScanline;
         Clock = AddPin("CLK", PinDirection.Input);
         NmiEnable = AddPin("NMI_ENABLE", PinDirection.Input);
         ForceVblank = AddPin("FORCE_VBLANK", PinDirection.Input);
@@ -37,6 +46,11 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
         ScanlineBus = new DigitalBus($"{componentId}.SCANLINE", scanlinePins);
         DotBus = new DigitalBus($"{componentId}.DOT", dotPins);
     }
+
+    public int DotsPerScanline { get; }
+    public int ScanlinesPerFrame { get; }
+    public int VblankStartScanline { get; }
+    public int PreRenderScanline { get; }
 
     public DigitalPin Clock { get; }
     public DigitalPin NmiEnable { get; }
