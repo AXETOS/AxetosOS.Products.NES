@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.43.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.44.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -486,3 +486,7 @@ The standalone RP2A03 now includes its four/five-step APU frame sequencer and bo
 ### VirtualHardware v0.43.0 — standalone RP2A03 triangle and noise channels
 
 The standalone Ricoh `RP2A03` package now contains independent triangle and noise channel circuits. The triangle section implements the 32-step waveform sequencer, 11-bit timer, length counter, linear counter, control/reload behavior, and `$4008/$400A/$400B` register interface. The noise section implements the 15-bit linear-feedback shift register, long/short tap selection, NTSC period table, envelope, length counter, and `$400C/$400E/$400F` register interface. `$4015` now enables, disables, and reports all four completed non-DMC channels. Both circuits advance only from the chip's internal APU clocks and contribute to the package audio output without motherboard or device references.
+
+### VirtualHardware v0.44.0 — standalone RP2A03 DMC channel
+
+The standalone Ricoh RP2A03 package now contains its delta modulation channel: `$4010`–`$4013` control registers, NTSC rate divider, 7-bit output counter, sample address and length counters, sample buffer, output shift register, loop control, DMC IRQ state, `$4015` status/enable behavior, address wrap from `$FFFF` to `$8000`, and external sample reads performed through the package CPU address/data/control pins. DMC memory requests temporarily retain and restore the interrupted CPU read cycle; no RAM, cartridge, motherboard, or sample provider is referenced by the chip.

@@ -78,6 +78,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private readonly PulseChannel _pulse2 = new(onesComplementNegate: false);
     private readonly TriangleChannel _triangle = new();
     private readonly NoiseChannel _noise = new();
+    private readonly DmcChannel _dmc = new();
     private ulong _apuCpuCycles;
     private int _frameSequenceCycle;
     private bool _frameFiveStepMode;
@@ -85,6 +86,11 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private bool _frameIrqPending;
     private bool _apuTimerPhase;
     private byte _audioDacLevel;
+    private bool _dmcFetchActive;
+    private ushort _dmcSavedBusAddress;
+    private byte _dmcSavedBusWriteValue;
+    private bool _dmcSavedBusRead;
+    private bool _dmcSavedSync;
 
     public Rp2A03(string componentId) : base(componentId)
     {
@@ -167,6 +173,11 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     public ushort NoiseTimerPeriod => _noise.TimerPeriod;
     public byte NoiseLengthCounter => _noise.LengthCounter;
     public ushort NoiseShiftRegister => _noise.ShiftRegister;
+    public byte DmcOutputLevel => _dmc.Output;
+    public ushort DmcCurrentAddress => _dmc.CurrentAddress;
+    public ushort DmcBytesRemaining => _dmc.BytesRemaining;
+    public bool DmcIrqPending => _dmc.IrqPending;
+    public ulong DmcMemoryReadCount { get; private set; }
 
     public override void PowerOn()
     {
@@ -188,6 +199,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _pulse2.Reset();
         _triangle.Reset();
         _noise.Reset();
+        _dmc.Reset();
         _apuCpuCycles = 0;
         _frameSequenceCycle = 0;
         _frameFiveStepMode = false;
@@ -195,6 +207,12 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _frameIrqPending = false;
         _apuTimerPhase = false;
         _audioDacLevel = 0;
+        _dmcFetchActive = false;
+        _dmcSavedBusAddress = 0;
+        _dmcSavedBusWriteValue = 0;
+        _dmcSavedBusRead = true;
+        _dmcSavedSync = false;
+        DmcMemoryReadCount = 0;
         _previousClock = DigitalLevel.Low; _previousNmi = DigitalLevel.High;
         M2.Drive(DigitalLevel.Low);
         ControllerRead1Bar.Drive(DigitalLevel.High);
@@ -263,9 +281,25 @@ public sealed class Rp2A03 : VirtualHardwareComponent
 
     private void ExecuteBusCycle()
     {
+        if (_dmcFetchActive)
+        {
+            if (!TrySampleData(out var dmcSample)) return;
+            _dmc.AcceptSample(dmcSample);
+            DmcMemoryReadCount++;
+            _dmcFetchActive = false;
+            RestoreBusAfterDmcFetch();
+            return;
+        }
+
         if (_dmaPending || _dmaActive)
         {
             ExecuteDmaCycle();
+            return;
+        }
+
+        if (_dmc.NeedsSample && _busRead)
+        {
+            BeginDmcFetch();
             return;
         }
 
@@ -681,7 +715,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private bool TryBeginPendingInterrupt()
     {
         if (_nmiPending) { _nmiPending = false; BeginInterrupt(InterruptKind.Nmi); return true; }
-        if ((IrqBar.SampledLevel == DigitalLevel.Low || _frameIrqPending) && !InterruptDisable)
+        if ((IrqBar.SampledLevel == DigitalLevel.Low || _frameIrqPending || _dmc.IrqPending) && !InterruptDisable)
         {
             BeginInterrupt(InterruptKind.Irq);
             return true;
@@ -764,7 +798,9 @@ public sealed class Rp2A03 : VirtualHardwareComponent
                            (_pulse2.LengthCounter > 0 ? 0x02 : 0) |
                            (_triangle.LengthCounter > 0 ? 0x04 : 0) |
                            (_noise.LengthCounter > 0 ? 0x08 : 0) |
-                           (_frameIrqPending ? 0x40 : 0));
+                           (_dmc.BytesRemaining > 0 ? 0x10 : 0) |
+                           (_frameIrqPending ? 0x40 : 0) |
+                           (_dmc.IrqPending ? 0x80 : 0));
             _frameIrqPending = false;
             return true;
         }
@@ -860,12 +896,29 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         {
             _noise.WriteLength(_busWriteValue);
         }
+        else if (_busAddress == 0x4010)
+        {
+            _dmc.WriteControl(_busWriteValue);
+        }
+        else if (_busAddress == 0x4011)
+        {
+            _dmc.WriteDirectLoad(_busWriteValue);
+        }
+        else if (_busAddress == 0x4012)
+        {
+            _dmc.WriteSampleAddress(_busWriteValue);
+        }
+        else if (_busAddress == 0x4013)
+        {
+            _dmc.WriteSampleLength(_busWriteValue);
+        }
         else if (_busAddress == 0x4015)
         {
             _pulse1.SetEnabled((_busWriteValue & 0x01) != 0);
             _pulse2.SetEnabled((_busWriteValue & 0x02) != 0);
             _triangle.SetEnabled((_busWriteValue & 0x04) != 0);
             _noise.SetEnabled((_busWriteValue & 0x08) != 0);
+            _dmc.SetEnabled((_busWriteValue & 0x10) != 0);
         }
         else if (_busAddress == 0x4017)
         {
@@ -887,6 +940,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _frameSequenceCycle++;
         _apuTimerPhase = !_apuTimerPhase;
         _triangle.ClockTimer();
+        _dmc.ClockTimer();
         if (_apuTimerPhase)
         {
             _pulse1.ClockTimer();
@@ -931,7 +985,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             }
         }
 
-        _audioDacLevel = (byte)(_pulse1.Output + _pulse2.Output + _triangle.Output + _noise.Output);
+        _audioDacLevel = (byte)(_pulse1.Output + _pulse2.Output + _triangle.Output + _noise.Output + _dmc.Output);
         AudioOut.Drive(_audioDacLevel == 0 ? DigitalLevel.Low : DigitalLevel.High);
     }
 
@@ -951,6 +1005,23 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _noise.ClockLengthCounter();
         _pulse1.ClockSweep();
         _pulse2.ClockSweep();
+    }
+
+
+    private void BeginDmcFetch()
+    {
+        _dmcSavedBusAddress = _busAddress;
+        _dmcSavedBusWriteValue = _busWriteValue;
+        _dmcSavedBusRead = _busRead;
+        _dmcSavedSync = _sync;
+        _dmcFetchActive = true;
+        BeginRead(_dmc.CurrentAddress);
+    }
+
+    private void RestoreBusAfterDmcFetch()
+    {
+        if (_dmcSavedBusRead) BeginRead(_dmcSavedBusAddress, _dmcSavedSync);
+        else BeginWrite(_dmcSavedBusAddress, _dmcSavedBusWriteValue);
     }
 
     private void ExecuteDmaCycle()
@@ -1346,6 +1417,132 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         public void ClockLengthCounter()
         {
             if (!_lengthHalt && LengthCounter > 0) LengthCounter--;
+        }
+    }
+
+    private sealed class DmcChannel
+    {
+        private static readonly ushort[] PeriodTable =
+        [428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54];
+
+        private bool _enabled;
+        private bool _irqEnabled;
+        private bool _loop;
+        private ushort _timerPeriod;
+        private ushort _timerCounter;
+        private ushort _sampleAddress;
+        private ushort _sampleLength;
+        private byte? _sampleBuffer;
+        private byte _shiftRegister;
+        private byte _bitsRemaining;
+        private bool _silence;
+
+        public byte Output { get; private set; }
+        public ushort CurrentAddress { get; private set; }
+        public ushort BytesRemaining { get; private set; }
+        public bool IrqPending { get; private set; }
+        public bool NeedsSample => _enabled && _sampleBuffer is null && BytesRemaining > 0;
+
+        public void Reset()
+        {
+            _enabled = false;
+            _irqEnabled = false;
+            _loop = false;
+            _timerPeriod = PeriodTable[0];
+            _timerCounter = _timerPeriod;
+            _sampleAddress = 0xC000;
+            _sampleLength = 1;
+            CurrentAddress = _sampleAddress;
+            BytesRemaining = 0;
+            _sampleBuffer = null;
+            _shiftRegister = 0;
+            _bitsRemaining = 8;
+            _silence = true;
+            Output = 0;
+            IrqPending = false;
+        }
+
+        public void WriteControl(byte value)
+        {
+            _irqEnabled = (value & 0x80) != 0;
+            _loop = (value & 0x40) != 0;
+            _timerPeriod = PeriodTable[value & 0x0F];
+            if (!_irqEnabled) IrqPending = false;
+        }
+
+        public void WriteDirectLoad(byte value) => Output = (byte)(value & 0x7F);
+
+        public void WriteSampleAddress(byte value) =>
+            _sampleAddress = (ushort)(0xC000 | (value << 6));
+
+        public void WriteSampleLength(byte value) =>
+            _sampleLength = (ushort)((value << 4) | 1);
+
+        public void SetEnabled(bool enabled)
+        {
+            _enabled = enabled;
+            IrqPending = false;
+            if (!enabled)
+            {
+                BytesRemaining = 0;
+                return;
+            }
+            if (BytesRemaining == 0) RestartSample();
+        }
+
+        public void AcceptSample(byte value)
+        {
+            if (!NeedsSample) return;
+            _sampleBuffer = value;
+            CurrentAddress = CurrentAddress == 0xFFFF ? (ushort)0x8000 : (ushort)(CurrentAddress + 1);
+            BytesRemaining--;
+            if (BytesRemaining != 0) return;
+            if (_loop) RestartSample();
+            else if (_irqEnabled) IrqPending = true;
+        }
+
+        public void ClockTimer()
+        {
+            if (_timerCounter > 0)
+            {
+                _timerCounter--;
+                return;
+            }
+            _timerCounter = _timerPeriod;
+            ClockOutputUnit();
+        }
+
+        private void ClockOutputUnit()
+        {
+            if (!_silence)
+            {
+                if ((_shiftRegister & 1) != 0)
+                {
+                    if (Output <= 125) Output += 2;
+                }
+                else if (Output >= 2) Output -= 2;
+            }
+
+            _shiftRegister >>= 1;
+            if (--_bitsRemaining != 0) return;
+
+            _bitsRemaining = 8;
+            if (_sampleBuffer is byte sample)
+            {
+                _shiftRegister = sample;
+                _sampleBuffer = null;
+                _silence = false;
+            }
+            else
+            {
+                _silence = true;
+            }
+        }
+
+        private void RestartSample()
+        {
+            CurrentAddress = _sampleAddress;
+            BytesRemaining = _sampleLength;
         }
     }
 
