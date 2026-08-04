@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.33.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.34.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -39,7 +39,12 @@ Current highlights:
 
 ### VirtualHardware NES
 
-**Current development version: v0.33.0**
+### Automatic ROM-to-motherboard selection (v0.34.0)
+
+The independent VirtualHardware launch path now parses iNES and NES 2.0 cartridge metadata, resolves `Auto`, `NTSC-U`, `NTSC-J`, or `PAL`, and constructs the corresponding physical motherboard profile. Selection priority is explicit override, reliable header timing, filename refinement/fallback, then NTSC-U. The motherboard never inspects ROM filenames or headers itself. Current launch validation intentionally accepts NROM mapper 0 only while later cartridge boards remain unwired.
+
+
+**Current development version: v0.34.0**
 
 VirtualHardware is an independent electrical simulation. Components react only to power, clocks, pin levels, connected nets and their own internal state. The motherboard owns all wiring, and no execution is delegated to the playable emulator's CPU, PPU or APU classes.
 
@@ -413,3 +418,9 @@ The independent pin-driven motherboard now includes an NTSC RP2C02 timing core. 
 ## v0.30.0 VirtualHardware background pipeline
 
 The independent RP2C02 model now consumes clocked scanline and dot pins to fetch nametable, attribute, pattern and palette data, shifts out visible background pixels, and records a 256x240 inspection framebuffer without calling the legacy emulator PPU.
+
+## v0.34.0 VirtualHardware ROM loading and automatic motherboard selection
+
+The independent VirtualHardware launch boundary now reads iNES and NES 2.0 files without constructing any legacy emulator runtime object. In `Auto` mode it resolves the physical console in this order: explicit user override, NES 2.0 timing metadata, legacy iNES PAL hint, filename refinement/fallback, and finally NTSC-U. NTSC ROMs tagged as Japan construct an NTSC-J motherboard; PAL metadata constructs a PAL motherboard. The resolved region and selection source remain visible to the host for diagnostics.
+
+The new factory currently validates NROM mapper 0 with 16/32 KiB PRG ROM and 0/8 KiB CHR ROM before constructing `NesCpuMotherboard`. Unsupported mappers fail explicitly instead of silently running through the playable emulator. This is the software composition layer: ROM metadata selects the motherboard, while the motherboard itself knows only the supplied physical hardware profile and cartridge bytes.
