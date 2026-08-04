@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.37.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.39.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -44,6 +44,10 @@ Current highlights:
 
 The clocked RP2C02 background and sprite pipelines now fetch nametable, attribute, CHR pattern and palette bytes through the motherboard-owned PPU address/data nets and active-low `/RD` strobe. Visible pixels are assembled by a settling fetch microsequence against the independent CHR/CIRAM/palette device; the renderer no longer reads its compatibility VRAM array directly.
 
+### Standalone NTSC motherboard IC packages (v0.39.0)
+
+The chip-first reconstruction now includes independent, unwired package models for the SN74LS139A dual decoder, SN74LS373 octal transparent latch, SN74LS368A hex inverting tri-state driver, and HM6116-compatible 2K x 8 SRAM. Each package exposes its own power, input, output, address, data, and control pins and is tested independently. No NES motherboard composition or cross-chip calls are introduced in this milestone.
+
 ### RP2C02 external PPU bus integration (v0.36.0)
 
 The CPU-facing RP2C02 register package now owns a fourteen-bit PPU address bus, bidirectional eight-bit data bus, and active-low read/write strobes. Motherboard wiring connects those pins to the independent CHR/CIRAM/palette component introduced in v0.35.0. CPU PPUDATA accesses therefore appear as real electrical PPU-memory transactions, with diagnostics counting external reads and writes. The existing clocked renderer remains compatible while the next milestone replaces its consolidated fetch storage with a per-dot bus sequencer.
@@ -57,7 +61,7 @@ The ROM factory now carries CHR data and cartridge mirroring into the selected m
 The independent VirtualHardware launch path now parses iNES and NES 2.0 cartridge metadata, resolves `Auto`, `NTSC-U`, `NTSC-J`, or `PAL`, and constructs the corresponding physical motherboard profile. Selection priority is explicit override, reliable header timing, filename refinement/fallback, then NTSC-U. The motherboard never inspects ROM filenames or headers itself. Current launch validation intentionally accepts NROM mapper 0 only while later cartridge boards remain unwired.
 
 
-**Current development version: v0.37.0**
+**Current development version: v0.39.0**
 
 VirtualHardware is an independent electrical simulation. Components react only to power, clocks, pin levels, connected nets and their own internal state. The motherboard owns all wiring, and no execution is delegated to the playable emulator's CPU, PPU or APU classes.
 
@@ -444,3 +448,13 @@ The independent RP2C02 model now consumes clocked scanline and dot pins to fetch
 The independent VirtualHardware launch boundary now reads iNES and NES 2.0 files without constructing any legacy emulator runtime object. In `Auto` mode it resolves the physical console in this order: explicit user override, NES 2.0 timing metadata, legacy iNES PAL hint, filename refinement/fallback, and finally NTSC-U. NTSC ROMs tagged as Japan construct an NTSC-J motherboard; PAL metadata constructs a PAL motherboard. The resolved region and selection source remain visible to the host for diagnostics.
 
 The new factory currently validates NROM mapper 0 with 16/32 KiB PRG ROM and 0/8 KiB CHR ROM before constructing `NesCpuMotherboard`. Unsupported mappers fail explicitly instead of silently running through the playable emulator. This is the software composition layer: ROM metadata selects the motherboard, while the motherboard itself knows only the supplied physical hardware profile and cartridge bytes.
+
+### VirtualHardware RP2C02 internal chip decomposition (v0.38.0)
+
+The RP2C02 is now being decomposed into explicit pin-connected internal hardware rather than extending the earlier consolidated behavioral package. The first reusable chips are:
+
+- `Rp2C02VramAddressRegisters`: physical `v`, `t`, fine-X and write-toggle state with scroll/address increment and transfer control pins;
+- `Rp2C02DataBufferRegister`: edge-triggered PPUDATA read-buffer register;
+- `Rp2C02BusSequencer`: CPU/render request arbitration and external PPU address/data/read/write bus sequencing.
+
+These components contain no cartridge, CIRAM, palette or framebuffer arrays. They communicate only through pins and resolved nets. Integration into the complete RP2C02 package follows in subsequent milestones.
