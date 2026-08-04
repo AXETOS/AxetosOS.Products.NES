@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.31.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.32.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -39,7 +39,7 @@ Current highlights:
 
 ### VirtualHardware NES
 
-**Current development version: v0.31.0**
+**Current development version: v0.32.0**
 
 VirtualHardware is an independent electrical simulation. Components react only to power, clocks, pin levels, connected nets and their own internal state. The motherboard owns all wiring, and no execution is delegated to the playable emulator's CPU, PPU or APU classes.
 
@@ -216,6 +216,11 @@ Planned:
 - [ ] fullscreen and presentation settings;
 - [ ] expanded compatibility testing.
 
+
+
+## v0.32.0 VirtualHardware OAM DMA
+
+The VirtualHardware motherboard now includes the RP2A03 `$4014` OAM-DMA path. A CPU write latches the source page, the DMA controller electrically requests the CPU bus, stalls and disconnects the processor outputs, performs 256 alternating source-memory reads and OAM writes, then releases the CPU to resume execution. The transfer honors `OAMADDR` wrapping, exposes diagnostic transfer/stall counters, and remains visible to the passive CPU bus analyzer. No RAM or PPU storage is accessed through software shortcuts.
 
 ## v0.31.0 VirtualHardware sprite pipeline
 

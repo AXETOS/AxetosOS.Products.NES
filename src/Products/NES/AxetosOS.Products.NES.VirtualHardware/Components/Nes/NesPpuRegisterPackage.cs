@@ -26,6 +26,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     private bool _vblank;
     private bool _vblankPinLast;
     private bool _dotTickWasHigh;
+    private bool _dmaWriteWasHigh;
     private readonly byte[] _frameBuffer = new byte[256 * 240];
 
     public NesPpuRegisterPackage(string componentId) : base(componentId)
@@ -56,6 +57,10 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         Pixel = new DigitalBus($"{componentId}.PIXEL", pixelPins);
         PixelValid = AddPin("PIXEL_VALID", PinDirection.Output);
         DotTick = AddPin("DOT_TICK", PinDirection.Input);
+        var dmaDataPins = new DigitalPin[8];
+        for (var bit = 0; bit < 8; bit++) dmaDataPins[bit] = AddPin($"DMA_D{bit}", PinDirection.Input);
+        DmaData = new DigitalBus($"{componentId}.DMA_D", dmaDataPins);
+        DmaWrite = AddPin("DMA_WRITE", PinDirection.Input);
     }
 
     public DigitalBus Address { get; }
@@ -68,6 +73,8 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     public DigitalBus Pixel { get; }
     public DigitalPin PixelValid { get; }
     public DigitalPin DotTick { get; }
+    public DigitalBus DmaData { get; }
+    public DigitalPin DmaWrite { get; }
 
     public byte Control { get; private set; }
     public byte Mask { get; private set; }
@@ -85,6 +92,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     public ulong SpritePixelCount { get; private set; }
     public ulong SpriteZeroHitCount { get; private set; }
     public ulong SpriteOverflowCount { get; private set; }
+    public ulong DmaWriteCount { get; private set; }
     public bool SpriteZeroHit => _spriteZeroHit;
     public bool SpriteOverflow => _spriteOverflow;
     public int SecondarySpriteCount => _secondarySpriteCount;
@@ -145,11 +153,13 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         SpritePixelCount = 0;
         SpriteZeroHitCount = 0;
         SpriteOverflowCount = 0;
+        DmaWriteCount = 0;
         _secondarySpriteCount = 0;
         _spriteZeroHit = false;
         _spriteOverflow = false;
         Array.Clear(_secondaryOam);
         _dotTickWasHigh = false;
+        _dmaWriteWasHigh = false;
         Data.Release();
         NmiEnable.Drive(DigitalLevel.Low);
         Pixel.Drive(0);
@@ -165,6 +175,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
 
     public override void Evaluate()
     {
+        EvaluateOamDmaWrite();
         EvaluateBackgroundPixel();
         var vblankPinHigh = Vblank.SampledLevel == DigitalLevel.High;
         if (vblankPinHigh && !_vblankPinLast) _vblank = true;
@@ -219,6 +230,18 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
         else Data.Release();
     }
 
+
+    private void EvaluateOamDmaWrite()
+    {
+        var high = DmaWrite.SampledLevel == DigitalLevel.High;
+        if (high && !_dmaWriteWasHigh && DmaData.TrySample(out var value))
+        {
+            _oam[OamAddress] = (byte)value;
+            OamAddress++;
+            DmaWriteCount++;
+        }
+        _dmaWriteWasHigh = high;
+    }
 
     private void EvaluateBackgroundPixel()
     {

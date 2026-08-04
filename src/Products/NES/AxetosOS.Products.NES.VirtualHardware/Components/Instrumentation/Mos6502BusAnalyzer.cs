@@ -10,6 +10,9 @@ public sealed class Mos6502BusAnalyzer : VirtualHardwareComponent
 {
     private readonly List<Mos6502BusCycle> _cycles = [];
     private DigitalLevel _previousClock = DigitalLevel.Low;
+    private int _pendingDataCycleIndex = -1;
+    private bool _pendingDataSettled;
+    private bool _pendingOwnedByDma;
 
     public Mos6502BusAnalyzer(string componentId, int capacity = 4_096)
         : base(componentId)
@@ -37,6 +40,7 @@ public sealed class Mos6502BusAnalyzer : VirtualHardwareComponent
         ReadWrite = AddPin("R/W", PinDirection.Input);
         Sync = AddPin("SYNC", PinDirection.Input);
         Clock = AddPin("PHI2", PinDirection.Input);
+        CpuBusEnable = AddPin("CPU_BUS_ENABLE", PinDirection.Input);
     }
 
     public int Capacity { get; }
@@ -45,6 +49,7 @@ public sealed class Mos6502BusAnalyzer : VirtualHardwareComponent
     public DigitalPin ReadWrite { get; }
     public DigitalPin Sync { get; }
     public DigitalPin Clock { get; }
+    public DigitalPin CpuBusEnable { get; }
     public IReadOnlyList<Mos6502BusCycle> Cycles => _cycles;
     public ulong ObservedRisingEdges { get; private set; }
     public ulong DroppedCycleCount { get; private set; }
@@ -53,6 +58,9 @@ public sealed class Mos6502BusAnalyzer : VirtualHardwareComponent
     {
         _cycles.Clear();
         _previousClock = DigitalLevel.Low;
+        _pendingDataCycleIndex = -1;
+        _pendingDataSettled = false;
+        _pendingOwnedByDma = false;
         ObservedRisingEdges = 0;
         DroppedCycleCount = 0;
     }
@@ -68,12 +76,84 @@ public sealed class Mos6502BusAnalyzer : VirtualHardwareComponent
             _previousClock = currentClock;
         }
 
-        if (!rising)
+        if (rising)
+        {
+            CaptureRisingEdge();
+            return;
+        }
+
+        // Preserve the established edge-time address/control trace, but allow
+        // memory another propagation pass to resolve read data. This enriches
+        // the already-recorded cycle rather than shifting every observation by
+        // one bus phase.
+        if (_pendingDataCycleIndex < 0)
         {
             return;
         }
 
+        // Keep the observation open for the complete PHI2-high interval. DMA
+        // acquires and drives the bus through several simulator propagation
+        // passes after the rising edge, so closing the sample after the first
+        // pass can preserve the preceding CPU address instead of the settled
+        // DMA address. Finalize only when PHI2 falls.
+        if (currentClock == DigitalLevel.Low)
+        {
+            _pendingDataCycleIndex = -1;
+            return;
+        }
+
+        if (currentClock != DigitalLevel.High)
+        {
+            return;
+        }
+
+        var cycle = _cycles[_pendingDataCycleIndex];
+
+        // Bus ownership may change after PHI2 rises. Once DMA has electrically
+        // disabled the CPU, follow the resolved DMA address/control/data for the
+        // remainder of the high phase. Until then, preserve the CPU's edge-time
+        // address/control and freeze the first valid data value. This prevents a
+        // later CPU microstate or controller shift from rewriting an established
+        // normal cycle while still allowing DMA several propagation passes to
+        // acquire and settle the bus.
+        if (CpuBusEnable.SampledLevel == DigitalLevel.Low)
+        {
+            _pendingOwnedByDma = true;
+        }
+
+        if (_pendingOwnedByDma)
+        {
+            if (Address.TrySample(out var settledAddress))
+            {
+                cycle = cycle with
+                {
+                    Address = (ushort)settledAddress,
+                    IsRead = ReadWrite.SampledLevel == DigitalLevel.High,
+                    IsOpcodeFetch = false
+                };
+            }
+
+            if (Data.TrySample(out var dmaData))
+            {
+                cycle = cycle with { Data = (byte)dmaData };
+            }
+        }
+        else if (!_pendingDataSettled && Data.TrySample(out var settledData))
+        {
+            cycle = cycle with { Data = (byte)settledData };
+            _pendingDataSettled = true;
+        }
+
+        _cycles[_pendingDataCycleIndex] = cycle;
+    }
+
+    private void CaptureRisingEdge()
+    {
         ObservedRisingEdges++;
+        _pendingDataCycleIndex = -1;
+        _pendingDataSettled = false;
+        _pendingOwnedByDma = false;
+
         if (!Address.TrySample(out var rawAddress))
         {
             return;
@@ -94,11 +174,16 @@ public sealed class Mos6502BusAnalyzer : VirtualHardwareComponent
         }
 
         _cycles.Add(cycle);
+        _pendingDataCycleIndex = _cycles.Count - 1;
+        _pendingDataSettled = hasData;
     }
 
     public void Clear()
     {
         _cycles.Clear();
+        _pendingDataCycleIndex = -1;
+        _pendingDataSettled = false;
+        _pendingOwnedByDma = false;
         DroppedCycleCount = 0;
     }
 }

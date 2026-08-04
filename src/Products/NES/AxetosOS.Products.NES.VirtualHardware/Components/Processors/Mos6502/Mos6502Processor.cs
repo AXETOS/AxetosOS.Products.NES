@@ -68,6 +68,7 @@ public sealed class Mos6502Processor : VirtualHardwareComponent
         IrqBar = AddPin("/IRQ", PinDirection.Input);
         NmiBar = AddPin("/NMI", PinDirection.Input);
         Ready = AddPin("RDY", PinDirection.Input);
+        BusEnable = AddPin("BUS_ENABLE", PinDirection.Input);
     }
 
     public DigitalBus Address { get; }
@@ -79,6 +80,8 @@ public sealed class Mos6502Processor : VirtualHardwareComponent
     public DigitalPin IrqBar { get; }
     public DigitalPin NmiBar { get; }
     public DigitalPin Ready { get; }
+    /// <summary>Internal package bus grant. Low releases A, D, R/W and SYNC for RP2A03 DMA.</summary>
+    public DigitalPin BusEnable { get; }
     public ushort ProgramCounter { get; private set; }
     public byte StackPointer { get; private set; }
     public byte Status { get; private set; }
@@ -109,6 +112,15 @@ public sealed class Mos6502Processor : VirtualHardwareComponent
     public override void Evaluate()
     {
         SampleNmiEdge();
+        if (BusEnable.SampledLevel == DigitalLevel.Low)
+        {
+            Address.Release();
+            Data.Release();
+            ReadWrite.Release();
+            Sync.Release();
+            _previousClock = Clock.SampledLevel;
+            return;
+        }
         if (ResetBar.SampledLevel == DigitalLevel.Low)
         {
             BeginResetSequence(); _previousClock = Clock.SampledLevel; return;

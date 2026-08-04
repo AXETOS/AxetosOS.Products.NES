@@ -58,6 +58,10 @@ public sealed class NesCpuMotherboard
         NmiHigh = Board.Add(new DigitalPowerRail("nes.nmi-pullup", DigitalLevel.High));
         NmiPullup = Board.Add(new PullResistor("nes.nmi-resistor"));
         ReadyHigh = Board.Add(new DigitalPowerRail("nes.ready-pullup", DigitalLevel.High));
+        ReadyPullup = Board.Add(new PullResistor("nes.ready-resistor"));
+        BusEnableHigh = Board.Add(new DigitalPowerRail("nes.bus-enable-pullup", DigitalLevel.High));
+        BusEnablePullup = Board.Add(new PullResistor("nes.bus-enable-resistor"));
+        OamDma = Board.Add(new NesOamDmaController("nes.oam-dma"));
         Analyzer = Board.Add(new Mos6502BusAnalyzer("nes.cpu-bus-analyzer"));
         ControllerIo = Board.Add(new NesControllerIoPackage("nes.controller-io"));
         PpuRegisters = Board.Add(new NesPpuRegisterPackage("nes.ppu-registers"));
@@ -89,6 +93,10 @@ public sealed class NesCpuMotherboard
     public DigitalPowerRail NmiHigh { get; }
     public PullResistor NmiPullup { get; }
     public DigitalPowerRail ReadyHigh { get; }
+    public PullResistor ReadyPullup { get; }
+    public DigitalPowerRail BusEnableHigh { get; }
+    public PullResistor BusEnablePullup { get; }
+    public NesOamDmaController OamDma { get; }
     public Mos6502BusAnalyzer Analyzer { get; }
     public NesControllerIoPackage ControllerIo { get; }
     public NesPpuRegisterPackage PpuRegisters { get; }
@@ -201,13 +209,16 @@ public sealed class NesCpuMotherboard
     {
         Board.Connect("VCC", Vcc.Output, ResetCircuit.Vcc);
         Board.Connect("GND", Ground.Output, RamDecoder.EnableBar, PrgDecoder.EnableBar);
-        Board.Connect("PHI2", Clock.Output, Cpu.Clock, Analyzer.Clock);
+        Board.Connect("PHI2", Clock.Output, Cpu.Clock, Analyzer.Clock, OamDma.Clock);
         Board.Connect("/RESET", ResetCircuit.ResetBar, Cpu.ResetBar);
         Board.Connect("/IRQ", IrqHigh.Output, Cpu.IrqBar);
         Board.Connect("NMI_PULLUP_RAIL", NmiHigh.Output, NmiPullup.Rail);
         Board.Connect("/NMI", NmiPullup.Node, PpuTiming.NmiBar, Cpu.NmiBar);
-        Board.Connect("RDY", ReadyHigh.Output, Cpu.Ready);
-        Board.Connect("R/W", Cpu.ReadWrite, WorkRam.WriteEnableBar, ReadInverter.Input, Analyzer.ReadWrite, ControllerIo.ReadWrite, PpuRegisters.ReadWrite);
+        Board.Connect("RDY_PULLUP_RAIL", ReadyHigh.Output, ReadyPullup.Rail);
+        Board.Connect("RDY", ReadyPullup.Node, OamDma.Ready, Cpu.Ready);
+        Board.Connect("BUS_ENABLE_PULLUP_RAIL", BusEnableHigh.Output, BusEnablePullup.Rail);
+        Board.Connect("CPU_BUS_ENABLE", BusEnablePullup.Node, OamDma.CpuBusEnable, Cpu.BusEnable, Analyzer.CpuBusEnable);
+        Board.Connect("R/W", Cpu.ReadWrite, OamDma.ReadWrite, WorkRam.WriteEnableBar, ReadInverter.Input, Analyzer.ReadWrite, ControllerIo.ReadWrite, PpuRegisters.ReadWrite);
         Board.Connect("/READ", ReadInverter.Output, WorkRam.OutputEnableBar, PrgRom.OutputEnableBar);
         Board.Connect("SYNC", Cpu.Sync, Analyzer.Sync);
         Board.Connect("PPU_CLK", PpuClock.Output, PpuTiming.Clock);
@@ -215,6 +226,11 @@ public sealed class NesCpuMotherboard
         Board.Connect("PPU_FORCE_VBLANK", PpuVblank.Output, PpuTiming.ForceVblank);
         Board.Connect("PPU_VBLANK", PpuTiming.Vblank, PpuRegisters.Vblank);
         Board.Connect("PPU_DOT_TICK", PpuTiming.DotTick, PpuRegisters.DotTick);
+        Board.Connect("PPU_OAM_DMA_WRITE", OamDma.OamWrite, PpuRegisters.DmaWrite);
+        for (var bit = 0; bit < 8; bit++)
+        {
+            Board.Connect($"PPU_OAM_DMA_D{bit}", OamDma.OamData.Pins[bit], PpuRegisters.DmaData.Pins[bit]);
+        }
         for (var bit = 0; bit < 9; bit++)
         {
             Board.Connect($"PPU_SCANLINE{bit}", PpuTiming.ScanlineBus.Pins[bit], PpuRegisters.Scanline.Pins[bit]);
@@ -237,7 +253,7 @@ public sealed class NesCpuMotherboard
     {
         for (var bit = 0; bit < 16; bit++)
         {
-            Board.Connect($"A{bit}", Cpu.Address.Pins[bit], Analyzer.Address.Pins[bit], ControllerIo.Address.Pins[bit], PpuRegisters.Address.Pins[bit]);
+            Board.Connect($"A{bit}", Cpu.Address.Pins[bit], OamDma.Address.Pins[bit], Analyzer.Address.Pins[bit], ControllerIo.Address.Pins[bit], PpuRegisters.Address.Pins[bit]);
         }
 
         for (var bit = 0; bit < 11; bit++)
@@ -255,7 +271,7 @@ public sealed class NesCpuMotherboard
     {
         for (var bit = 0; bit < 8; bit++)
         {
-            Board.Connect($"D{bit}", Cpu.Data.Pins[bit], WorkRam.Data.Pins[bit], PrgRom.Data.Pins[bit], Analyzer.Data.Pins[bit], ControllerIo.Data.Pins[bit], PpuRegisters.Data.Pins[bit]);
+            Board.Connect($"D{bit}", Cpu.Data.Pins[bit], OamDma.Data.Pins[bit], WorkRam.Data.Pins[bit], PrgRom.Data.Pins[bit], Analyzer.Data.Pins[bit], ControllerIo.Data.Pins[bit], PpuRegisters.Data.Pins[bit]);
         }
     }
 }
