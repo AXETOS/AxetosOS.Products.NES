@@ -84,6 +84,9 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private bool _frameFiveStepMode;
     private bool _frameIrqInhibit;
     private bool _frameIrqPending;
+    private bool _frameCounterWritePending;
+    private byte _pendingFrameCounterValue;
+    private int _frameCounterWriteDelay;
     private bool _apuTimerPhase;
     private byte _audioDacLevel;
     private bool _dmcFetchActive;
@@ -158,6 +161,9 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     public byte ControllerOutputLatch => _controllerOutputLatch;
     public ulong ApuCpuCycleCount => _apuCpuCycles;
     public bool FrameIrqPending => _frameIrqPending;
+    public bool FrameFiveStepMode => _frameFiveStepMode;
+    public bool FrameCounterWritePending => _frameCounterWritePending;
+    public int FrameSequenceCycle => _frameSequenceCycle;
     public byte AudioDacLevel => _audioDacLevel;
     public byte Pulse1OutputLevel => _pulse1.Output;
     public byte Pulse2OutputLevel => _pulse2.Output;
@@ -205,6 +211,9 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _frameFiveStepMode = false;
         _frameIrqInhibit = false;
         _frameIrqPending = false;
+        _frameCounterWritePending = false;
+        _pendingFrameCounterValue = 0;
+        _frameCounterWriteDelay = 0;
         _apuTimerPhase = false;
         _audioDacLevel = 0;
         _dmcFetchActive = false;
@@ -922,21 +931,26 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         }
         else if (_busAddress == 0x4017)
         {
-            _frameFiveStepMode = (_busWriteValue & 0x80) != 0;
-            _frameIrqInhibit = (_busWriteValue & 0x40) != 0;
-            if (_frameIrqInhibit) _frameIrqPending = false;
-            _frameSequenceCycle = 0;
-            if (_frameFiveStepMode)
-            {
-                ClockQuarterFrame();
-                ClockHalfFrame();
-            }
+            // The frame-counter mode and divider reset do not take effect on
+            // the write edge.  The RP2A03 delays the reload by three or four
+            // CPU cycles according to the current APU phase.  IRQ inhibit,
+            // however, clears a pending frame IRQ immediately.
+            _pendingFrameCounterValue = _busWriteValue;
+            _frameCounterWritePending = true;
+            _frameCounterWriteDelay = (_apuCpuCycles & 1UL) == 0 ? 3 : 4;
+            if ((_busWriteValue & 0x40) != 0) _frameIrqPending = false;
         }
     }
 
     private void ClockApuCpuCycle()
     {
         _apuCpuCycles++;
+
+        if (_frameCounterWritePending && --_frameCounterWriteDelay == 0)
+        {
+            ApplyPendingFrameCounterWrite();
+        }
+
         _frameSequenceCycle++;
         _apuTimerPhase = !_apuTimerPhase;
         _triangle.ClockTimer();
@@ -985,8 +999,46 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             }
         }
 
-        _audioDacLevel = (byte)(_pulse1.Output + _pulse2.Output + _triangle.Output + _noise.Output + _dmc.Output);
+        _audioDacLevel = MixApuChannels(
+            _pulse1.Output,
+            _pulse2.Output,
+            _triangle.Output,
+            _noise.Output,
+            _dmc.Output);
         AudioOut.Drive(_audioDacLevel == 0 ? DigitalLevel.Low : DigitalLevel.High);
+    }
+
+    private void ApplyPendingFrameCounterWrite()
+    {
+        _frameCounterWritePending = false;
+        _frameFiveStepMode = (_pendingFrameCounterValue & 0x80) != 0;
+        _frameIrqInhibit = (_pendingFrameCounterValue & 0x40) != 0;
+        if (_frameIrqInhibit) _frameIrqPending = false;
+        _frameSequenceCycle = 0;
+
+        // Five-step mode clocks both frame units when the delayed reload
+        // occurs. Four-step mode begins a new sequence without an immediate
+        // quarter/half-frame clock.
+        if (_frameFiveStepMode)
+        {
+            ClockQuarterFrame();
+            ClockHalfFrame();
+        }
+    }
+
+    private static byte MixApuChannels(byte pulse1, byte pulse2, byte triangle, byte noise, byte dmc)
+    {
+        var pulseSum = pulse1 + pulse2;
+        var pulseOut = pulseSum == 0
+            ? 0.0
+            : 95.88 / ((8128.0 / pulseSum) + 100.0);
+
+        var tndInput = triangle / 8227.0 + noise / 12241.0 + dmc / 22638.0;
+        var tndOut = tndInput == 0.0
+            ? 0.0
+            : 159.79 / ((1.0 / tndInput) + 100.0);
+
+        return (byte)Math.Clamp((int)Math.Round((pulseOut + tndOut) * 255.0), 0, 255);
     }
 
     private void ClockQuarterFrame()

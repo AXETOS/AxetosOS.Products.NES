@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.44.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.45.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -490,3 +490,8 @@ The standalone Ricoh `RP2A03` package now contains independent triangle and nois
 ### VirtualHardware v0.44.0 — standalone RP2A03 DMC channel
 
 The standalone Ricoh RP2A03 package now contains its delta modulation channel: `$4010`–`$4013` control registers, NTSC rate divider, 7-bit output counter, sample address and length counters, sample buffer, output shift register, loop control, DMC IRQ state, `$4015` status/enable behavior, address wrap from `$FFFF` to `$8000`, and external sample reads performed through the package CPU address/data/control pins. DMC memory requests temporarily retain and restore the interrupted CPU read cycle; no RAM, cartridge, motherboard, or sample provider is referenced by the chip.
+
+## v0.45.0 Standalone RP2A03 APU accuracy hardening
+
+The standalone RP2A03 now applies the documented nonlinear pulse and TND mixer transfer curves instead of adding channel DAC codes linearly. `$4017` writes use a phase-dependent three-or-four CPU-cycle delayed frame-counter reload, with immediate frame-IRQ clearing when inhibit is written. Dedicated chip tests verify nonlinear DAC output, internal `$4015` channel status, and delayed five-step mode activation. No motherboard or NES runtime wiring is introduced.
+
