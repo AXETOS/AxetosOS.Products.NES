@@ -255,6 +255,320 @@ public sealed class VirtualHardwareMos6502Tests
         Assert.Equal((byte)(stackBeforeWrite - 1), fixture.Cpu.StackPointer);
     }
 
+
+    [Fact]
+    public void Register_transfers_and_immediate_alu_execute_through_fetch_cycles()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        var program = new byte[]
+        {
+            0xA9, 0x40, // LDA #$40
+            0x69, 0x40, // ADC #$40 => $80, overflow set
+            0xAA,       // TAX
+            0xE8,       // INX => $81
+            0x8A,       // TXA
+            0x49, 0xFF, // EOR #$FF => $7E
+            0x00
+        };
+        Array.Copy(program, 0, romImage, 0x8000, program.Length);
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.alu", romImage, DigitalLevel.High, DigitalLevel.High);
+        RunUntilHalted(fixture);
+
+        Assert.Equal((byte)0x7E, fixture.Cpu.Accumulator);
+        Assert.Equal((byte)0x81, fixture.Cpu.X);
+        Assert.Equal((ulong)7, fixture.Cpu.CompletedInstructionCount);
+        Assert.NotEqual(0, fixture.Cpu.Status & 0x40);
+    }
+
+    [Fact]
+    public void Conditional_branch_uses_signed_relative_offset()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        var program = new byte[]
+        {
+            0xA9, 0x00, // Z set
+            0xF0, 0x02, // BEQ +2
+            0xA9, 0x11, // skipped
+            0xA9, 0x22,
+            0x00
+        };
+        Array.Copy(program, 0, romImage, 0x8000, program.Length);
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.branch", romImage, DigitalLevel.High, DigitalLevel.High);
+        RunUntilHalted(fixture);
+
+        Assert.Equal((byte)0x22, fixture.Cpu.Accumulator);
+        Assert.Equal((ushort)0x8009, fixture.Cpu.ProgramCounter);
+    }
+
+    [Fact]
+    public void Jsr_uses_external_stack_bus_cycles_and_enters_subroutine()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        romImage[0x8000] = 0x20; // JSR $9000
+        romImage[0x8001] = 0x00;
+        romImage[0x8002] = 0x90;
+        romImage[0x8003] = 0x00;
+        romImage[0x9000] = 0xA9;
+        romImage[0x9001] = 0x33;
+        romImage[0x9002] = 0x00;
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.jsr", romImage, DigitalLevel.High, DigitalLevel.High);
+        var writes = new List<(ushort Address, byte Data)>();
+        fixture.Board.PowerOn();
+        fixture.Simulator.Settle();
+        fixture.Reset.Set(DigitalLevel.High);
+        fixture.Simulator.Settle();
+        for (var cycle = 0; cycle < 64 && !fixture.Cpu.IsHalted; cycle++)
+        {
+            Tick(fixture.Clock, fixture.Simulator);
+            if (fixture.Cpu.ReadWrite.DriveLevel == DigitalLevel.Low &&
+                fixture.Cpu.Address.TrySample(out var address) && fixture.Cpu.Data.TrySample(out var data))
+            {
+                writes.Add(((ushort)address, (byte)data));
+            }
+        }
+
+        Assert.True(fixture.Cpu.IsHalted);
+        Assert.Equal((byte)0x33, fixture.Cpu.Accumulator);
+        Assert.Contains(((ushort)0x01FD, (byte)0x80), writes);
+        Assert.Contains(((ushort)0x01FC, (byte)0x02), writes);
+    }
+
+    [Fact]
+    public void Absolute_store_drives_address_data_and_write_control_pins()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        var program = new byte[] { 0xA9, 0x5A, 0x8D, 0x34, 0x12, 0x00 };
+        Array.Copy(program, 0, romImage, 0x8000, program.Length);
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.store", romImage, DigitalLevel.High, DigitalLevel.High);
+        fixture.Board.PowerOn();
+        fixture.Simulator.Settle();
+        fixture.Reset.Set(DigitalLevel.High);
+        fixture.Simulator.Settle();
+        (ushort Address, byte Data)? observedWrite = null;
+        for (var cycle = 0; cycle < 32 && !fixture.Cpu.IsHalted; cycle++)
+        {
+            Tick(fixture.Clock, fixture.Simulator);
+            if (fixture.Cpu.ReadWrite.DriveLevel == DigitalLevel.Low &&
+                fixture.Cpu.Address.TrySample(out var address) && fixture.Cpu.Data.TrySample(out var data))
+            {
+                observedWrite = ((ushort)address, (byte)data);
+            }
+        }
+
+        Assert.True(observedWrite.HasValue);
+        Assert.Equal(((ushort)0x1234, (byte)0x5A), observedWrite.Value);
+    }
+
+    [Fact]
+    public void Pha_pushes_accumulator_and_decrements_stack_pointer()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        var program = new byte[] { 0xA9, 0xA5, 0x48, 0x00 };
+        Array.Copy(program, 0, romImage, 0x8000, program.Length);
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.pha", romImage, DigitalLevel.High, DigitalLevel.High);
+        fixture.Board.PowerOn();
+        fixture.Simulator.Settle();
+        fixture.Reset.Set(DigitalLevel.High);
+        fixture.Simulator.Settle();
+        (ushort Address, byte Data)? observedWrite = null;
+        for (var cycle = 0; cycle < 32 && !fixture.Cpu.IsHalted; cycle++)
+        {
+            Tick(fixture.Clock, fixture.Simulator);
+            if (fixture.Cpu.ReadWrite.DriveLevel == DigitalLevel.Low &&
+                fixture.Cpu.Address.TrySample(out var address) && fixture.Cpu.Data.TrySample(out var data))
+            {
+                observedWrite = ((ushort)address, (byte)data);
+            }
+        }
+
+        Assert.True(observedWrite.HasValue);
+        Assert.Equal(((ushort)0x01FD, (byte)0xA5), observedWrite.Value);
+        Assert.Equal((byte)0xFC, fixture.Cpu.StackPointer);
+    }
+
+    [Fact]
+    public void Indexed_addressing_reads_zero_page_and_absolute_operands_through_pins()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        var program = new byte[]
+        {
+            0xA2, 0x03,       // LDX #$03
+            0xB5, 0x20,       // LDA $20,X -> $23
+            0xA0, 0x02,       // LDY #$02
+            0x79, 0x00, 0x90, // ADC $9000,Y -> $9002
+            0x00
+        };
+        Array.Copy(program, 0, romImage, 0x8000, program.Length);
+        romImage[0x0023] = 0x10;
+        romImage[0x9002] = 0x22;
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.indexed", romImage, DigitalLevel.High, DigitalLevel.High);
+        RunUntilHalted(fixture);
+
+        Assert.Equal((byte)0x32, fixture.Cpu.Accumulator);
+        Assert.Equal((byte)0x03, fixture.Cpu.X);
+        Assert.Equal((byte)0x02, fixture.Cpu.Y);
+    }
+
+    [Fact]
+    public void Indexed_indirect_and_indirect_indexed_modes_follow_zero_page_pointer_bus_cycles()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        var program = new byte[]
+        {
+            0xA2, 0x04, // LDX #$04
+            0xA1, 0x20, // LDA ($20,X), pointer at $24/$25
+            0xA0, 0x03, // LDY #$03
+            0x11, 0x30, // ORA ($30),Y
+            0x00
+        };
+        Array.Copy(program, 0, romImage, 0x8000, program.Length);
+        romImage[0x0024] = 0x00;
+        romImage[0x0025] = 0x90;
+        romImage[0x0030] = 0x10;
+        romImage[0x0031] = 0x90;
+        romImage[0x9000] = 0x40;
+        romImage[0x9013] = 0x05;
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.indirect-indexed", romImage, DigitalLevel.High, DigitalLevel.High);
+        RunUntilHalted(fixture);
+
+        Assert.Equal((byte)0x45, fixture.Cpu.Accumulator);
+    }
+
+    [Fact]
+    public void Read_modify_write_performs_dummy_and_final_external_writes()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        var program = new byte[] { 0xE6, 0x40, 0x00 }; // INC $40
+        Array.Copy(program, 0, romImage, 0x8000, program.Length);
+        romImage[0x0040] = 0x7F;
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.rmw", romImage, DigitalLevel.High, DigitalLevel.High);
+        var writes = new List<(ushort Address, byte Data)>();
+        fixture.Board.PowerOn();
+        fixture.Simulator.Settle();
+        fixture.Reset.Set(DigitalLevel.High);
+        fixture.Simulator.Settle();
+        for (var cycle = 0; cycle < 32 && !fixture.Cpu.IsHalted; cycle++)
+        {
+            Tick(fixture.Clock, fixture.Simulator);
+            if (fixture.Cpu.ReadWrite.DriveLevel == DigitalLevel.Low &&
+                fixture.Cpu.Address.TrySample(out var address) && fixture.Cpu.Data.TrySample(out var data))
+            {
+                writes.Add(((ushort)address, (byte)data));
+            }
+        }
+
+        Assert.Equal(2, writes.Count);
+        Assert.Equal(((ushort)0x0040, (byte)0x7F), writes[0]);
+        Assert.Equal(((ushort)0x0040, (byte)0x80), writes[1]);
+        Assert.NotEqual(0, fixture.Cpu.Status & 0x80);
+    }
+
+    [Fact]
+    public void Accumulator_rotates_and_bit_update_the_expected_status_flags()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        var program = new byte[]
+        {
+            0xA9, 0x80, // LDA #$80
+            0x0A,       // ASL A -> $00, carry and zero
+            0x2A,       // ROL A -> $01
+            0x24, 0x50, // BIT $50: A&$C0 == 0, N and V copied
+            0x00
+        };
+        Array.Copy(program, 0, romImage, 0x8000, program.Length);
+        romImage[0x0050] = 0xC0;
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.bit-shift", romImage, DigitalLevel.High, DigitalLevel.High);
+        RunUntilHalted(fixture);
+
+        Assert.Equal((byte)0x01, fixture.Cpu.Accumulator);
+        Assert.NotEqual(0, fixture.Cpu.Status & 0x02);
+        Assert.NotEqual(0, fixture.Cpu.Status & 0x40);
+        Assert.NotEqual(0, fixture.Cpu.Status & 0x80);
+    }
+
+    [Fact]
+    public void Indirect_jump_reproduces_the_nmos_page_boundary_wrap()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        romImage[0x8000] = 0x6C; // JMP ($30FF)
+        romImage[0x8001] = 0xFF;
+        romImage[0x8002] = 0x30;
+        romImage[0x30FF] = 0x34;
+        romImage[0x3000] = 0x92; // NMOS wrap, not $3100
+        romImage[0x3100] = 0x88;
+        romImage[0x9234] = 0x00;
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.jmp-indirect", romImage, DigitalLevel.High, DigitalLevel.High);
+        RunUntilHalted(fixture);
+
+        Assert.Equal((ushort)0x9235, fixture.Cpu.ProgramCounter);
+    }
+
+    [Fact]
+    public void Rti_pulls_status_and_program_counter_from_the_external_stack_bus()
+    {
+        var romImage = new byte[ushort.MaxValue + 1];
+        romImage[0x8000] = 0x40; // RTI
+        romImage[0x01FE] = 0xC1; // N, V and C set
+        romImage[0x01FF] = 0x34;
+        romImage[0x0100] = 0x92;
+        romImage[0x9234] = 0x00;
+        romImage[0xFFFC] = 0x00;
+        romImage[0xFFFD] = 0x80;
+
+        var fixture = CreateRomFixture("test.mos6502.rti", romImage, DigitalLevel.High, DigitalLevel.High);
+        RunUntilHalted(fixture);
+
+        Assert.Equal((ushort)0x9235, fixture.Cpu.ProgramCounter);
+        Assert.Equal((byte)0x00, fixture.Cpu.StackPointer);
+        Assert.NotEqual(0, fixture.Cpu.Status & 0x01);
+        Assert.NotEqual(0, fixture.Cpu.Status & 0x40);
+        Assert.NotEqual(0, fixture.Cpu.Status & 0x80);
+        Assert.Equal(0, fixture.Cpu.Status & 0x10);
+    }
+
+    private static void RunUntilHalted(RomFixture fixture)
+    {
+        fixture.Board.PowerOn();
+        fixture.Simulator.Settle();
+        fixture.Reset.Set(DigitalLevel.High);
+        fixture.Simulator.Settle();
+        for (var cycle = 0; cycle < 128 && !fixture.Cpu.IsHalted; cycle++)
+        {
+            Tick(fixture.Clock, fixture.Simulator);
+        }
+        Assert.True(fixture.Cpu.IsHalted);
+    }
+
     private static RomFixture CreateRomFixture(
         string id,
         byte[] romImage,

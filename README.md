@@ -313,6 +313,7 @@ The motherboard topology now includes the physical console-facing boundary: cont
 ## New pin-driven virtual hardware implementation
 
 The validated emulator remains available as the working reference machine. A separate `AxetosOS.Products.NES.VirtualHardware` project now begins the true hardware-composition implementation.
+- v0.25.0 expands the pin-driven MOS 6502 with indexed/indirect addressing, RMW cycles, shifts/rotates, BIT and RTI.
 
 The new implementation starts below the NES level. Components communicate only through pins and resolved electrical nets. The first foundation includes digital levels, high-impedance outputs, weak and strong drivers, contention detection, power and ground rails, pull resistors, logic components, explicit board wiring, and a propagation-settling simulator.
 
@@ -335,3 +336,7 @@ The demonstration processor drives address, data and read/write pins, samples me
 ### Pin-driven 6502-family processor foundation
 
 The separate `VirtualHardware` implementation now contains a reusable 6502-family processor boundary under `Components/Processors/Mos6502`. It exposes a 16-bit address bus, bidirectional 8-bit data bus, `R/W`, `SYNC`, `PHI2`, `/RESET`, `/IRQ`, `/NMI`, and `RDY` pins. Reset now executes as an explicit seven-cycle pin-driven sequence. IRQ and falling-edge-latched NMI entry perform observable stack writes and vector reads through the external buses, with hardware-interrupt status semantics and read-cycle-only `RDY` stalls. The processor has no RAM, ROM, motherboard, or NES-bus dependency. The executable subset intentionally remains small while the pin-level cycle engine is validated independently from the working emulator.
+
+### VirtualHardware MOS 6502 execution core (v0.25.0)
+
+The independent pin-driven MOS 6502 now includes a reusable execution core built entirely on external bus cycles. It includes the X and Y registers, status-flag handling, arithmetic and logic, register transfers, branches, stack operations and subroutine flow. Version 0.25.0 expands this foundation with zero-page indexed, absolute indexed, indexed-indirect and indirect-indexed addressing; NMOS-compatible indirect JMP page wrapping; accumulator and memory shifts/rotates; INC/DEC read-modify-write sequences with observable dummy and final writes; BIT; RTI; TSX; and TXS. The decoder now recognizes all 151 official opcode values, while opcode 0x00 intentionally remains a temporary test-program stop marker until a dedicated BRK sequence is introduced. Memory access remains visible only through A0-A15, D0-D7, R/W, SYNC, PHI2 and the control pins; it does not call the legacy emulator CPU or directly access a memory object.
