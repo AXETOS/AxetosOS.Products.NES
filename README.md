@@ -610,7 +610,7 @@ The final standalone discrete-chip audit completes the SN74LS139A, SN74LS373, SN
 
 Residual limitations are restricted to analog TTL voltage thresholds, propagation-delay distributions, setup/hold metastability, SRAM cell leakage, process-dependent power-up values, and destructive operation outside rated supply conditions. These are intentionally outside the deterministic digital package-model scope.
 
-## v0.63.0 — standalone RP2A07 PAL completion sweep
+## v0.64.0 — standalone RP2A07 PAL completion sweep
 
 Adds the PAL Ricoh RP2A07 as an independent reusable package rather than a region switch inside RP2A03. The package retains the completed 6502-derived CPU, controller I/O, OAM DMA, DMC DMA arbitration, interrupt/reset sequencing, and five APU channels, while replacing the region-dependent silicon timing with the PAL clock divider, PAL frame-sequencer cadence, PAL noise periods, and PAL DMC rates. It exposes the same named electrical package interface as the RP2A03 and has no motherboard, cartridge, PPU, renderer, or host dependency.
 
