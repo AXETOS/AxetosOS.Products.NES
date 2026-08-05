@@ -1,3 +1,19 @@
+## v0.71.2 — NROM CPU read data-hold correction
+
+Version 0.71.2 keeps PRG ROM data electrically driven for the complete selected CPU read cycle while using M2 only to qualify and count a new cartridge transaction. This allows the RP2A03 to sample stable reset-vector and opcode data on its later bus phase without depending on component evaluation order, while preserving pin-only cartridge behavior and releasing D0-D7 immediately when the CPU address or R/W selection changes.
+
+## v0.71.1 — first real NROM boot host bus-settling correction
+
+Version 0.71.1 makes NROM bus ownership idempotent across electrical propagation passes. The cartridge now drives or releases CPU and PPU bidirectional buses only when the selected bus phase requires a state change, and transaction counters advance once per asserted bus cycle. This removes a false non-settling loop while preserving real pin-only cartridge behavior.
+
+## v0.71.0 — first real NROM boot host
+
+- Adds a host-side power/reset/master-clock runner for the regional virtual machine.
+- Loads ROM bytes only into pin-driven cartridge hardware.
+- Captures pixels solely from RP2C02 output state and audio solely from the RP2A03 DAC state.
+- Adds first-boot diagnostics for reset-vector traffic, opcode execution, vblank/NMI, cartridge bus reads, pixels, and audio samples.
+- Adds a synthetic NROM boot regression that executes through the Famicom motherboard and shared slot without direct memory or chip calls.
+
 
 ## v0.70.0 — Virtual NROM cartridge hardware
 

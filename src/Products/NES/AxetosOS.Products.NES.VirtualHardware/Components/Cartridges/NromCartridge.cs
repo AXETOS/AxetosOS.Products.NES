@@ -15,6 +15,9 @@ public sealed class NromCartridge : VirtualHardwareComponent
     private bool _chrRam;
     private VirtualHardwareNesMirroring _mirroring;
     private byte _ppuLowAddressLatch;
+    private bool _cpuReadActive;
+    private bool _ppuReadActive;
+    private bool _ppuWriteActive;
 
     public NromCartridge(string componentId) : base(componentId)
     {
@@ -54,6 +57,9 @@ public sealed class NromCartridge : VirtualHardwareComponent
         IsInserted = false;
         _prg = [];
         _chr = [];
+        _cpuReadActive = false;
+        _ppuReadActive = false;
+        _ppuWriteActive = false;
         ReleaseOutputs();
     }
 
@@ -77,26 +83,47 @@ public sealed class NromCartridge : VirtualHardwareComponent
     public ulong PpuReadCount { get; private set; }
     public ulong PpuWriteCount { get; private set; }
 
-    public override void PowerOn() => ReleaseOutputs();
-    public override void Reset() { _ppuLowAddressLatch = 0; ReleaseOutputs(); }
+    public override void PowerOn() => Reset();
+    public override void Reset()
+    {
+        _ppuLowAddressLatch = 0;
+        _cpuReadActive = false;
+        _ppuReadActive = false;
+        _ppuWriteActive = false;
+        ReleaseOutputs();
+    }
 
     public override void Evaluate()
     {
         if (!IsInserted || Vcc.SampledLevel != DigitalLevel.High || Gnd.SampledLevel != DigitalLevel.Low)
         {
+            _cpuReadActive = false;
+            _ppuReadActive = false;
+            _ppuWriteActive = false;
             ReleaseOutputs();
             return;
         }
 
         IrqBar.Release(); // NROM has no IRQ source.
-        CpuData.Release();
-        PpuAddressData.Release();
 
-        if (PpuAle.SampledLevel == DigitalLevel.High && PpuAddressData.TrySample(out var low))
-            _ppuLowAddressLatch = (byte)low;
+        if (PpuAle.SampledLevel == DigitalLevel.High)
+        {
+            // During ALE the cartridge must not own AD0-AD7; the PPU is placing
+            // the low address byte on the multiplexed bus.
+            PpuAddressData.Release();
+            _ppuReadActive = false;
+            _ppuWriteActive = false;
+            if (PpuAddressData.TrySample(out var low))
+            {
+                _ppuLowAddressLatch = (byte)low;
+            }
+        }
 
         var ppuAddressKnown = PpuHighAddress.TrySample(out var high);
         var ppuAddress = (ushort)(((high & 0x3F) << 8) | _ppuLowAddressLatch);
+        var ppuReadSelected = false;
+        var ppuWriteSelected = false;
+
         if (ppuAddressKnown)
         {
             var nametable = (ppuAddress & 0x2000) != 0;
@@ -109,35 +136,76 @@ public sealed class NromCartridge : VirtualHardwareComponent
             };
             CiramA10.Drive((ppuAddress & (1 << a10SourceBit)) == 0 ? DigitalLevel.Low : DigitalLevel.High);
 
-            if (ppuAddress < 0x2000)
+            if (PpuAle.SampledLevel != DigitalLevel.High && ppuAddress < 0x2000)
             {
-                if (PpuReadBar.SampledLevel == DigitalLevel.Low)
+                ppuReadSelected = PpuReadBar.SampledLevel == DigitalLevel.Low;
+                ppuWriteSelected = _chrRam && PpuWriteBar.SampledLevel == DigitalLevel.Low;
+
+                if (ppuReadSelected)
                 {
                     PpuAddressData.Drive(_chr[ppuAddress & 0x1FFF]);
-                    PpuReadCount++;
+                    if (!_ppuReadActive)
+                    {
+                        PpuReadCount++;
+                    }
                 }
-                else if (_chrRam && PpuWriteBar.SampledLevel == DigitalLevel.Low && PpuAddressData.TrySample(out var data))
+                else
                 {
-                    _chr[ppuAddress & 0x1FFF] = (byte)data;
-                    PpuWriteCount++;
+                    PpuAddressData.Release();
+                    if (ppuWriteSelected && PpuAddressData.TrySample(out var data) && !_ppuWriteActive)
+                    {
+                        _chr[ppuAddress & 0x1FFF] = (byte)data;
+                        PpuWriteCount++;
+                    }
                 }
+            }
+            else if (PpuAle.SampledLevel != DigitalLevel.High)
+            {
+                PpuAddressData.Release();
             }
         }
         else
         {
             CiramChipEnableBar.Drive(DigitalLevel.High);
             CiramA10.Drive(DigitalLevel.Unknown);
+            if (PpuAle.SampledLevel != DigitalLevel.High)
+            {
+                PpuAddressData.Release();
+            }
         }
 
-        if (CpuAddress.TrySample(out var cpuAddress) && cpuAddress >= 0x8000 &&
-            CpuReadWrite.SampledLevel == DigitalLevel.High && CpuM2.SampledLevel == DigitalLevel.High)
+        _ppuReadActive = ppuReadSelected;
+        _ppuWriteActive = ppuWriteSelected;
+
+        // PRG output remains valid for the complete selected CPU read cycle.
+        // M2 qualifies a new cartridge transaction, but it must not make the
+        // ROM release D0-D7 between the address phase and the RP2A03 sample
+        // phase. Holding the data while A15 and R/W remain selected also makes
+        // component evaluation order irrelevant during electrical settling.
+        var cpuAddressKnown = CpuAddress.TrySample(out var cpuAddress);
+        var cpuReadAddressSelected = cpuAddressKnown && cpuAddress >= 0x8000 &&
+            CpuReadWrite.SampledLevel == DigitalLevel.High;
+        var cpuReadTransactionSelected = cpuReadAddressSelected &&
+            CpuM2.SampledLevel == DigitalLevel.High;
+
+        if (cpuReadAddressSelected)
         {
             var index = _prg.Length == 16 * 1024
                 ? (int)(cpuAddress & 0x3FFF)
                 : (int)(cpuAddress & 0x7FFF);
             CpuData.Drive(_prg[index]);
+        }
+        else
+        {
+            CpuData.Release();
+        }
+
+        if (cpuReadTransactionSelected && !_cpuReadActive)
+        {
             CpuReadCount++;
         }
+
+        _cpuReadActive = cpuReadTransactionSelected;
     }
 
     private void ReleaseOutputs()
