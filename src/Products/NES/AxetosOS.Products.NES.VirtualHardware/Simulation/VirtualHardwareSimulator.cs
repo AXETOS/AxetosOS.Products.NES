@@ -1,4 +1,6 @@
 using AxetosOS.Products.NES.VirtualHardware.Boards;
+using AxetosOS.Products.NES.VirtualHardware.Components;
+using AxetosOS.Products.NES.VirtualHardware.Electrical;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Simulation;
 
@@ -8,9 +10,20 @@ namespace AxetosOS.Products.NES.VirtualHardware.Simulation;
 /// </summary>
 public sealed class VirtualHardwareSimulator
 {
+    private DigitalNet[] _nets;
+    private IVirtualHardwareComponent[] _components;
+    private DigitalPin[] _pins;
+    private int _knownNetCount;
+    private int _knownComponentCount;
+
     public VirtualHardwareSimulator(VirtualHardwareBoard board)
     {
         Board = board ?? throw new ArgumentNullException(nameof(board));
+        _nets = Board.Nets.ToArray();
+        _components = Board.Components.ToArray();
+        _pins = _components.SelectMany(static component => component.Pins).ToArray();
+        _knownNetCount = _nets.Length;
+        _knownComponentCount = _components.Length;
     }
 
     public VirtualHardwareBoard Board { get; }
@@ -23,27 +36,29 @@ public sealed class VirtualHardwareSimulator
             throw new ArgumentOutOfRangeException(nameof(maximumPropagationPasses));
         }
 
+        RefreshTopologyIfNeeded();
+
         for (var pass = 1; pass <= maximumPropagationPasses; pass++)
         {
-            var before = GetRevision();
+            var before = GetBoardRevision();
 
-            foreach (var net in Board.Nets)
+            foreach (var net in _nets)
             {
                 net.Resolve();
             }
 
-            foreach (var component in Board.Components)
+            foreach (var component in _components)
             {
                 component.Evaluate();
             }
 
-            foreach (var net in Board.Nets)
+            foreach (var net in _nets)
             {
                 net.Resolve();
             }
 
             SettleCount++;
-            if (before == GetRevision())
+            if (before == GetBoardRevision())
             {
                 return pass;
             }
@@ -53,17 +68,28 @@ public sealed class VirtualHardwareSimulator
             $"Board '{Board.BoardId}' did not settle after {maximumPropagationPasses} propagation passes.");
     }
 
-    private ulong GetRevision()
+    private ulong GetBoardRevision()
     {
         ulong revision = 0;
-        foreach (var component in Board.Components)
+        foreach (var pin in _pins)
         {
-            foreach (var pin in component.Pins)
-            {
-                revision = unchecked(revision + pin.Revision);
-            }
+            revision = unchecked(revision + pin.Revision);
         }
 
         return revision;
+    }
+
+    private void RefreshTopologyIfNeeded()
+    {
+        if (_knownNetCount == Board.Nets.Count && _knownComponentCount == Board.Components.Count)
+        {
+            return;
+        }
+
+        _nets = Board.Nets.ToArray();
+        _components = Board.Components.ToArray();
+        _pins = _components.SelectMany(static component => component.Pins).ToArray();
+        _knownNetCount = _nets.Length;
+        _knownComponentCount = _components.Length;
     }
 }

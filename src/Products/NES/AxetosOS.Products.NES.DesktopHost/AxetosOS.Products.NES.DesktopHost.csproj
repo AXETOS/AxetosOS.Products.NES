@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\AxetosOS.Products.NES.VirtualHardware\AxetosOS.Products.NES.VirtualHardware.csproj" />
     <ProjectReference Include="..\AxetosOS.Products.NES.Cartridges\AxetosOS.Products.NES.Cartridges.csproj" />
     <ProjectReference Include="..\AxetosOS.Products.NES.Hardware\AxetosOS.Products.NES.Hardware.csproj" />
     <ProjectReference Include="..\..\..\..\..\AxetosOS.Audio.Abstractions\AxetosOS.Audio.Abstractions.csproj" />

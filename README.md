@@ -1,5 +1,27 @@
-## v0.71.2 — NROM CPU read data-hold correction
+## v0.72.2 — board-local settlement performance correction
 
+- Removes the process-global pin revision introduced by v0.72.1, which allowed parallel test boards to keep one another artificially unsettled.
+- Preserves cached board topology and a cached per-board pin array.
+- Determines settlement from revisions belonging only to the current board.
+- Keeps the original electrical propagation semantics while avoiding repeated component/pin enumeration.
+
+## v0.72.1 — NROM CPU read data-hold correction
+
+
+## v0.72.0 — Virtual-hardware desktop presentation
+
+- Replaces the desktop host execution path with `VirtualNesBootHost`.
+- Presents only the RP2C02 color output through the existing native framebuffer backend.
+- Resamples only the RP2A03 DAC pin output into the existing native PCM backend.
+- Defaults to the Famicom motherboard for the first NROM run, avoiding any CIC bypass.
+- Supports `--board famicom|ntsc|pal-a|pal-b|auto`; PAL presentation remains gated until PAL diagnostics expose the RP2A07/RP2C07 packages.
+- No direct CPU execution, memory-map reads, tile/sprite rendering, mapper callbacks, or APU channel synthesis.
+
+Run the first real NROM image with:
+
+```powershell
+dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- "C:\ROMs\Game.nes" --board famicom
+```
 Version 0.71.2 keeps PRG ROM data electrically driven for the complete selected CPU read cycle while using M2 only to qualify and count a new cartridge transaction. This allows the RP2A03 to sample stable reset-vector and opcode data on its later bus phase without depending on component evaluation order, while preserving pin-only cartridge behavior and releasing D0-D7 immediately when the CPU address or R/W selection changes.
 
 ## v0.71.1 — first real NROM boot host bus-settling correction
@@ -679,3 +701,10 @@ The final regional motherboard now assembles the standalone RP2A07 PAL CPU/APU, 
 - Supports selectable PAL-A 3195 and PAL-B 3197 board populations.
 - Only the active motherboard receives host clock/reset operations.
 - ROM replacement and ejection are blocked while powered.
+
+## v0.72.1 — virtual circuit settlement performance
+
+- Replaced the simulator's per-pass full pin-revision scan with a monotonic electrical-state revision updated only when a pin drive or sampled level actually changes.
+- Cached each simulator's component and net arrays after motherboard construction.
+- Preserves the same iterative net resolution and component evaluation semantics; no CPU, PPU, cartridge, mapper, video, or audio shortcut was added.
+- Intended to make real motherboard clocking practical enough for interactive first-ROM diagnostics.
