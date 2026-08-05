@@ -55,6 +55,7 @@ public sealed class RegionalNesVirtualMachine
 
         Slot.Insert(image, sourceName, regionSelection, palCicVariant);
         SelectResolvedMotherboard();
+        AttachInsertedCartridge();
     }
 
     public void EjectRom()
@@ -139,6 +140,17 @@ public sealed class RegionalNesVirtualMachine
         }
 
         SelectionCount++;
+    }
+
+
+    private void AttachInsertedCartridge()
+    {
+        switch (ActiveMotherboard)
+        {
+            case ActiveNesMotherboard.Famicom: Slot.AttachTo(Famicom); break;
+            case ActiveNesMotherboard.NtscNes: Slot.AttachTo(NtscNes); break;
+            case ActiveNesMotherboard.PalNes: Slot.AttachTo(PalNes); break;
+        }
     }
 
     private void EnsurePowered()

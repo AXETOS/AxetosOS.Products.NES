@@ -70,6 +70,32 @@ public sealed class VirtualHardwareRegionalNesMachineTests
         Assert.Throws<InvalidOperationException>(machine.EjectRom);
     }
 
+
+    [Fact]
+    public void Mapper_zero_rom_is_installed_as_a_real_cartridge_component_on_the_selected_board()
+    {
+        var machine = new RegionalNesVirtualMachine();
+        machine.InsertRom(CreateImage(), "Game (Japan).nes");
+
+        var cartridge = machine.Slot.Cartridge;
+        Assert.NotNull(cartridge);
+        Assert.Contains(cartridge!, machine.Famicom.Board.Components);
+        Assert.Same(machine.Famicom.CpuAddressNets[15], cartridge!.CpuAddress.Pins[15].Net);
+        Assert.Same(machine.Famicom.PpuAddressDataNets[0], cartridge!.PpuAddressData.Pins[0].Net);
+        Assert.Same(machine.Famicom.CiramChipEnableBarNet, cartridge!.CiramChipEnableBar.Net);
+        Assert.Same(machine.Famicom.CiramA10Net, cartridge!.CiramA10.Net);
+    }
+
+    [Fact]
+    public void Unsupported_mapper_is_rejected_before_power_is_applied()
+    {
+        var machine = new RegionalNesVirtualMachine();
+        var image = CreateImage() with { MapperNumber = 1 };
+
+        Assert.Throws<NotSupportedException>(() => machine.InsertRom(image, "MMC1 (USA).nes"));
+        Assert.False(machine.IsPowered);
+    }
+
     private static VirtualHardwareNesRomImage CreateImage() => new(
         VirtualHardwareNesHeaderFormat.INes,
         MapperNumber: 0,

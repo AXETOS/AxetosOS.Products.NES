@@ -1,3 +1,11 @@
+
+## v0.70.0 — Virtual NROM cartridge hardware
+
+- Adds a standalone pin-driven Mapper 0/NROM cartridge board.
+- PRG ROM, CHR ROM/CHR RAM, nametable mirroring, CIRAM chip enable and IRQ release are exposed only through cartridge connector pins.
+- Connects the cartridge to the selected regional motherboard through the shared virtual ROM slot.
+- Removes the motherboard's hard-wired CIRAM A10 and chip-select shortcuts so cartridge wiring owns nametable selection.
+- Rejects unsupported mappers until their standalone cartridge hardware exists.
 # AxetosOS Products / NES
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)

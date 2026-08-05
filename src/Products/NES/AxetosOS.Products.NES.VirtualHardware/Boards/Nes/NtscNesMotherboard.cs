@@ -83,6 +83,9 @@ public sealed class NtscNesMotherboard
     public DigitalNet CartridgeIrqNet { get; private set; } = null!;
     public DigitalNet PpuReadBarNet { get; private set; } = null!;
     public DigitalNet PpuWriteBarNet { get; private set; } = null!;
+    public DigitalNet PpuAleNet { get; private set; } = null!;
+    public DigitalNet CiramChipEnableBarNet { get; private set; } = null!;
+    public DigitalNet CiramA10Net { get; private set; } = null!;
     public DigitalNet AudioNet { get; private set; } = null!;
     public DigitalNet CicDataToCartridgeNet { get; private set; } = null!;
     public DigitalNet CicDataFromCartridgeNet { get; private set; } = null!;
@@ -232,15 +235,17 @@ public sealed class NtscNesMotherboard
         for (var bit = 0; bit < 6; bit++)
         {
             highNets[bit] = Board.Connect($"PPU.A{bit + 8}", Ppu.HighAddress.Pins[bit]);
-            if (bit < 3)
+            if (bit < 2)
             {
                 Board.Connect($"PPU.A{bit + 8}", Ciram.Address.Pins[bit + 8]);
             }
         }
         PpuHighAddressNets = highNets;
 
-        Board.Connect("PPU.ALE", Ppu.AddressLatchEnable, PpuAddressLatch.LatchEnable);
-        Board.Connect("GND", PpuAddressLatch.OutputEnableBar, Ciram.ChipSelectBar);
+        PpuAleNet = Board.Connect("PPU.ALE", Ppu.AddressLatchEnable, PpuAddressLatch.LatchEnable);
+        Board.Connect("GND", PpuAddressLatch.OutputEnableBar);
+        CiramChipEnableBarNet = Board.Connect("CIRAM.CE_BAR", Ciram.ChipSelectBar);
+        CiramA10Net = Board.Connect("CIRAM.A10", Ciram.Address.Pins[10]);
         PpuReadBarNet = Board.Connect("PPU.RD_BAR", Ppu.VramReadBar, Ciram.OutputEnableBar);
         PpuWriteBarNet = Board.Connect("PPU.WR_BAR", Ppu.VramWriteBar, Ciram.WriteEnableBar);
     }
