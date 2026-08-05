@@ -586,3 +586,11 @@ This release consolidates the remaining high-value standalone RP2C02 conformance
 The RP2C02 remains a package-level component driven only by power, reset, clock, CPU bus pins, VRAM bus pins, and internal state. It has no direct dependency on the RP2A03, cartridge, renderer, framebuffer, or motherboard.
 
 Known residual silicon-level limitations are intentionally explicit: analog composite waveform generation, transistor-level open-bus decay, temperature/process-dependent power-up randomness, and decap-exact sub-dot metastability are outside the current digital virtual-hardware scope.
+
+## v0.60.0 — CIC/3193 completion sweep
+
+Version 0.60.0 replaces the earlier short four-round CIC placeholder with a complete package-level digital lock workflow. The standalone 3193 now samples its seed and region/configuration pins during startup, selects a deterministic non-zero 15-state serial stream, requires sixteen valid challenge/response nibbles before initial authentication, and then verifies the key continuously for the lifetime of the powered link. Every challenge and response bit still crosses only the named `DATA_OUT`, `DATA_IN`, and `CLK` pins.
+
+The completion sweep also hardens reset ownership and fault behavior: asynchronous `/RESET` immediately asserts both active-low reset outputs, authentication faults assert the host reset for an exact eight-clock retry interval, retries restart from the captured startup seed, power loss releases all outputs and discards partial protocol state, and repower requires the complete startup sequence again. Diagnostics expose serial, authentication, retry, reset, and indeterminate-input activity without introducing any motherboard or cartridge dependency. The independent CIC suite now covers startup ordering, MSB-first serial transfer, sixteen-round authentication, long-running continuous verification, authenticated-link failure, seed/configuration capture, external reset, retry restart, and power cycling.
+
+The remaining limitation is explicit: this is a clean-room package-level behavioral model of the 3193 lock protocol, not a byte-for-byte copy of Nintendo's copyrighted SM590 mask-ROM program. Analog oscillator tolerance, semiconductor power-up randomness, and transistor-level threshold behavior remain outside the digital component scope.

@@ -40,41 +40,57 @@ public sealed class VirtualHardwareCic3193Tests
             fixture.Pulse(1);
         }
 
-        Assert.Equal(new[] { 1, 0, 1, 0 }, outputBits);
+        Assert.Equal(BitsOf(fixture.FirstChallenge), outputBits);
         Assert.Equal((byte)0b1101, fixture.Chip.LastReceivedNibble);
         Assert.Equal(1UL, fixture.Chip.CompletedSerialNibbleCount);
     }
 
-
     [Fact]
-    public void Four_valid_response_nibbles_authenticate_through_the_serial_pins()
+    public void Sixteen_valid_response_nibbles_complete_initial_authentication()
     {
         var fixture = new Fixture();
         fixture.Pulse(4);
 
         Assert.Equal(Cic3193AuthenticationState.Authenticating, fixture.Chip.AuthenticationState);
 
-        for (var round = 0; round < 4; round++)
+        for (var round = 0; round < 16; round++)
         {
-            var challenge = (byte)((0x0A ^ ((round * 0x03) & 0x0F)) & 0x0F);
-            var rotated = ((challenge << 1) | (challenge >> 3)) & 0x0F;
-            var response = (byte)((rotated ^ 0x09 ^ round) & 0x0F);
-            fixture.SendNibble(response);
+            fixture.SendExpectedResponse();
         }
 
         Assert.Equal(Cic3193AuthenticationState.Authenticated, fixture.Chip.AuthenticationState);
         Assert.Equal(1UL, fixture.Chip.SuccessfulAuthenticationCount);
+        Assert.Equal(16UL, fixture.Chip.CompletedAuthenticationRoundCount);
         Assert.Equal(0UL, fixture.Chip.FailedAuthenticationCount);
         Assert.Equal(DigitalLevel.High, fixture.Chip.HostResetBar.DriveLevel);
     }
 
     [Fact]
-    public void Invalid_response_asserts_host_reset_then_restarts_authentication()
+    public void Authenticated_link_is_verified_continuously_for_many_rounds()
     {
         var fixture = new Fixture();
         fixture.Pulse(4);
 
-        fixture.SendNibble(0x00);
+        for (var round = 0; round < 16 + 128; round++)
+        {
+            fixture.SendExpectedResponse();
+        }
+
+        Assert.Equal(Cic3193AuthenticationState.Authenticated, fixture.Chip.AuthenticationState);
+        Assert.Equal(144UL, fixture.Chip.CompletedAuthenticationRoundCount);
+        Assert.Equal(1UL, fixture.Chip.SuccessfulAuthenticationCount);
+        Assert.Equal(0UL, fixture.Chip.FailedAuthenticationCount);
+        Assert.Equal(0UL, fixture.Chip.HostResetPulseCount);
+    }
+
+    [Fact]
+    public void Invalid_response_asserts_host_reset_then_restarts_from_captured_seed()
+    {
+        var fixture = new Fixture();
+        fixture.Pulse(4);
+        var firstChallenge = fixture.Chip.CurrentChallengeNibble;
+
+        fixture.SendNibble((byte)(fixture.Chip.ExpectedResponseNibble ^ 0x01));
 
         Assert.Equal(Cic3193AuthenticationState.RetryHold, fixture.Chip.AuthenticationState);
         Assert.Equal(1UL, fixture.Chip.FailedAuthenticationCount);
@@ -84,16 +100,82 @@ public sealed class VirtualHardwareCic3193Tests
 
         fixture.Pulse(7);
         Assert.Equal(Cic3193AuthenticationState.RetryHold, fixture.Chip.AuthenticationState);
-        Assert.Equal(DigitalLevel.Low, fixture.Chip.HostResetBar.DriveLevel);
 
         fixture.Pulse(1);
         Assert.Equal(Cic3193AuthenticationState.Authenticating, fixture.Chip.AuthenticationState);
         Assert.Equal(0, fixture.Chip.AuthenticationRound);
+        Assert.Equal(firstChallenge, fixture.Chip.CurrentChallengeNibble);
         Assert.Equal(DigitalLevel.High, fixture.Chip.HostResetBar.DriveLevel);
     }
 
     [Fact]
-    public void Power_loss_releases_every_output_pin()
+    public void Failure_during_continuous_verification_reasserts_host_reset()
+    {
+        var fixture = new Fixture();
+        fixture.Pulse(4);
+        for (var round = 0; round < 20; round++)
+        {
+            fixture.SendExpectedResponse();
+        }
+
+        Assert.Equal(Cic3193AuthenticationState.Authenticated, fixture.Chip.AuthenticationState);
+        fixture.SendNibble((byte)(fixture.Chip.ExpectedResponseNibble ^ 0x08));
+
+        Assert.Equal(Cic3193AuthenticationState.RetryHold, fixture.Chip.AuthenticationState);
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.HostResetBar.DriveLevel);
+        Assert.Equal(1UL, fixture.Chip.FailedAuthenticationCount);
+    }
+
+    [Fact]
+    public void Seed_and_configuration_are_sampled_during_startup_not_continuously()
+    {
+        var fixture = new Fixture(seed: DigitalLevel.High, config: DigitalLevel.Low);
+        fixture.Pulse(1);
+
+        Assert.True(fixture.Chip.SeedHigh);
+        Assert.True(fixture.Chip.NtscOnlyMode);
+
+        fixture.Seed.Set(DigitalLevel.Low);
+        fixture.Config.Set(DigitalLevel.High);
+        fixture.Pulse(3);
+
+        Assert.True(fixture.Chip.SeedHigh);
+        Assert.True(fixture.Chip.NtscOnlyMode);
+        var originalChallenge = fixture.Chip.CurrentChallengeNibble;
+
+        fixture.SendNibble((byte)(fixture.Chip.ExpectedResponseNibble ^ 1));
+        fixture.Pulse(8);
+
+        Assert.Equal(originalChallenge, fixture.Chip.CurrentChallengeNibble);
+    }
+
+    [Fact]
+    public void External_reset_immediately_owns_both_reset_outputs_and_restarts_startup()
+    {
+        var fixture = new Fixture();
+        fixture.Pulse(4);
+        fixture.SendExpectedResponse();
+
+        fixture.Reset.Set(DigitalLevel.Low);
+        fixture.Settle();
+
+        Assert.True(fixture.Chip.ResetAsserted);
+        Assert.False(fixture.Chip.StartupComplete);
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.HostResetBar.DriveLevel);
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.SlaveResetBar.DriveLevel);
+        Assert.Equal(1UL, fixture.Chip.ExternalResetCount);
+
+        fixture.Reset.Set(DigitalLevel.High);
+        fixture.Settle();
+        fixture.Pulse(4);
+
+        Assert.True(fixture.Chip.StartupComplete);
+        Assert.Equal(Cic3193AuthenticationState.Authenticating, fixture.Chip.AuthenticationState);
+        Assert.Equal(0, fixture.Chip.AuthenticationRound);
+    }
+
+    [Fact]
+    public void Power_loss_releases_every_output_pin_and_repower_requires_startup_again()
     {
         var fixture = new Fixture();
         fixture.Pulse(4);
@@ -105,32 +187,49 @@ public sealed class VirtualHardwareCic3193Tests
         Assert.Equal(DigitalLevel.HighImpedance, fixture.Chip.DataOut.DriveLevel);
         Assert.Equal(DigitalLevel.HighImpedance, fixture.Chip.HostResetBar.DriveLevel);
         Assert.Equal(DigitalLevel.HighImpedance, fixture.Chip.SlaveResetBar.DriveLevel);
+
+        fixture.Vcc.Set(DigitalLevel.High);
+        fixture.Settle();
+
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.HostResetBar.DriveLevel);
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.SlaveResetBar.DriveLevel);
     }
+
+    private static int[] BitsOf(byte value) =>
+        new[]
+        {
+            (value >> 3) & 1,
+            (value >> 2) & 1,
+            (value >> 1) & 1,
+            value & 1
+        };
 
     private sealed class Fixture
     {
         private readonly VirtualHardwareSimulator _sim;
         private readonly DigitalSignalSource _clock;
 
-        public Fixture()
+        public Fixture(
+            DigitalLevel seed = DigitalLevel.High,
+            DigitalLevel config = DigitalLevel.Low)
         {
             var board = new VirtualHardwareBoard("cic3193-standalone");
             Chip = board.Add(new Cic3193("U1"));
             Vcc = board.Add(new DigitalSignalSource("vcc", DigitalLevel.High));
             var gnd = board.Add(new DigitalSignalSource("gnd", DigitalLevel.Low));
-            var reset = board.Add(new DigitalSignalSource("reset", DigitalLevel.High));
+            Reset = board.Add(new DigitalSignalSource("reset", DigitalLevel.High));
             _clock = board.Add(new DigitalSignalSource("clock", DigitalLevel.Low));
             DataIn = board.Add(new DigitalSignalSource("data-in", DigitalLevel.Low));
-            var seed = board.Add(new DigitalSignalSource("seed", DigitalLevel.High));
-            var config = board.Add(new DigitalSignalSource("config", DigitalLevel.Low));
+            Seed = board.Add(new DigitalSignalSource("seed", seed));
+            Config = board.Add(new DigitalSignalSource("config", config));
 
             board.Connect("VCC", Vcc.Output, Chip.Vcc);
             board.Connect("GND", gnd.Output, Chip.Gnd);
-            board.Connect("RESET", reset.Output, Chip.ResetBar);
+            board.Connect("RESET", Reset.Output, Chip.ResetBar);
             board.Connect("CLK", _clock.Output, Chip.Clock);
             board.Connect("DATA-IN", DataIn.Output, Chip.DataIn);
-            board.Connect("SEED", seed.Output, Chip.Seed);
-            board.Connect("CONFIG", config.Output, Chip.Config);
+            board.Connect("SEED", Seed.Output, Chip.Seed);
+            board.Connect("CONFIG", Config.Output, Chip.Config);
             board.Connect("DATA-OUT", Chip.DataOut);
             board.Connect("HOST-RESET", Chip.HostResetBar);
             board.Connect("SLAVE-RESET", Chip.SlaveResetBar);
@@ -142,7 +241,11 @@ public sealed class VirtualHardwareCic3193Tests
 
         public Cic3193 Chip { get; }
         public DigitalSignalSource Vcc { get; }
+        public DigitalSignalSource Reset { get; }
         public DigitalSignalSource DataIn { get; }
+        public DigitalSignalSource Seed { get; }
+        public DigitalSignalSource Config { get; }
+        public byte FirstChallenge => Chip.CurrentChallengeNibble;
 
         public void Pulse(int count)
         {
@@ -154,6 +257,8 @@ public sealed class VirtualHardwareCic3193Tests
                 _sim.Settle();
             }
         }
+
+        public void SendExpectedResponse() => SendNibble(Chip.ExpectedResponseNibble);
 
         public void SendNibble(byte value)
         {

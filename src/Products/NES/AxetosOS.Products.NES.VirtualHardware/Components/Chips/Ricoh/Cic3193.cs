@@ -3,11 +3,7 @@ using AxetosOS.Products.NES.VirtualHardware.Electrical;
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 
 /// <summary>
-/// Standalone 3193-series CIC lock package.
-///
-/// The component is intentionally package-driven: it observes only its power,
-/// reset, clock, configuration, seed and serial pins and controls the host and
-/// slave reset pins. It contains no motherboard, cartridge or CPU references.
+/// Operating state of the standalone 3193-series CIC lock package.
 /// </summary>
 public enum Cic3193AuthenticationState
 {
@@ -17,9 +13,22 @@ public enum Cic3193AuthenticationState
     RetryHold
 }
 
+/// <summary>
+/// Standalone 3193-series CIC lock package.
+///
+/// The component is package-driven. It observes only power, reset, clock,
+/// configuration, seed and serial pins, and it controls only its serial and
+/// active-low reset outputs. It contains no motherboard, cartridge, CPU or
+/// emulator-service references.
+/// </summary>
 public sealed class Cic3193 : VirtualHardwareComponent
 {
+    private const int StartupClockCount = 4;
+    private const int InitialAuthenticationRoundCount = 16;
+    private const int RetryHoldClockCount = 8;
+
     private bool _lastClockHigh;
+    private bool _wasPowered;
     private bool _lastResetAsserted;
     private byte _serialInputShift;
     private byte _serialOutputShift;
@@ -30,9 +39,10 @@ public sealed class Cic3193 : VirtualHardwareComponent
     private int _retryClockCount;
     private byte _currentChallengeNibble;
     private byte _expectedResponseNibble;
-
-    private const int AuthenticationRoundCount = 4;
-    private const int RetryHoldClockCount = 8;
+    private byte _streamState;
+    private byte _responseHistory;
+    private bool _capturedSeedHigh;
+    private bool _capturedNtscOnlyMode;
 
     public Cic3193(string componentId) : base(componentId)
     {
@@ -74,10 +84,11 @@ public sealed class Cic3193 : VirtualHardwareComponent
     public bool Powered { get; private set; }
     public bool ResetAsserted { get; private set; }
     public bool StartupComplete { get; private set; }
-    public bool NtscOnlyMode { get; private set; }
-    public bool SeedHigh { get; private set; }
+    public bool NtscOnlyMode => _capturedNtscOnlyMode;
+    public bool SeedHigh => _capturedSeedHigh;
     public ulong ClockRisingEdgeCount { get; private set; }
     public ulong CompletedSerialNibbleCount { get; private set; }
+    public ulong CompletedAuthenticationRoundCount { get; private set; }
     public byte LastReceivedNibble { get; private set; }
     public byte SerialInputShift => _serialInputShift;
     public byte SerialOutputShift => _serialOutputShift;
@@ -85,18 +96,22 @@ public sealed class Cic3193 : VirtualHardwareComponent
     public Cic3193AuthenticationState AuthenticationState { get; private set; }
     public int AuthenticationRound => _authenticationRound;
     public byte CurrentChallengeNibble => _currentChallengeNibble;
+    public byte ExpectedResponseNibble => _expectedResponseNibble;
+    public byte StreamState => _streamState;
     public ulong SuccessfulAuthenticationCount { get; private set; }
     public ulong FailedAuthenticationCount { get; private set; }
     public ulong HostResetPulseCount { get; private set; }
+    public ulong IndeterminateInputSampleCount { get; private set; }
+    public ulong ExternalResetCount { get; private set; }
 
     public override void PowerOn()
     {
-        ResetInternalState();
+        ResetInternalState(clearLifetimeCounters: true);
     }
 
     public override void Reset()
     {
-        ResetInternalState();
+        ResetInternalState(clearLifetimeCounters: true);
     }
 
     public override void Evaluate()
@@ -104,24 +119,34 @@ public sealed class Cic3193 : VirtualHardwareComponent
         Powered = Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
         if (!Powered)
         {
+            if (_wasPowered)
+            {
+                ResetProtocolState();
+            }
+
             ReleaseOutputs();
             _lastClockHigh = false;
+            _lastResetAsserted = false;
+            _wasPowered = false;
             return;
         }
 
-        NtscOnlyMode = Config.SampledLevel == DigitalLevel.Low;
-        SeedHigh = Seed.SampledLevel == DigitalLevel.High;
+        if (!_wasPowered)
+        {
+            ResetProtocolState();
+            Powered = true;
+        }
 
+        _wasPowered = true;
         ResetAsserted = ResetBar.SampledLevel != DigitalLevel.High;
         if (ResetAsserted)
         {
             if (!_lastResetAsserted)
             {
-                ResetInternalState();
+                ExternalResetCount++;
+                ResetProtocolState();
                 Powered = true;
                 ResetAsserted = true;
-                NtscOnlyMode = Config.SampledLevel == DigitalLevel.Low;
-                SeedHigh = Seed.SampledLevel == DigitalLevel.High;
             }
 
             HostResetBar.Drive(DigitalLevel.Low);
@@ -142,9 +167,6 @@ public sealed class Cic3193 : VirtualHardwareComponent
 
         _lastClockHigh = clockHigh;
 
-        // Both reset outputs are active-low. The slave reset is released during
-        // startup. The host reset is released while authentication is active and
-        // asserted only during the retry hold generated after a failed exchange.
         SlaveResetBar.Drive(_startupClockCount >= 2 ? DigitalLevel.High : DigitalLevel.Low);
         HostResetBar.Drive(StartupComplete && AuthenticationState != Cic3193AuthenticationState.RetryHold
             ? DigitalLevel.High
@@ -157,10 +179,15 @@ public sealed class Cic3193 : VirtualHardwareComponent
         if (!StartupComplete)
         {
             _startupClockCount++;
-            if (_startupClockCount >= 4)
+            if (_startupClockCount == 1)
+            {
+                CaptureModePins();
+            }
+
+            if (_startupClockCount >= StartupClockCount)
             {
                 StartupComplete = true;
-                BeginAuthentication();
+                BeginAuthentication(reseed: true);
             }
 
             return;
@@ -171,13 +198,13 @@ public sealed class Cic3193 : VirtualHardwareComponent
             _retryClockCount++;
             if (_retryClockCount >= RetryHoldClockCount)
             {
-                BeginAuthentication();
+                BeginAuthentication(reseed: true);
             }
 
             return;
         }
 
-        var inputBit = DataIn.SampledLevel == DigitalLevel.High ? 1 : 0;
+        var inputBit = SampleSerialInputBit();
         _serialInputShift = (byte)(((_serialInputShift << 1) | inputBit) & 0x0F);
         _serialBitCount++;
 
@@ -196,11 +223,42 @@ public sealed class Cic3193 : VirtualHardwareComponent
         CompleteReceivedNibble(LastReceivedNibble);
     }
 
-    private void BeginAuthentication()
+    private int SampleSerialInputBit()
+    {
+        return DataIn.SampledLevel switch
+        {
+            DigitalLevel.High => 1,
+            DigitalLevel.Low => 0,
+            _ => CountIndeterminateAndReturnLow()
+        };
+    }
+
+    private int CountIndeterminateAndReturnLow()
+    {
+        IndeterminateInputSampleCount++;
+        return 0;
+    }
+
+    private void CaptureModePins()
+    {
+        _capturedNtscOnlyMode = Config.SampledLevel == DigitalLevel.Low;
+        _capturedSeedHigh = Seed.SampledLevel == DigitalLevel.High;
+    }
+
+    private void BeginAuthentication(bool reseed)
     {
         AuthenticationState = Cic3193AuthenticationState.Authenticating;
         _authenticationRound = 0;
         _retryClockCount = 0;
+        _serialBitCount = 0;
+        _serialInputShift = 0;
+        _responseHistory = 0;
+
+        if (reseed)
+        {
+            _streamState = BuildInitialStreamState();
+        }
+
         LoadChallengeForRound();
     }
 
@@ -212,13 +270,20 @@ public sealed class Cic3193 : VirtualHardwareComponent
             HostResetPulseCount++;
             AuthenticationState = Cic3193AuthenticationState.RetryHold;
             _retryClockCount = 0;
+            _serialBitCount = 0;
+            _serialInputShift = 0;
             _serialOutputShift = 0;
             _serialOutputBit = false;
             return;
         }
 
+        CompletedAuthenticationRoundCount++;
+        _responseHistory = receivedNibble;
         _authenticationRound++;
-        if (_authenticationRound >= AuthenticationRoundCount)
+        AdvanceStreamState();
+
+        if (AuthenticationState == Cic3193AuthenticationState.Authenticating &&
+            _authenticationRound >= InitialAuthenticationRoundCount)
         {
             SuccessfulAuthenticationCount++;
             AuthenticationState = Cic3193AuthenticationState.Authenticated;
@@ -230,32 +295,82 @@ public sealed class Cic3193 : VirtualHardwareComponent
 
     private void LoadChallengeForRound()
     {
-        _currentChallengeNibble = ComputeChallengeNibble(_authenticationRound);
-        _expectedResponseNibble = ComputeExpectedResponseNibble(_currentChallengeNibble, _authenticationRound);
+        _currentChallengeNibble = ComputeChallengeNibble();
+        _expectedResponseNibble = ComputeExpectedResponseNibble(
+            _currentChallengeNibble,
+            _responseHistory,
+            _authenticationRound,
+            _capturedNtscOnlyMode);
         _serialOutputShift = _currentChallengeNibble;
         _serialOutputBit = (_serialOutputShift & 0x08) != 0;
     }
 
-    private byte ComputeChallengeNibble(int round)
+    private byte BuildInitialStreamState()
     {
-        var seed = SeedHigh ? 0x0A : 0x05;
-        var regionMask = NtscOnlyMode ? 0x00 : 0x0F;
-        return (byte)((seed ^ regionMask ^ ((round * 0x03) & 0x0F)) & 0x0F);
+        var state = _capturedSeedHigh ? 0x0B : 0x06;
+        if (!_capturedNtscOnlyMode)
+        {
+            state ^= 0x0D;
+        }
+
+        state &= 0x0F;
+        return (byte)(state == 0 ? 1 : state);
     }
 
-    private static byte ComputeExpectedResponseNibble(byte challenge, int round)
+    private byte ComputeChallengeNibble()
     {
-        // Behavioural 3193-compatible lock/key transform. It is deliberately
-        // expressed as package-local combinational state rather than a call to
-        // a cartridge, motherboard or authentication service.
+        var roundMix = (_authenticationRound * 0x03) & 0x0F;
+        var regionMix = _capturedNtscOnlyMode ? 0x00 : 0x0F;
+        return (byte)((_streamState ^ roundMix ^ regionMix) & 0x0F);
+    }
+
+    private static byte ComputeExpectedResponseNibble(
+        byte challenge,
+        byte responseHistory,
+        int round,
+        bool ntscOnlyMode)
+    {
         var rotated = ((challenge << 1) | (challenge >> 3)) & 0x0F;
-        return (byte)((rotated ^ 0x09 ^ round) & 0x0F);
+        var historyMix = ((responseHistory << 1) | (responseHistory >> 3)) & 0x0F;
+        var regionMix = ntscOnlyMode ? 0x09 : 0x06;
+        return (byte)((rotated ^ historyMix ^ regionMix ^ round) & 0x0F);
     }
 
-    private void ResetInternalState()
+    private void AdvanceStreamState()
+    {
+        // Four-bit maximal-length LFSR. This gives a deterministic 15-state
+        // stream selected by the sampled seed/configuration pins.
+        var feedback = ((_streamState >> 3) ^ (_streamState >> 2)) & 1;
+        _streamState = (byte)(((_streamState << 1) | feedback) & 0x0F);
+        if (_streamState == 0)
+        {
+            _streamState = 1;
+        }
+    }
+
+    private void ResetInternalState(bool clearLifetimeCounters)
+    {
+        if (clearLifetimeCounters)
+        {
+            ClockRisingEdgeCount = 0;
+            CompletedSerialNibbleCount = 0;
+            CompletedAuthenticationRoundCount = 0;
+            SuccessfulAuthenticationCount = 0;
+            FailedAuthenticationCount = 0;
+            HostResetPulseCount = 0;
+            IndeterminateInputSampleCount = 0;
+            ExternalResetCount = 0;
+        }
+
+        ResetProtocolState();
+        _wasPowered = false;
+        Powered = false;
+        ResetAsserted = false;
+    }
+
+    private void ResetProtocolState()
     {
         _lastClockHigh = false;
-        _lastResetAsserted = false;
         _serialInputShift = 0;
         _serialOutputShift = 0;
         _serialBitCount = 0;
@@ -265,18 +380,13 @@ public sealed class Cic3193 : VirtualHardwareComponent
         _retryClockCount = 0;
         _currentChallengeNibble = 0;
         _expectedResponseNibble = 0;
-        Powered = false;
-        ResetAsserted = false;
+        _streamState = 0;
+        _responseHistory = 0;
+        _capturedSeedHigh = false;
+        _capturedNtscOnlyMode = false;
         StartupComplete = false;
-        NtscOnlyMode = false;
-        SeedHigh = false;
-        ClockRisingEdgeCount = 0;
-        CompletedSerialNibbleCount = 0;
         LastReceivedNibble = 0;
         AuthenticationState = Cic3193AuthenticationState.Startup;
-        SuccessfulAuthenticationCount = 0;
-        FailedAuthenticationCount = 0;
-        HostResetPulseCount = 0;
     }
 
     private void ReleaseOutputs()
