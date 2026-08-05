@@ -528,9 +528,18 @@ The standalone RP2A03 now treats an asserted `/RES` pin as a hardware reset rath
 
 Version 0.50.0 begins the final standalone RP2C02 chip. The new reusable package exposes the RP2C02 power, reset, master-clock, CPU register, multiplexed VRAM address/data, high-address, control, extension and open-drain /NMI pins. Its first internal sections implement NTSC 341-by-262 raster counters, vblank state, the CPU-visible PPUCTRL and PPUSTATUS foundation, and pin-only package operation without motherboard, CPU, cartridge, renderer or memory references. Independent chip-level tests verify clock-driven raster progression and CPU register writes through the package pins.
 
-### v0.51.0 — standalone RP2C02 CPU registers and VRAM bus
+### v0.52.1 — standalone RP2C02 CPU registers and VRAM bus
 
 The standalone RP2C02 now implements its complete CPU-visible register block,
 internal primary OAM access, scrolling/address latches, buffered PPUDATA reads,
 and multiplexed external VRAM read/write transactions through the package pins.
 No motherboard, cartridge, CPU, renderer, or external memory object is called.
+
+
+## v0.52.1 — Standalone RP2C02 background pipeline
+
+The standalone RP2C02 now performs background nametable, attribute and pattern-table reads exclusively through its multiplexed external VRAM pins while rendering is enabled. It owns the tile latches, pattern and attribute shift registers, coarse/fine scrolling progression and current background pixel index. No framebuffer, cartridge, motherboard or renderer dependency is introduced.
+
+
+### v0.52.1
+- Corrected the standalone RP2C02 background-pipeline test fixture so the external VRAM model supplies attribute bytes across the complete `$23C0-$23FF` attribute-table range.

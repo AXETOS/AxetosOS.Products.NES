@@ -33,6 +33,15 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     private bool _writeToggle;
     private VramTransaction _transaction;
     private int _transactionPhase;
+    private VramTransactionPurpose _transactionPurpose;
+    private byte _nextTileId;
+    private byte _nextTileAttribute;
+    private byte _nextTileLow;
+    private byte _nextTileHigh;
+    private ushort _patternShiftLow;
+    private ushort _patternShiftHigh;
+    private ushort _attributeShiftLow;
+    private ushort _attributeShiftHigh;
 
     public Rp2C02(string componentId) : base(componentId)
     {
@@ -88,6 +97,14 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     public bool WriteToggle => _writeToggle;
     public byte ReadBuffer => _readBuffer;
     public bool VramTransactionActive => _transaction != VramTransaction.None;
+    public ulong BackgroundNametableFetchCount { get; private set; }
+    public ulong BackgroundAttributeFetchCount { get; private set; }
+    public ulong BackgroundPatternFetchCount { get; private set; }
+    public byte BackgroundPixelIndex { get; private set; }
+    public byte NextTileId => _nextTileId;
+    public byte NextTileAttribute => _nextTileAttribute;
+    public ushort PatternShiftLow => _patternShiftLow;
+    public ushort PatternShiftHigh => _patternShiftHigh;
 
     private bool Powered => Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
 
@@ -101,6 +118,10 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         MasterClockRisingEdgeCount = 0;
         CompletedVramReadCount = 0;
         CompletedVramWriteCount = 0;
+        BackgroundNametableFetchCount = 0;
+        BackgroundAttributeFetchCount = 0;
+        BackgroundPatternFetchCount = 0;
+        BackgroundPixelIndex = 0;
         _previousClock = DigitalLevel.Low;
         _cpuSelectedLast = false;
         _vblank = false;
@@ -117,6 +138,15 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _writeToggle = false;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
+        _transactionPurpose = VramTransactionPurpose.None;
+        _nextTileId = 0;
+        _nextTileAttribute = 0;
+        _nextTileLow = 0;
+        _nextTileHigh = 0;
+        _patternShiftLow = 0;
+        _patternShiftHigh = 0;
+        _attributeShiftLow = 0;
+        _attributeShiftHigh = 0;
         Array.Clear(_primaryOam);
         ReleasePackageOutputs();
     }
@@ -134,6 +164,12 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _cpuSelectedLast = false;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
+        _transactionPurpose = VramTransactionPurpose.None;
+        BackgroundPixelIndex = 0;
+        _patternShiftLow = 0;
+        _patternShiftHigh = 0;
+        _attributeShiftLow = 0;
+        _attributeShiftHigh = 0;
         ReleasePackageOutputs();
     }
 
@@ -160,6 +196,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
             MasterClockRisingEdgeCount++;
             AdvanceRaster();
             AdvanceVramTransaction();
+            AdvanceBackgroundPipeline();
         }
         _previousClock = clock;
 
@@ -251,7 +288,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                 value = _readBuffer;
                 if (firstSelectedEvaluation && _transaction == VramTransaction.None)
                 {
-                    StartVramTransaction(VramTransaction.Read, 0);
+                    StartVramTransaction(VramTransaction.Read, 0, VramTransactionPurpose.CpuRead);
                     IncrementVramAddress();
                 }
                 break;
@@ -310,19 +347,20 @@ public sealed class Rp2C02 : VirtualHardwareComponent
             case 7: // PPUDATA
                 if (_transaction == VramTransaction.None)
                 {
-                    StartVramTransaction(VramTransaction.Write, value);
+                    StartVramTransaction(VramTransaction.Write, value, VramTransactionPurpose.CpuWrite);
                     IncrementVramAddress();
                 }
                 break;
         }
     }
 
-    private void StartVramTransaction(VramTransaction transaction, byte writeData)
+    private void StartVramTransaction(VramTransaction transaction, byte writeData, VramTransactionPurpose purpose)
     {
         _transaction = transaction;
         _transactionPhase = 0;
         _transactionAddress = (ushort)(_vramAddress & 0x3FFF);
         _transactionWriteData = writeData;
+        _transactionPurpose = purpose;
     }
 
     private ushort _transactionAddress;
@@ -338,13 +376,14 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         if (_transaction == VramTransaction.None) return;
 
         _transactionPhase++;
-        if (_transactionPhase < 3) return;
+        var completionPhase = _transactionPurpose is VramTransactionPurpose.CpuRead or VramTransactionPurpose.CpuWrite ? 3 : 2;
+        if (_transactionPhase < completionPhase) return;
 
         if (_transaction == VramTransaction.Read)
         {
             if (MultiplexedAddressData.TrySample(out var data))
             {
-                _readBuffer = (byte)data;
+                CompleteRead((byte)data);
                 CompletedVramReadCount++;
             }
         }
@@ -355,6 +394,170 @@ public sealed class Rp2C02 : VirtualHardwareComponent
 
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
+        _transactionPurpose = VramTransactionPurpose.None;
+    }
+
+    private bool BackgroundRenderingEnabled => (_mask & 0x08) != 0;
+
+    private void AdvanceBackgroundPipeline()
+    {
+        if (!BackgroundRenderingEnabled || !IsRenderingScanline())
+        {
+            BackgroundPixelIndex = 0;
+            return;
+        }
+
+        if ((Dot >= 1 && Dot <= 256) || (Dot >= 321 && Dot <= 336))
+        {
+            ShiftBackgroundRegisters();
+            UpdateBackgroundPixel();
+
+            switch ((Dot - 1) & 7)
+            {
+                case 0:
+                    LoadBackgroundShifters();
+                    BeginBackgroundRead((ushort)(0x2000 | (_vramAddress & 0x0FFF)), VramTransactionPurpose.BackgroundNametable);
+                    break;
+                case 2:
+                    var attributeAddress = (ushort)(0x23C0
+                        | (_vramAddress & 0x0C00)
+                        | ((_vramAddress >> 4) & 0x38)
+                        | ((_vramAddress >> 2) & 0x07));
+                    BeginBackgroundRead(attributeAddress, VramTransactionPurpose.BackgroundAttribute);
+                    break;
+                case 4:
+                    BeginBackgroundRead(PatternAddress(highPlane: false), VramTransactionPurpose.BackgroundPatternLow);
+                    break;
+                case 6:
+                    BeginBackgroundRead(PatternAddress(highPlane: true), VramTransactionPurpose.BackgroundPatternHigh);
+                    break;
+                case 7:
+                    IncrementCoarseX();
+                    break;
+            }
+        }
+
+        if (Dot == 256) IncrementY();
+        if (Dot == 257) CopyHorizontalScrollBits();
+        if (Scanline == PreRenderScanline && Dot >= 280 && Dot <= 304) CopyVerticalScrollBits();
+    }
+
+    private bool IsRenderingScanline() => Scanline < 240 || Scanline == PreRenderScanline;
+
+    private void BeginBackgroundRead(ushort address, VramTransactionPurpose purpose)
+    {
+        if (_transaction != VramTransaction.None) return;
+        _transaction = VramTransaction.Read;
+        _transactionPhase = 0;
+        _transactionAddress = (ushort)(address & 0x3FFF);
+        _transactionWriteData = 0;
+        _transactionPurpose = purpose;
+    }
+
+    private ushort PatternAddress(bool highPlane)
+    {
+        var table = (_control & 0x10) != 0 ? 0x1000 : 0;
+        var fineY = (_vramAddress >> 12) & 7;
+        return (ushort)(table | (_nextTileId << 4) | fineY | (highPlane ? 8 : 0));
+    }
+
+    private void CompleteRead(byte data)
+    {
+        switch (_transactionPurpose)
+        {
+            case VramTransactionPurpose.CpuRead:
+                _readBuffer = data;
+                break;
+            case VramTransactionPurpose.BackgroundNametable:
+                _nextTileId = data;
+                BackgroundNametableFetchCount++;
+                break;
+            case VramTransactionPurpose.BackgroundAttribute:
+                var shift = (byte)(((_vramAddress >> 4) & 4) | (_vramAddress & 2));
+                _nextTileAttribute = (byte)((data >> shift) & 3);
+                BackgroundAttributeFetchCount++;
+                break;
+            case VramTransactionPurpose.BackgroundPatternLow:
+                _nextTileLow = data;
+                BackgroundPatternFetchCount++;
+                break;
+            case VramTransactionPurpose.BackgroundPatternHigh:
+                _nextTileHigh = data;
+                BackgroundPatternFetchCount++;
+                break;
+        }
+    }
+
+    private void LoadBackgroundShifters()
+    {
+        _patternShiftLow = (ushort)((_patternShiftLow & 0xFF00) | _nextTileLow);
+        _patternShiftHigh = (ushort)((_patternShiftHigh & 0xFF00) | _nextTileHigh);
+        _attributeShiftLow = (ushort)((_attributeShiftLow & 0xFF00) | ((_nextTileAttribute & 1) != 0 ? 0xFF : 0));
+        _attributeShiftHigh = (ushort)((_attributeShiftHigh & 0xFF00) | ((_nextTileAttribute & 2) != 0 ? 0xFF : 0));
+    }
+
+    private void ShiftBackgroundRegisters()
+    {
+        _patternShiftLow <<= 1;
+        _patternShiftHigh <<= 1;
+        _attributeShiftLow <<= 1;
+        _attributeShiftHigh <<= 1;
+    }
+
+    private void UpdateBackgroundPixel()
+    {
+        if (Dot > 256)
+        {
+            BackgroundPixelIndex = 0;
+            return;
+        }
+
+        var selector = (ushort)(0x8000 >> _fineX);
+        var pattern = (byte)(((_patternShiftLow & selector) != 0 ? 1 : 0)
+            | ((_patternShiftHigh & selector) != 0 ? 2 : 0));
+        var palette = (byte)(((_attributeShiftLow & selector) != 0 ? 1 : 0)
+            | ((_attributeShiftHigh & selector) != 0 ? 2 : 0));
+        BackgroundPixelIndex = pattern == 0 ? (byte)0 : (byte)((palette << 2) | pattern);
+    }
+
+    private void IncrementCoarseX()
+    {
+        if ((_vramAddress & 0x001F) == 31)
+        {
+            _vramAddress &= 0x7FE0;
+            _vramAddress ^= 0x0400;
+        }
+        else _vramAddress++;
+    }
+
+    private void IncrementY()
+    {
+        if ((_vramAddress & 0x7000) != 0x7000)
+        {
+            _vramAddress += 0x1000;
+            return;
+        }
+
+        _vramAddress &= 0x0FFF;
+        var coarseY = (_vramAddress & 0x03E0) >> 5;
+        if (coarseY == 29)
+        {
+            coarseY = 0;
+            _vramAddress ^= 0x0800;
+        }
+        else if (coarseY == 31) coarseY = 0;
+        else coarseY++;
+        _vramAddress = (ushort)((_vramAddress & ~0x03E0) | (coarseY << 5));
+    }
+
+    private void CopyHorizontalScrollBits()
+    {
+        _vramAddress = (ushort)((_vramAddress & ~0x041F) | (_temporaryAddress & 0x041F));
+    }
+
+    private void CopyVerticalScrollBits()
+    {
+        _vramAddress = (ushort)((_vramAddress & ~0x7BE0) | (_temporaryAddress & 0x7BE0));
     }
 
     private void DriveVramBus()
@@ -421,4 +624,15 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     }
 
     private enum VramTransaction { None, Read, Write }
+
+    private enum VramTransactionPurpose
+    {
+        None,
+        CpuRead,
+        CpuWrite,
+        BackgroundNametable,
+        BackgroundAttribute,
+        BackgroundPatternLow,
+        BackgroundPatternHigh
+    }
 }

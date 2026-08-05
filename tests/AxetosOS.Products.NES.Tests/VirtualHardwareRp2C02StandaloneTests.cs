@@ -104,6 +104,34 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.Equal((byte)0x6C, fixture.ReadRegister(7));
     }
 
+
+    [Fact]
+    public void Background_pipeline_fetches_tile_data_through_external_vram_pins()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(1, 0x08); // enable background rendering
+
+        var addresses = fixture.PulseClockWithVram(40, address => address switch
+        {
+            >= 0x2000 and <= 0x23BF => 0x12,
+            >= 0x23C0 and <= 0x23FF => 0x03,
+            0x0120 => 0xAA,
+            0x0128 => 0x55,
+            _ => 0x00
+        });
+
+        Assert.Contains((ushort)0x2000, addresses);
+        Assert.Contains((ushort)0x23C0, addresses);
+        Assert.Contains((ushort)0x0120, addresses);
+        Assert.Contains((ushort)0x0128, addresses);
+        Assert.True(fixture.Chip.BackgroundNametableFetchCount >= 4);
+        Assert.True(fixture.Chip.BackgroundAttributeFetchCount >= 4);
+        Assert.True(fixture.Chip.BackgroundPatternFetchCount >= 8);
+        Assert.Equal((byte)0x12, fixture.Chip.NextTileId);
+        Assert.Equal((byte)0x03, fixture.Chip.NextTileAttribute);
+        Assert.NotEqual((ushort)0, (ushort)(fixture.Chip.PatternShiftLow | fixture.Chip.PatternShiftHigh));
+    }
+
     private sealed class Fixture
     {
         private readonly VirtualHardwareSimulator _sim;
@@ -161,6 +189,41 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
                 _clock.Set(DigitalLevel.High); _sim.Settle();
                 _clock.Set(DigitalLevel.Low); _sim.Settle();
             }
+        }
+
+        public IReadOnlyList<ushort> PulseClockWithVram(int count, Func<ushort, byte> readMemory)
+        {
+            var addresses = new List<ushort>();
+            ushort latchedAddress = 0;
+
+            for (var cycle = 0; cycle < count; cycle++)
+            {
+                _clock.Set(DigitalLevel.High);
+                _sim.Settle();
+
+                if (Chip.AddressLatchEnable.DriveLevel == DigitalLevel.High)
+                {
+                    Release(_externalAd);
+                    _sim.Settle();
+                    Assert.True(Chip.MultiplexedAddressData.TrySample(out var low));
+                    Assert.True(Chip.HighAddress.TrySample(out var high));
+                    latchedAddress = (ushort)(((high & 0x3F) << 8) | low);
+                    addresses.Add(latchedAddress);
+                }
+
+                if (Chip.VramReadBar.DriveLevel == DigitalLevel.Low)
+                {
+                    Set(_externalAd, readMemory(latchedAddress));
+                    _sim.Settle();
+                }
+
+                _clock.Set(DigitalLevel.Low);
+                _sim.Settle();
+            }
+
+            Release(_externalAd);
+            _sim.Settle();
+            return addresses;
         }
 
         public void WriteRegister(byte register, byte value)
