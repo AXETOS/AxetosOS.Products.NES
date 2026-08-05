@@ -54,6 +54,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     private int _spriteEvaluationIndex;
     private int _spriteFetchSlot;
     private bool _nmiAsserted;
+    private bool _suppressVblankSet;
 
     public Rp2C02(string componentId) : base(componentId)
     {
@@ -127,6 +128,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     public byte OutputColorCode { get; private set; }
     public byte ColorEmphasis => (byte)((_mask >> 5) & 0x07);
     public ulong NmiFallingEdgeCount { get; private set; }
+    public ulong VblankSuppressionCount { get; private set; }
 
     private bool Powered => Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
 
@@ -149,12 +151,14 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         PixelPaletteIndex = 0;
         OutputColorCode = 0;
         NmiFallingEdgeCount = 0;
+        VblankSuppressionCount = 0;
         SpriteEvaluationCount = 0;
         SpritePatternFetchCount = 0;
         _secondarySpriteCount = 0;
         _activeSpriteCount = 0;
         _nextSpriteCount = 0;
         _nmiAsserted = false;
+        _suppressVblankSet = false;
         _spriteEvaluationIndex = 0;
         _spriteFetchSlot = 0;
         _nmiAsserted = false;
@@ -166,6 +170,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _cpuReadLatchValid = false;
         _cpuReadLatch = 0;
         _vblank = false;
+        _suppressVblankSet = false;
         _spriteZeroHit = false;
         _spriteOverflow = false;
         _control = 0;
@@ -284,7 +289,20 @@ public sealed class Rp2C02 : VirtualHardwareComponent
             }
         }
 
-        if (Scanline == VblankStartScanline && Dot == 1) _vblank = true;
+        if (Scanline == VblankStartScanline && Dot == 1)
+        {
+            // A PPUSTATUS read that is already active at the vblank boundary
+            // suppresses both the flag transition and the resulting /NMI edge.
+            // This is package-local timing state: the CPU is observed only
+            // through /CS, R/W, RS0-RS2 and D0-D7.
+            if (_suppressVblankSet)
+            {
+                _vblank = false;
+                _suppressVblankSet = false;
+                VblankSuppressionCount++;
+            }
+            else _vblank = true;
+        }
         else if (Scanline == PreRenderScanline && Dot == 1)
         {
             _vblank = false;
@@ -353,6 +371,13 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                     | (_openBus & 0x1F));
                 if (firstSelectedEvaluation)
                 {
+                    // Reading status at the scanline-241 boundary can prevent
+                    // the vblank latch from setting at all, rather than merely
+                    // clearing it after an /NMI edge has escaped.
+                    if (Scanline == VblankStartScanline && Dot <= 1)
+                    {
+                        _suppressVblankSet = true;
+                    }
                     _vblank = false;
                     _writeToggle = false;
                 }

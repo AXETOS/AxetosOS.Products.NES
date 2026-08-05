@@ -245,6 +245,29 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.Equal(1UL, fixture.Chip.NmiFallingEdgeCount);
     }
 
+
+    [Fact]
+    public void Ppustatus_read_spanning_vblank_start_suppresses_flag_and_nmi_edge()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(0, 0x80);
+        fixture.PulseClock(241 * 341);
+
+        Assert.Equal(241, fixture.Chip.Scanline);
+        Assert.Equal(0, fixture.Chip.Dot);
+
+        fixture.BeginRegisterRead(2);
+        fixture.PulseClock(1);
+        fixture.EndRegisterRead();
+
+        Assert.Equal(241, fixture.Chip.Scanline);
+        Assert.Equal(1, fixture.Chip.Dot);
+        Assert.False(fixture.Chip.Vblank);
+        Assert.Equal(DigitalLevel.HighImpedance, fixture.Chip.NmiBar.DriveLevel);
+        Assert.Equal(0UL, fixture.Chip.NmiFallingEdgeCount);
+        Assert.Equal(1UL, fixture.Chip.VblankSuppressionCount);
+    }
+
     private sealed class Fixture
     {
         private readonly VirtualHardwareSimulator _sim;
@@ -353,13 +376,25 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
 
         public byte ReadRegister(byte register)
         {
+            BeginRegisterRead(register);
+            Assert.True(Chip.CpuData.TrySample(out var value));
+            EndRegisterRead();
+            return (byte)value;
+        }
+
+        public void BeginRegisterRead(byte register)
+        {
             Set(_rs, register);
             Release(_data);
             _rw.Set(DigitalLevel.High);
-            _cs.Set(DigitalLevel.Low); _sim.Settle();
-            Assert.True(Chip.CpuData.TrySample(out var value));
-            _cs.Set(DigitalLevel.High); _sim.Settle();
-            return (byte)value;
+            _cs.Set(DigitalLevel.Low);
+            _sim.Settle();
+        }
+
+        public void EndRegisterRead()
+        {
+            _cs.Set(DigitalLevel.High);
+            _sim.Settle();
         }
 
         public void DriveExternalVramData(byte value)
