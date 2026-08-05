@@ -642,3 +642,7 @@ Both PAL packages include startup reset ownership, MSB-first serial transfer, si
 ## v0.67.0 — North American NTSC NES motherboard assembly
 
 Adds the North American NTSC NES motherboard as a net-bound assembly of the completed standalone RP2A03, RP2C02, CIC3193, HM6116, SN74LS139A, SN74LS373, and SN74LS368A packages. The CIC owns the active-low CPU/PPU host-reset chain, uses an independent board clock, and exposes its serial lock/key and slave-reset signals as normalized virtual-slot nets. CPU, PPU, IRQ, controller, audio, and cartridge-facing buses remain board-owned electrical nets with no ROM, mapper, or host callback attached.
+
+## v0.68.0 — PAL NES motherboard assembly
+
+The final regional motherboard now assembles the standalone RP2A07 PAL CPU/APU, RP2C07 PAL PPU, CPU RAM, CIRAM, decoder, address latch and bus driver through board-owned electrical nets. The board selects exactly one PAL lock chip at construction time: CIC3195 for PAL-A or CIC3197 for PAL-B. Both variants expose the same normalized virtual cartridge CPU, PPU, IRQ and CIC serial/reset nets that will be consumed by the shared virtual ROM slot. The PAL system master clock remains independent from the CIC clock, and the selected CIC owns the active-low CPU/PPU reset chain.
