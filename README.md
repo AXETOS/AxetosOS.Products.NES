@@ -563,3 +563,7 @@ CPU-visible reads are latched for the complete asserted `/CS` cycle, preventing 
 ## v0.55.0 — Standalone RP2C02 frame and NMI timing completion
 
 The standalone RP2C02 now applies the NTSC odd-frame cycle skip when background or sprite rendering is enabled: odd pre-render scanlines advance directly from dot 339 to the next frame. Chip-level regressions also verify that enabling NMI during an already active vblank produces exactly one open-drain `/NMI` falling edge and keeps the line asserted without retriggering. This closes the remaining package-level raster and NMI timing foundation before CIC/3193 development begins.
+
+## v0.56.0 — Standalone CIC/3193 package and serial foundation
+
+Version 0.56.0 starts the final remaining standalone chip. `Cic3193` models the 16-pin 3193-series console lock package with named data, seed, configuration, clock, reset, host-reset, slave-reset, power and unused package pins. Power and external reset control all output ownership. A four-clock startup sequence independently releases the slave and host reset outputs, while the serial interface shifts input and output nibbles only on external clock rising edges. NTSC-only configuration and seed levels are sampled from their physical pins. The component contains no motherboard, cartridge, CPU or emulator callbacks; the exact authentication and retry state machine will be layered into this package next.
