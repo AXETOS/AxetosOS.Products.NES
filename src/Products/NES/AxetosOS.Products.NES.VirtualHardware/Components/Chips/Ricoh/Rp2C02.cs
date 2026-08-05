@@ -55,6 +55,8 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     private int _spriteFetchSlot;
     private bool _nmiAsserted;
     private bool _suppressVblankSet;
+    private byte _oamDataBusLatch;
+    private int _spriteOverflowByteOffset;
 
     public Rp2C02(string componentId) : base(componentId)
     {
@@ -129,6 +131,8 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     public byte ColorEmphasis => (byte)((_mask >> 5) & 0x07);
     public ulong NmiFallingEdgeCount { get; private set; }
     public ulong VblankSuppressionCount { get; private set; }
+    public ulong RenderingOamWriteCount { get; private set; }
+    public ulong ForcedBlankPaletteOutputCount { get; private set; }
 
     private bool Powered => Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
 
@@ -152,6 +156,8 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         OutputColorCode = 0;
         NmiFallingEdgeCount = 0;
         VblankSuppressionCount = 0;
+        RenderingOamWriteCount = 0;
+        ForcedBlankPaletteOutputCount = 0;
         SpriteEvaluationCount = 0;
         SpritePatternFetchCount = 0;
         _secondarySpriteCount = 0;
@@ -161,6 +167,8 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _suppressVblankSet = false;
         _spriteEvaluationIndex = 0;
         _spriteFetchSlot = 0;
+        _spriteOverflowByteOffset = 0;
+        _oamDataBusLatch = 0xFF;
         _nmiAsserted = false;
         Array.Clear(_secondaryOam);
         Array.Clear(_activeSprites);
@@ -218,6 +226,8 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _secondarySpriteCount = 0;
         _activeSpriteCount = 0;
         _nextSpriteCount = 0;
+        _spriteOverflowByteOffset = 0;
+        _oamDataBusLatch = 0xFF;
         Array.Clear(_secondaryOam);
         Array.Clear(_activeSprites);
         Array.Clear(_nextSprites);
@@ -383,12 +393,13 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                 }
                 break;
             case 4: // OAMDATA
-                value = _primaryOam[_oamAddress];
+                value = RenderingBusActive ? _oamDataBusLatch : _primaryOam[_oamAddress];
                 break;
             case 7: // PPUDATA
                 if ((_vramAddress & 0x3F00) == 0x3F00)
                 {
-                    value = ReadPalette(_vramAddress);
+                    // Palette RAM drives only D0-D5; D6-D7 retain the PPU open bus.
+                    value = (byte)((_openBus & 0xC0) | ReadPalette(_vramAddress));
                     if (firstSelectedEvaluation)
                     {
                         // Palette reads bypass the delayed buffer, while the mirrored
@@ -397,16 +408,19 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                         {
                             StartVramTransactionAt((ushort)(_vramAddress & 0x2FFF), VramTransaction.Read, 0, VramTransactionPurpose.CpuRead);
                         }
-                        IncrementVramAddress();
+                        IncrementVramAddressAfterCpuAccess();
                     }
                 }
                 else
                 {
                     value = _readBuffer;
-                    if (firstSelectedEvaluation && _transaction == VramTransaction.None)
+                    if (firstSelectedEvaluation)
                     {
-                        StartVramTransaction(VramTransaction.Read, 0, VramTransactionPurpose.CpuRead);
-                        IncrementVramAddress();
+                        if (_transaction == VramTransaction.None)
+                        {
+                            StartVramTransaction(VramTransaction.Read, 0, VramTransactionPurpose.CpuRead);
+                        }
+                        IncrementVramAddressAfterCpuAccess();
                     }
                 }
                 break;
@@ -434,7 +448,15 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                 _oamAddress = value;
                 break;
             case 4: // OAMDATA
-                _primaryOam[_oamAddress++] = value;
+                if (RenderingBusActive)
+                {
+                    // During rendering the OAM port is owned by sprite evaluation.
+                    // CPU writes do not reach OAM and the address counter advances
+                    // by four, matching the package's internal entry stride.
+                    _oamAddress = (byte)(_oamAddress + 4);
+                    RenderingOamWriteCount++;
+                }
+                else _primaryOam[_oamAddress++] = value;
                 break;
             case 5: // PPUSCROLL
                 if (!_writeToggle)
@@ -466,12 +488,15 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                 if ((_vramAddress & 0x3F00) == 0x3F00)
                 {
                     WritePalette(_vramAddress, value);
-                    IncrementVramAddress();
+                    IncrementVramAddressAfterCpuAccess();
                 }
-                else if (_transaction == VramTransaction.None)
+                else
                 {
-                    StartVramTransaction(VramTransaction.Write, value, VramTransactionPurpose.CpuWrite);
-                    IncrementVramAddress();
+                    if (_transaction == VramTransaction.None)
+                    {
+                        StartVramTransaction(VramTransaction.Write, value, VramTransactionPurpose.CpuWrite);
+                    }
+                    IncrementVramAddressAfterCpuAccess();
                 }
                 break;
         }
@@ -492,8 +517,18 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     private ushort _transactionAddress;
     private byte _transactionWriteData;
 
-    private void IncrementVramAddress()
+    private void IncrementVramAddressAfterCpuAccess()
     {
+        if (RenderingBusActive)
+        {
+            // While either renderer owns the VRAM address generators, a $2007
+            // access clocks both the horizontal and vertical increment paths.
+            IncrementCoarseX();
+            IncrementY();
+            _vramAddress &= 0x7FFF;
+            return;
+        }
+
         _vramAddress = (ushort)((_vramAddress + (((_control & 0x04) != 0) ? 32 : 1)) & 0x3FFF);
     }
 
@@ -524,6 +559,10 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     }
 
     private bool BackgroundRenderingEnabled => (_mask & 0x08) != 0;
+    private bool RenderingEnabled => BackgroundRenderingEnabled || SpriteRenderingEnabled;
+    private bool RenderingBusActive => RenderingEnabled
+        && IsRenderingScanline()
+        && ((Dot >= 1 && Dot <= 256) || (Dot >= 321 && Dot <= 340));
 
     private void AdvanceBackgroundPipeline()
     {
@@ -727,6 +766,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         {
             _secondarySpriteCount = 0;
             _spriteEvaluationIndex = 0;
+            _spriteOverflowByteOffset = 0;
             Array.Clear(_secondaryOam);
         }
 
@@ -781,17 +821,26 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     {
         SpriteEvaluationCount++;
         var baseAddress = spriteIndex * 4;
-        var y = _primaryOam[baseAddress];
         var targetScanline = Scanline == PreRenderScanline ? 0 : Scanline + 1;
         var height = (_control & 0x20) != 0 ? 16 : 8;
-        var row = targetScanline - (y + 1);
-        if (row < 0 || row >= height) return;
 
         if (_secondarySpriteCount >= 8)
         {
-            _spriteOverflow = true;
+            // Once secondary OAM is full, the RP2C02's broken evaluation logic
+            // advances diagonally through primary OAM. Non-Y bytes can therefore
+            // be interpreted as Y coordinates and create false-positive overflow.
+            var candidate = _primaryOam[baseAddress + _spriteOverflowByteOffset];
+            _oamDataBusLatch = candidate;
+            var rowCandidate = targetScanline - (candidate + 1);
+            if (rowCandidate >= 0 && rowCandidate < height) _spriteOverflow = true;
+            _spriteOverflowByteOffset = (_spriteOverflowByteOffset + 1) & 3;
             return;
         }
+
+        var y = _primaryOam[baseAddress];
+        _oamDataBusLatch = y;
+        var row = targetScanline - (y + 1);
+        if (row < 0 || row >= height) return;
 
         var attributes = _primaryOam[baseAddress + 2];
         if ((attributes & 0x80) != 0) row = height - 1 - row;
@@ -947,7 +996,17 @@ public sealed class Rp2C02 : VirtualHardwareComponent
 
     private void UpdateOutputColor()
     {
-        var paletteAddress = (ushort)(0x3F00 | (PixelPaletteIndex & 0x1F));
+        ushort paletteAddress;
+        if (!RenderingEnabled && (_vramAddress & 0x3F00) == 0x3F00)
+        {
+            // During forced blank the external pixel pipeline is disconnected;
+            // when v points into palette space, that palette entry appears at
+            // the package color output instead of the universal background.
+            paletteAddress = (ushort)(_vramAddress & 0x3FFF);
+            ForcedBlankPaletteOutputCount++;
+        }
+        else paletteAddress = (ushort)(0x3F00 | (PixelPaletteIndex & 0x1F));
+
         var color = ReadPalette(paletteAddress);
         if ((_mask & 0x01) != 0) color &= 0x30;
         OutputColorCode = color;

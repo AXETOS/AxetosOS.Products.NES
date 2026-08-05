@@ -268,6 +268,105 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.Equal(1UL, fixture.Chip.VblankSuppressionCount);
     }
 
+    [Fact]
+    public void Palette_ppudata_read_preserves_open_bus_high_bits()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(6, 0x3F);
+        fixture.WriteRegister(6, 0x04);
+        fixture.WriteRegister(7, 0x2A);
+        fixture.WriteRegister(6, 0x3F);
+        fixture.WriteRegister(6, 0x04);
+        fixture.WriteRegister(2, 0xC0); // refresh open-bus D6-D7 without changing v
+
+        Assert.Equal((byte)0xEA, fixture.ReadRegister(7));
+    }
+
+    [Fact]
+    public void Ppudata_access_during_rendering_clocks_horizontal_and_vertical_incrementers()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(6, 0x20);
+        fixture.WriteRegister(6, 0x00);
+        fixture.WriteRegister(1, 0x08);
+        fixture.PulseClock(1);
+
+        fixture.WriteRegister(7, 0x55);
+
+        Assert.Equal((ushort)0x3001, fixture.Chip.VramAddress);
+    }
+
+    [Fact]
+    public void Oamdata_write_during_rendering_does_not_modify_oam_and_advances_by_four()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(3, 0x20);
+        fixture.WriteRegister(4, 0x5A);
+        fixture.WriteRegister(3, 0x20);
+        fixture.WriteRegister(1, 0x10);
+        fixture.PulseClock(1);
+
+        fixture.WriteRegister(4, 0xA5);
+
+        Assert.Equal((byte)0x5A, fixture.Chip.InspectOam(0x20));
+        Assert.Equal((byte)0x24, fixture.Chip.OamAddress);
+        Assert.Equal(1UL, fixture.Chip.RenderingOamWriteCount);
+    }
+
+    [Fact]
+    public void Forced_blank_outputs_palette_entry_selected_by_vram_address()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(6, 0x3F);
+        fixture.WriteRegister(6, 0x05);
+        fixture.WriteRegister(7, 0x2B);
+        fixture.WriteRegister(6, 0x3F);
+        fixture.WriteRegister(6, 0x05);
+
+        fixture.PulseClock(1);
+
+        Assert.Equal((byte)0x2B, fixture.Chip.OutputColorCode);
+        Assert.True(fixture.Chip.ForcedBlankPaletteOutputCount > 0);
+    }
+
+    [Fact]
+    public void Disabling_and_reenabling_nmi_during_vblank_generates_a_new_falling_edge()
+    {
+        var fixture = new Fixture();
+        fixture.PulseClock((241 * 341) + 1);
+        fixture.WriteRegister(0, 0x80);
+        Assert.Equal(1UL, fixture.Chip.NmiFallingEdgeCount);
+
+        fixture.WriteRegister(0, 0x00);
+        Assert.Equal(DigitalLevel.HighImpedance, fixture.Chip.NmiBar.DriveLevel);
+        fixture.WriteRegister(0, 0x80);
+
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.NmiBar.DriveLevel);
+        Assert.Equal(2UL, fixture.Chip.NmiFallingEdgeCount);
+    }
+
+    [Fact]
+    public void Sprite_overflow_diagonal_scan_can_match_a_non_y_oam_byte()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(3, 0x00);
+        for (var sprite = 0; sprite < 64; sprite++)
+        {
+            var y = sprite < 8 ? (byte)0x00 : (byte)0xF0;
+            var tile = sprite == 9 ? (byte)0x00 : (byte)0xF0;
+            fixture.WriteRegister(4, y);
+            fixture.WriteRegister(4, tile);
+            fixture.WriteRegister(4, 0xF0);
+            fixture.WriteRegister(4, 0xF0);
+        }
+        fixture.WriteRegister(1, 0x10);
+
+        fixture.PulseClock(257);
+
+        Assert.Equal(8, fixture.Chip.EvaluatedSpriteCount);
+        Assert.True(fixture.Chip.SpriteOverflow);
+    }
+
     private sealed class Fixture
     {
         private readonly VirtualHardwareSimulator _sim;

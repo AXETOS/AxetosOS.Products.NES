@@ -574,6 +574,15 @@ Version 0.56.0 starts the final remaining standalone chip. `Cic3193` models the 
 Version 0.57.0 completes the CIC/3193 package-level lock behavior with a clocked four-round challenge/response state machine, continuous authenticated exchanges, invalid-response detection, an active-low host-reset retry hold, and automatic authentication restart. Every challenge and response bit still crosses only `DATA_OUT`, `DATA_IN`, and `CLK`; reset ownership remains entirely on the package pins. Diagnostic counters expose successful exchanges, failed exchanges, and generated host-reset pulses for independent chip validation without introducing motherboard or cartridge callbacks.
 
 
-## v0.58.0 — RP2C02 PPUSTATUS/vblank race conformance
+## v0.59.0 — RP2C02 PPUSTATUS/vblank race conformance
 
 The standalone RP2C02 now models the scanline-241 `$2002` race at the package bus. A PPUSTATUS read already selected across the vblank-start boundary suppresses the vblank latch transition and prevents the corresponding open-drain `/NMI` falling edge. The behavior is driven only by the chip's clock and CPU bus pins, and an independent regression verifies the complete boundary cycle.
+
+
+## v0.59.0 — RP2C02 completion sweep
+
+This release consolidates the remaining high-value standalone RP2C02 conformance work before motherboard integration. It adds rendering-time `$2007` address-generator behavior, palette/open-bus read semantics, forced-blank palette output, rendering-time OAM port ownership, diagonal sprite-overflow evaluation, and expanded NMI edge validation.
+
+The RP2C02 remains a package-level component driven only by power, reset, clock, CPU bus pins, VRAM bus pins, and internal state. It has no direct dependency on the RP2A03, cartridge, renderer, framebuffer, or motherboard.
+
+Known residual silicon-level limitations are intentionally explicit: analog composite waveform generation, transistor-level open-bus decay, temperature/process-dependent power-up randomness, and decap-exact sub-dot metastability are outside the current digital virtual-hardware scope.
