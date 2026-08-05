@@ -241,6 +241,16 @@ Planned:
 
 
 
+## v0.66.0 — Famicom motherboard assembly
+
+- Adds the first regional motherboard built from the completed standalone chip packages.
+- Wires RP2A03, RP2C02, two HM6116 SRAMs, SN74LS139A, SN74LS373 and SN74LS368A exclusively through digital nets.
+- Uses the shared 21.477272 MHz NTSC-J master clock and common reset network.
+- Exposes normalized CPU, PPU, IRQ, control and audio nets for the future shared virtual ROM slot.
+- Contains no CIC, matching the Japanese Famicom board family.
+- Adds independent board-level inventory, wiring, clock/reset and address-decode tests.
+
+
 ## v0.33.0 Regional VirtualHardware timing profiles
 
 The VirtualHardware motherboard now selects an explicit physical console family instead of assuming one hard-coded NTSC machine:
@@ -622,7 +632,7 @@ Adds the PAL Ricoh RP2C07 as an independent reusable package rather than a regio
 
 The RP2C07 and RP2C02 remain separate public chip packages so each motherboard can contain the correct regional silicon without motherboard-level region branches.
 
-## v0.65.0 — standalone PAL CIC family completion sweep
+## v0.66.0 — standalone PAL CIC family completion sweep
 
 Version 0.65.0 adds the separate `Cic3195` PAL-A and `Cic3197` PAL-B lock packages needed by the regional motherboard set. Each package retains the same sixteen-pin, pin-only electrical contract as the completed `Cic3193`, but captures its own regional identity during startup and advances an incompatible deterministic challenge/response stream. Neither package calls a motherboard, cartridge, CPU, PPU, region selector, or external authentication service.
 
