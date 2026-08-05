@@ -20,7 +20,7 @@ public sealed class VirtualHardwareRp2A03ApuTriangleNoiseTests
             0xA9, 0x85, 0x8D, 0x08, 0x40, // control flag, linear reload 5
             0xA9, 0x02, 0x8D, 0x0A, 0x40, // timer low
             0xA9, 0x08, 0x8D, 0x0B, 0x40, // timer high 0, length index 1
-            0x00
+            0x02
         ]);
 
         fixture.RunCpuCycles(120);
@@ -50,7 +50,7 @@ public sealed class VirtualHardwareRp2A03ApuTriangleNoiseTests
             0xA9, 0x3F, 0x8D, 0x0C, 0x40, // halt length, constant volume 15
             0xA9, 0x00, 0x8D, 0x0E, 0x40, // long mode, period table index 0
             0xA9, 0x08, 0x8D, 0x0F, 0x40, // length index 1
-            0x00
+            0x02
         ]);
 
         fixture.RunCpuCycles(120);
@@ -84,7 +84,7 @@ public sealed class VirtualHardwareRp2A03ApuTriangleNoiseTests
             0xA9, 0x00, 0x8D, 0x0E, 0x40,
             0xA9, 0x08, 0x8D, 0x0F, 0x40,
             0xA9, 0x00, 0x8D, 0x15, 0x40,
-            0x00
+            0x02
         ]);
 
         fixture.RunCpuCycles(220);

@@ -24,7 +24,7 @@ public sealed class VirtualHardwareRp2A03ApuPulseTests
             0x8D, 0x02, 0x40,       // timer low
             0xA9, 0x08,
             0x8D, 0x03, 0x40,       // timer high 0, length index 1
-            0x00
+            0x02
         ]);
 
         fixture.RunCpuCycles(120);
@@ -53,7 +53,7 @@ public sealed class VirtualHardwareRp2A03ApuPulseTests
             0xA9, 0x08, 0x8D, 0x02, 0x40,
             0xA9, 0x08, 0x8D, 0x03, 0x40,
             0xA9, 0x00, 0x8D, 0x15, 0x40,
-            0x00
+            0x02
         ]);
 
         fixture.RunCpuCycles(160);
@@ -66,7 +66,7 @@ public sealed class VirtualHardwareRp2A03ApuPulseTests
     [Fact]
     public void Four_step_frame_sequencer_raises_internal_frame_irq()
     {
-        var fixture = CreateFixture([0x00]);
+        var fixture = CreateFixture([0x02]);
 
         fixture.RunCpuCycles(29_900);
 

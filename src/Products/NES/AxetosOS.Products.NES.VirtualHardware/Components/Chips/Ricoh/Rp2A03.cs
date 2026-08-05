@@ -26,20 +26,21 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         ReadZeroPageIndexed, ReadAbsoluteIndexed, ReadIndirectPointerLow, ReadIndirectPointerHigh,
         JumpIndirectLow, JumpIndirectHigh,
         ReadMemory, WriteMemory, ReadModifyWriteDummy, ReadModifyWriteFinal,
-        BranchOffset, BranchApply,
+        BranchOffset, BranchApply, BranchPageCross,
         JsrPushHigh, JsrPushLow, RtsDummyRead, RtsPullLow, RtsPullHigh, RtsIncrement,
         RtiDummyRead, RtiPullStatus, RtiPullLow, RtiPullHigh,
         StackPush, StackPullDummy, StackPull,
-        InterruptDummyRead, InterruptPushProgramCounterHigh, InterruptPushProgramCounterLow,
+        BrkPaddingRead, InterruptDummyRead, InterruptPushProgramCounterHigh, InterruptPushProgramCounterLow,
         InterruptPushStatus, InterruptVectorLow, InterruptVectorHigh, Halted
     }
 
-    private enum InterruptKind { None, Irq, Nmi }
+    private enum InterruptKind { None, Irq, Nmi, Brk }
     private enum AddressingMode { None, Immediate, ZeroPage, ZeroPageX, ZeroPageY, Absolute, AbsoluteX, AbsoluteY, IndexedIndirect, IndirectIndexed, Indirect }
     private enum Operation
     {
         None, Lda, Ldx, Ldy, Sta, Stx, Sty, And, Ora, Eor, Adc, Sbc, Cmp, Cpx, Cpy,
-        Bit, Inc, Dec, Asl, Lsr, Rol, Ror, Jmp, Jsr, Pha, Php, Pla, Plp
+        Bit, Inc, Dec, Asl, Lsr, Rol, Ror, Jmp, Jsr, Pha, Php, Pla, Plp,
+        Nop, Lax, Sax, Slo, Rla, Sre, Rra, Dcp, Isc, Anc, Alr, Arr, Axs
     }
 
     private CycleState _state;
@@ -411,7 +412,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
                 _effectiveAddress = (ushort)(_lowByte | pointerHigh << 8);
                 if (_addressingMode == AddressingMode.IndirectIndexed)
                 {
-                    _state = CycleState.ReadAbsoluteIndexed; BeginRead(_effectiveAddress);
+                    BeginIndexedAddress(Y);
                 }
                 else BeginEffectiveOperation();
                 break;
@@ -438,13 +439,12 @@ public sealed class Rp2A03 : VirtualHardwareComponent
                 }
                 else if (_addressingMode is AddressingMode.AbsoluteX or AddressingMode.AbsoluteY)
                 {
-                    _state = CycleState.ReadAbsoluteIndexed; BeginRead(_effectiveAddress);
+                    BeginIndexedAddress(_addressingMode == AddressingMode.AbsoluteX ? X : Y);
                 }
                 else BeginEffectiveOperation();
                 break;
 
             case CycleState.ReadAbsoluteIndexed:
-                _effectiveAddress = (ushort)(_effectiveAddress + (_addressingMode is AddressingMode.AbsoluteX ? X : Y));
                 BeginEffectiveOperation(); break;
 
             case CycleState.JumpIndirectLow:
@@ -475,7 +475,18 @@ public sealed class Rp2A03 : VirtualHardwareComponent
                 if (!BranchCondition(CurrentOpcode)) { CompleteInstruction(); break; }
                 _state = CycleState.BranchApply; BeginRead(ProgramCounter); break;
             case CycleState.BranchApply:
-                ProgramCounter = (ushort)(ProgramCounter + (sbyte)_operand); CompleteInstruction(); break;
+                var branchOrigin = ProgramCounter;
+                var branchTarget = (ushort)(ProgramCounter + (sbyte)_operand);
+                ProgramCounter = branchTarget;
+                if ((branchOrigin & 0xFF00) != (branchTarget & 0xFF00))
+                {
+                    _state = CycleState.BranchPageCross;
+                    BeginRead((ushort)((branchOrigin & 0xFF00) | (branchTarget & 0x00FF)));
+                }
+                else CompleteInstruction();
+                break;
+            case CycleState.BranchPageCross:
+                CompleteInstruction(); break;
 
             case CycleState.JsrPushHigh:
                 StackPointer--; _state = CycleState.JsrPushLow; BeginWrite(StackAddress, (byte)ProgramCounter); break;
@@ -516,12 +527,23 @@ public sealed class Rp2A03 : VirtualHardwareComponent
                 else Status = (byte)((pulled & ~BreakFlag) | UnusedFlag);
                 CompleteInstruction(); break;
 
+            case CycleState.BrkPaddingRead:
+                // BRK performs a real padding-byte read and increments PC
+                // before stacking the return address.  It then shares the
+                // IRQ vector but stacks B=1.
+                ProgramCounter++;
+                _state = CycleState.InterruptPushProgramCounterHigh;
+                BeginWrite(StackAddress, (byte)(ProgramCounter >> 8));
+                break;
             case CycleState.InterruptDummyRead:
                 _state = CycleState.InterruptPushProgramCounterHigh; BeginWrite(StackAddress, (byte)(ProgramCounter >> 8)); break;
             case CycleState.InterruptPushProgramCounterHigh:
                 StackPointer--; _state = CycleState.InterruptPushProgramCounterLow; BeginWrite(StackAddress, (byte)ProgramCounter); break;
             case CycleState.InterruptPushProgramCounterLow:
-                StackPointer--; _state = CycleState.InterruptPushStatus; BeginWrite(StackAddress, StatusForHardwareInterrupt); break;
+                StackPointer--;
+                _state = CycleState.InterruptPushStatus;
+                BeginWrite(StackAddress, _activeInterrupt == InterruptKind.Brk ? StatusForBrk : StatusForHardwareInterrupt);
+                break;
             case CycleState.InterruptPushStatus:
                 // The stacked byte reflects the pre-interrupt status.  The
                 // interrupt-disable latch is asserted only after that bus
@@ -536,8 +558,11 @@ public sealed class Rp2A03 : VirtualHardwareComponent
                 _state = CycleState.InterruptVectorHigh; BeginRead((ushort)(VectorAddress + 1)); break;
             case CycleState.InterruptVectorHigh:
                 if (!TrySampleData(out var vectorHigh)) return;
-                ProgramCounter = (ushort)(_lowByte | vectorHigh << 8); _activeInterrupt = InterruptKind.None;
-                CompletedInterruptCount++; BeginOpcodeFetch(); break;
+                ProgramCounter = (ushort)(_lowByte | vectorHigh << 8);
+                if (_activeInterrupt == InterruptKind.Brk) CompletedInstructionCount++;
+                else CompletedInterruptCount++;
+                _activeInterrupt = InterruptKind.None;
+                BeginOpcodeFetch(); break;
             case CycleState.Halted: break;
         }
     }
@@ -547,7 +572,11 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         switch (opcode)
         {
             case 0xEA: CompleteInstruction(); return;
-            case 0x00: CompletedInstructionCount++; _state = CycleState.Halted; Data.Release(); _sync = false; return;
+            case 0x00:
+                _activeInterrupt = InterruptKind.Brk;
+                _state = CycleState.BrkPaddingRead;
+                BeginRead(ProgramCounter);
+                return;
 
             case 0xA9: BeginImmediate(Operation.Lda); return; case 0xA2: BeginImmediate(Operation.Ldx); return; case 0xA0: BeginImmediate(Operation.Ldy); return;
             case 0x29: BeginImmediate(Operation.And); return; case 0x09: BeginImmediate(Operation.Ora); return; case 0x49: BeginImmediate(Operation.Eor); return;
@@ -632,6 +661,57 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             case 0x58: SetFlag(InterruptDisableFlag, false); CompleteInstruction(); return; case 0x78: SetFlag(InterruptDisableFlag, true); CompleteInstruction(); return;
             case 0xD8: SetFlag(DecimalFlag, false); CompleteInstruction(); return; case 0xF8: SetFlag(DecimalFlag, true); CompleteInstruction(); return;
             case 0xB8: SetFlag(OverflowFlag, false); CompleteInstruction(); return;
+
+            // Stable NMOS 6502 unofficial opcodes used by commercial software.
+            case 0xEB: BeginImmediate(Operation.Sbc); return;
+            case 0x0B: case 0x2B: BeginImmediate(Operation.Anc); return;
+            case 0x4B: BeginImmediate(Operation.Alr); return;
+            case 0x6B: BeginImmediate(Operation.Arr); return;
+            case 0xCB: BeginImmediate(Operation.Axs); return;
+
+            case 0xA7: BeginAddressed(Operation.Lax, AddressingMode.ZeroPage); return;
+            case 0xB7: BeginAddressed(Operation.Lax, AddressingMode.ZeroPageY); return;
+            case 0xAF: BeginAddressed(Operation.Lax, AddressingMode.Absolute); return;
+            case 0xBF: BeginAddressed(Operation.Lax, AddressingMode.AbsoluteY); return;
+            case 0xA3: BeginAddressed(Operation.Lax, AddressingMode.IndexedIndirect); return;
+            case 0xB3: BeginAddressed(Operation.Lax, AddressingMode.IndirectIndexed); return;
+            case 0x87: BeginAddressed(Operation.Sax, AddressingMode.ZeroPage); return;
+            case 0x97: BeginAddressed(Operation.Sax, AddressingMode.ZeroPageY); return;
+            case 0x8F: BeginAddressed(Operation.Sax, AddressingMode.Absolute); return;
+            case 0x83: BeginAddressed(Operation.Sax, AddressingMode.IndexedIndirect); return;
+
+            case 0x07: BeginAddressed(Operation.Slo, AddressingMode.ZeroPage); return; case 0x17: BeginAddressed(Operation.Slo, AddressingMode.ZeroPageX); return;
+            case 0x0F: BeginAddressed(Operation.Slo, AddressingMode.Absolute); return; case 0x1F: BeginAddressed(Operation.Slo, AddressingMode.AbsoluteX); return;
+            case 0x1B: BeginAddressed(Operation.Slo, AddressingMode.AbsoluteY); return; case 0x03: BeginAddressed(Operation.Slo, AddressingMode.IndexedIndirect); return; case 0x13: BeginAddressed(Operation.Slo, AddressingMode.IndirectIndexed); return;
+            case 0x27: BeginAddressed(Operation.Rla, AddressingMode.ZeroPage); return; case 0x37: BeginAddressed(Operation.Rla, AddressingMode.ZeroPageX); return;
+            case 0x2F: BeginAddressed(Operation.Rla, AddressingMode.Absolute); return; case 0x3F: BeginAddressed(Operation.Rla, AddressingMode.AbsoluteX); return;
+            case 0x3B: BeginAddressed(Operation.Rla, AddressingMode.AbsoluteY); return; case 0x23: BeginAddressed(Operation.Rla, AddressingMode.IndexedIndirect); return; case 0x33: BeginAddressed(Operation.Rla, AddressingMode.IndirectIndexed); return;
+            case 0x47: BeginAddressed(Operation.Sre, AddressingMode.ZeroPage); return; case 0x57: BeginAddressed(Operation.Sre, AddressingMode.ZeroPageX); return;
+            case 0x4F: BeginAddressed(Operation.Sre, AddressingMode.Absolute); return; case 0x5F: BeginAddressed(Operation.Sre, AddressingMode.AbsoluteX); return;
+            case 0x5B: BeginAddressed(Operation.Sre, AddressingMode.AbsoluteY); return; case 0x43: BeginAddressed(Operation.Sre, AddressingMode.IndexedIndirect); return; case 0x53: BeginAddressed(Operation.Sre, AddressingMode.IndirectIndexed); return;
+            case 0x67: BeginAddressed(Operation.Rra, AddressingMode.ZeroPage); return; case 0x77: BeginAddressed(Operation.Rra, AddressingMode.ZeroPageX); return;
+            case 0x6F: BeginAddressed(Operation.Rra, AddressingMode.Absolute); return; case 0x7F: BeginAddressed(Operation.Rra, AddressingMode.AbsoluteX); return;
+            case 0x7B: BeginAddressed(Operation.Rra, AddressingMode.AbsoluteY); return; case 0x63: BeginAddressed(Operation.Rra, AddressingMode.IndexedIndirect); return; case 0x73: BeginAddressed(Operation.Rra, AddressingMode.IndirectIndexed); return;
+            case 0xC7: BeginAddressed(Operation.Dcp, AddressingMode.ZeroPage); return; case 0xD7: BeginAddressed(Operation.Dcp, AddressingMode.ZeroPageX); return;
+            case 0xCF: BeginAddressed(Operation.Dcp, AddressingMode.Absolute); return; case 0xDF: BeginAddressed(Operation.Dcp, AddressingMode.AbsoluteX); return;
+            case 0xDB: BeginAddressed(Operation.Dcp, AddressingMode.AbsoluteY); return; case 0xC3: BeginAddressed(Operation.Dcp, AddressingMode.IndexedIndirect); return; case 0xD3: BeginAddressed(Operation.Dcp, AddressingMode.IndirectIndexed); return;
+            case 0xE7: BeginAddressed(Operation.Isc, AddressingMode.ZeroPage); return; case 0xF7: BeginAddressed(Operation.Isc, AddressingMode.ZeroPageX); return;
+            case 0xEF: BeginAddressed(Operation.Isc, AddressingMode.Absolute); return; case 0xFF: BeginAddressed(Operation.Isc, AddressingMode.AbsoluteX); return;
+            case 0xFB: BeginAddressed(Operation.Isc, AddressingMode.AbsoluteY); return; case 0xE3: BeginAddressed(Operation.Isc, AddressingMode.IndexedIndirect); return; case 0xF3: BeginAddressed(Operation.Isc, AddressingMode.IndirectIndexed); return;
+
+            // Read-NOPs preserve their documented bus accesses and lengths.
+            case 0x80: case 0x82: case 0x89: case 0xC2: case 0xE2: BeginImmediate(Operation.Nop); return;
+            case 0x04: case 0x44: case 0x64: BeginAddressed(Operation.Nop, AddressingMode.ZeroPage); return;
+            case 0x14: case 0x34: case 0x54: case 0x74: case 0xD4: case 0xF4: BeginAddressed(Operation.Nop, AddressingMode.ZeroPageX); return;
+            case 0x0C: BeginAddressed(Operation.Nop, AddressingMode.Absolute); return;
+            case 0x1C: case 0x3C: case 0x5C: case 0x7C: case 0xDC: case 0xFC: BeginAddressed(Operation.Nop, AddressingMode.AbsoluteX); return;
+            case 0x1A: case 0x3A: case 0x5A: case 0x7A: case 0xDA: case 0xFA: CompleteInstruction(); return;
+
+            // KIL/JAM opcodes stop the CPU core until /RES is asserted.
+            case 0x02: case 0x12: case 0x22: case 0x32: case 0x42: case 0x52:
+            case 0x62: case 0x72: case 0x92: case 0xB2: case 0xD2: case 0xF2:
+                CompletedInstructionCount++; _state = CycleState.Halted; Data.Release(); _sync = false; return;
+
             default: throw new InvalidOperationException($"MOS6502 encountered unsupported opcode 0x{opcode:X2} at 0x{(ushort)(ProgramCounter - 1):X4}.");
         }
     }
@@ -650,6 +730,26 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         if (IsStoreOperation(_operation)) { _state = CycleState.WriteMemory; BeginWrite(_effectiveAddress, StoreValue); }
         else { _state = CycleState.ReadMemory; BeginRead(_effectiveAddress); }
     }
+    private void BeginIndexedAddress(byte index)
+    {
+        var baseAddress = _effectiveAddress;
+        var finalAddress = (ushort)(baseAddress + index);
+        var pageCrossed = (baseAddress & 0xFF00) != (finalAddress & 0xFF00);
+        _effectiveAddress = finalAddress;
+
+        // Stores and read-modify-write instructions always perform the
+        // indexed dummy read. Ordinary reads do so only on a page crossing.
+        if (pageCrossed || IsStoreOperation(_operation) || IsReadModifyWriteOperation(_operation))
+        {
+            var provisional = (ushort)((baseAddress & 0xFF00) | (finalAddress & 0x00FF));
+            _state = CycleState.ReadAbsoluteIndexed;
+            BeginRead(provisional);
+            return;
+        }
+
+        BeginEffectiveOperation();
+    }
+
 
     private void ExecuteReadOperation(byte value)
     {
@@ -666,6 +766,21 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             case Operation.Cmp: Compare(Accumulator, value); break;
             case Operation.Cpx: Compare(X, value); break;
             case Operation.Cpy: Compare(Y, value); break;
+            case Operation.Nop: break;
+            case Operation.Lax: Accumulator = X = value; SetZeroAndNegativeFlags(value); break;
+            case Operation.Anc: Accumulator &= value; SetZeroAndNegativeFlags(Accumulator); SetFlag(CarryFlag, (Accumulator & 0x80) != 0); break;
+            case Operation.Alr: Accumulator &= value; Accumulator = ShiftRight(Accumulator); break;
+            case Operation.Arr:
+                Accumulator &= value;
+                Accumulator = (byte)((Accumulator >> 1) | (IsFlagSet(CarryFlag) ? 0x80 : 0));
+                SetZeroAndNegativeFlags(Accumulator);
+                SetFlag(CarryFlag, (Accumulator & 0x40) != 0);
+                SetFlag(OverflowFlag, (((Accumulator >> 6) ^ (Accumulator >> 5)) & 1) != 0);
+                break;
+            case Operation.Axs:
+                var ax = (byte)(Accumulator & X);
+                var axResult = (byte)(ax - value);
+                SetFlag(CarryFlag, ax >= value); X = axResult; SetZeroAndNegativeFlags(X); break;
             case Operation.Bit:
                 SetFlag(ZeroFlag, (Accumulator & value) == 0);
                 SetFlag(OverflowFlag, (value & OverflowFlag) != 0);
@@ -674,23 +789,32 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         }
     }
 
-    private bool IsStoreOperation(Operation op) => op is Operation.Sta or Operation.Stx or Operation.Sty;
-    private bool IsReadModifyWriteOperation(Operation op) => op is Operation.Inc or Operation.Dec or Operation.Asl or Operation.Lsr or Operation.Rol or Operation.Ror;
-    private byte StoreValue => _operation switch { Operation.Sta => Accumulator, Operation.Stx => X, Operation.Sty => Y, _ => 0 };
+    private bool IsStoreOperation(Operation op) => op is Operation.Sta or Operation.Stx or Operation.Sty or Operation.Sax;
+    private bool IsReadModifyWriteOperation(Operation op) => op is Operation.Inc or Operation.Dec or Operation.Asl or Operation.Lsr or Operation.Rol or Operation.Ror or Operation.Slo or Operation.Rla or Operation.Sre or Operation.Rra or Operation.Dcp or Operation.Isc;
+    private byte StoreValue => _operation switch { Operation.Sta => Accumulator, Operation.Stx => X, Operation.Sty => Y, Operation.Sax => (byte)(Accumulator & X), _ => 0 };
 
     private byte ApplyReadModifyWrite(byte value)
     {
         byte result = _operation switch
         {
-            Operation.Inc => (byte)(value + 1),
-            Operation.Dec => (byte)(value - 1),
-            Operation.Asl => ShiftLeft(value),
-            Operation.Lsr => ShiftRight(value),
-            Operation.Rol => RotateLeft(value),
-            Operation.Ror => RotateRight(value),
+            Operation.Inc or Operation.Isc => (byte)(value + 1),
+            Operation.Dec or Operation.Dcp => (byte)(value - 1),
+            Operation.Asl or Operation.Slo => ShiftLeft(value),
+            Operation.Lsr or Operation.Sre => ShiftRight(value),
+            Operation.Rol or Operation.Rla => RotateLeft(value),
+            Operation.Ror or Operation.Rra => RotateRight(value),
             _ => throw new InvalidOperationException($"Operation {_operation} is not read-modify-write.")
         };
         if (_operation is Operation.Inc or Operation.Dec) SetZeroAndNegativeFlags(result);
+        switch (_operation)
+        {
+            case Operation.Slo: Accumulator |= result; SetZeroAndNegativeFlags(Accumulator); break;
+            case Operation.Rla: Accumulator &= result; SetZeroAndNegativeFlags(Accumulator); break;
+            case Operation.Sre: Accumulator ^= result; SetZeroAndNegativeFlags(Accumulator); break;
+            case Operation.Rra: AddWithCarry(result); break;
+            case Operation.Dcp: Compare(Accumulator, result); break;
+            case Operation.Isc: AddWithCarry((byte)~result); break;
+        }
         return result;
     }
 
@@ -832,6 +956,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private bool IsReadCycle() => ReadWrite.DriveLevel != DigitalLevel.Low;
     private ushort StackAddress => (ushort)(0x0100 | StackPointer);
     private ushort VectorAddress => _activeInterrupt == InterruptKind.Nmi ? (ushort)0xFFFA : (ushort)0xFFFE;
+    private byte StatusForBrk => (byte)(Status | BreakFlag | UnusedFlag);
     private byte StatusForHardwareInterrupt => (byte)((Status | UnusedFlag) & ~BreakFlag);
     private bool IsFlagSet(byte flag) => (Status & flag) != 0;
     private void SetFlag(byte flag, bool set) { Status = set ? (byte)(Status | flag) : (byte)(Status & ~flag); Status |= UnusedFlag; }

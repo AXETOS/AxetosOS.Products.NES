@@ -16,7 +16,7 @@ public sealed class VirtualHardwareRp2A03ApuAccuracyTests
     {
         var fixture = CreateFixture([
             0xA9, 0x40, 0x8D, 0x11, 0x40,
-            0x00
+            0x02
         ]);
 
         fixture.RunCpuCycles(80);
@@ -39,7 +39,7 @@ public sealed class VirtualHardwareRp2A03ApuAccuracyTests
             0xA9, 0x08, 0x8D, 0x0B, 0x40,
             0xAD, 0x15, 0x40,
             0x8D, 0x00, 0x60,
-            0x00
+            0x02
         ]);
 
         fixture.RunCpuCycles(220);
@@ -54,7 +54,7 @@ public sealed class VirtualHardwareRp2A03ApuAccuracyTests
         var fixture = CreateFixture([
             0xA9, 0x80,
             0x8D, 0x17, 0x40,
-            0x00
+            0x02
         ]);
 
         for (var cycle = 0; cycle < 100 && !fixture.Chip.FrameCounterWritePending; cycle++)

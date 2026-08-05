@@ -14,7 +14,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
     [Fact]
     public void Controller_output_register_drives_all_three_package_pins()
     {
-        var fixture = CreateFixture([0xA9, 0x07, 0x8D, 0x16, 0x40, 0x00]);
+        var fixture = CreateFixture([0xA9, 0x07, 0x8D, 0x16, 0x40, 0x02]);
 
         fixture.RunCpuCycles(40);
 
@@ -28,7 +28,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
     [Fact]
     public void Controller_read_uses_input_pin_and_asserts_the_selected_output_enable()
     {
-        var fixture = CreateFixture([0xAD, 0x16, 0x40, 0x8D, 0x00, 0x60, 0x00], controller1: DigitalLevel.High);
+        var fixture = CreateFixture([0xAD, 0x16, 0x40, 0x8D, 0x00, 0x60, 0x02], controller1: DigitalLevel.High);
 
         fixture.RunCpuCycles(50);
 
@@ -41,7 +41,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
     [Fact]
     public void Oam_dma_copies_exactly_256_external_bus_bytes_to_2004()
     {
-        var fixture = CreateFixture([0xA9, 0x02, 0x8D, 0x14, 0x40, 0x00]);
+        var fixture = CreateFixture([0xA9, 0x02, 0x8D, 0x14, 0x40, 0x02]);
         for (var index = 0; index < 256; index++)
         {
             fixture.Memory.Poke(0x0200 + index, (byte)index);
@@ -66,7 +66,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
             0x9A,       // TXS
             0x38,       // SEC
             0x58,       // CLI
-            0x00        // halt
+            0x02        // KIL halt
         ]);
 
         fixture.RunCpuCycles(40);
@@ -94,12 +94,12 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         var fixture = CreateFixture([
             0x58, // CLI
             0xEA, // NOP -- IRQ is accepted at the following opcode boundary
-            0x00
+            0x02
         ]);
 
         fixture.Memory.Poke(0xFFFE, 0x00);
         fixture.Memory.Poke(0xFFFF, 0x90);
-        fixture.Memory.Poke(0x9000, 0x00);
+        fixture.Memory.Poke(0x9000, 0x02);
         fixture.Irq.Set(DigitalLevel.Low);
 
         fixture.RunCpuCycles(40);
@@ -120,7 +120,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
             0xA9, 0x10, 0x8D, 0x15, 0x40, // enable DMC
             0xA9, 0x02, 0x8D, 0x14, 0x40, // first OAM DMA from $0200
             0xA9, 0x02, 0x8D, 0x14, 0x40, // second consecutive OAM DMA
-            0x00
+            0x02
         };
 
         var fixture = CreateFixture(program);
@@ -148,6 +148,76 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
 
         var expectedTransfer = Enumerable.Range(0, 256).Select(value => (byte)(value ^ 0xA5));
         Assert.Equal(expectedTransfer.Concat(expectedTransfer), fixture.Memory.OamWrites);
+    }
+
+
+    [Fact]
+    public void Brk_reads_padding_stacks_pc_and_break_status_then_uses_irq_vector()
+    {
+        var fixture = CreateFixture([
+            0x18,       // CLC
+            0x00, 0xEA, // BRK plus padding byte
+            0x02        // return target sentinel
+        ]);
+        fixture.Memory.Poke(0xFFFE, 0x00);
+        fixture.Memory.Poke(0xFFFF, 0x90);
+        fixture.Memory.Poke(0x9000, 0x02);
+
+        fixture.RunCpuCycles(40);
+
+        Assert.True(fixture.Chip.IsHalted);
+        Assert.Equal((byte)0x80, fixture.Memory.Inspect(0x01FD));
+        Assert.Equal((byte)0x03, fixture.Memory.Inspect(0x01FC));
+        Assert.Equal((byte)0x30, (byte)(fixture.Memory.Inspect(0x01FB) & 0x30));
+        Assert.True(fixture.Chip.InterruptDisable);
+    }
+
+    [Fact]
+    public void Stable_unofficial_lax_sax_and_slo_execute_through_the_external_bus()
+    {
+        var fixture = CreateFixture([
+            0xA9, 0xF3,       // LDA #$F3
+            0xA2, 0x3F,       // LDX #$3F
+            0x87, 0x10,       // SAX $10 => $33
+            0xA7, 0x11,       // LAX $11 => A=X=$81
+            0x07, 0x11,       // SLO $11 => $02, A=$83, C=1
+            0x02
+        ]);
+        fixture.Memory.Poke(0x0011, 0x81);
+
+        fixture.RunCpuCycles(80);
+
+        Assert.True(fixture.Chip.IsHalted);
+        Assert.Equal((byte)0x33, fixture.Memory.Inspect(0x0010));
+        Assert.Equal((byte)0x02, fixture.Memory.Inspect(0x0011));
+        Assert.Equal((byte)0x83, fixture.Chip.Accumulator);
+        Assert.Equal((byte)0x81, fixture.Chip.X);
+        Assert.Equal((byte)0x01, (byte)(fixture.Chip.Status & 0x01));
+    }
+
+    [Fact]
+    public void Unofficial_read_nops_preserve_instruction_lengths_and_kil_waits_for_reset()
+    {
+        var fixture = CreateFixture([
+            0x80, 0xAA,       // immediate NOP
+            0x04, 0x10,       // zero-page read NOP
+            0x0C, 0x00, 0x60, // absolute read NOP
+            0x02
+        ]);
+        fixture.Memory.Poke(0x0010, 0x55);
+        fixture.Memory.Poke(0x6000, 0xAA);
+
+        fixture.RunCpuCycles(50);
+
+        Assert.True(fixture.Chip.IsHalted);
+        Assert.Equal((ushort)0x8008, fixture.Chip.ProgramCounter);
+
+        fixture.Reset.Set(DigitalLevel.Low);
+        fixture.RunCpuCycles(1);
+        fixture.Reset.Set(DigitalLevel.High);
+        fixture.RunCpuCycles(7);
+        Assert.False(fixture.Chip.IsHalted);
+        Assert.Equal((ushort)0x8000, fixture.Chip.ProgramCounter);
     }
 
     private static Fixture CreateFixture(byte[] program, DigitalLevel controller1 = DigitalLevel.Low)
