@@ -87,6 +87,28 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         Assert.Equal((ushort)0x8000, fixture.Chip.ProgramCounter);
     }
 
+
+    [Fact]
+    public void Hardware_irq_stacks_the_pre_interrupt_status_before_setting_interrupt_disable()
+    {
+        var fixture = CreateFixture([
+            0x58, // CLI
+            0xEA, // NOP -- IRQ is accepted at the following opcode boundary
+            0x00
+        ]);
+
+        fixture.Memory.Poke(0xFFFE, 0x00);
+        fixture.Memory.Poke(0xFFFF, 0x90);
+        fixture.Memory.Poke(0x9000, 0x00);
+        fixture.Irq.Set(DigitalLevel.Low);
+
+        fixture.RunCpuCycles(40);
+
+        Assert.Equal(1UL, fixture.Chip.CompletedInterruptCount);
+        Assert.True(fixture.Chip.InterruptDisable);
+        Assert.Equal((byte)0x00, (byte)(fixture.Memory.Inspect(0x01FB) & 0x04));
+    }
+
     [Fact]
     public void Dmc_fetch_uses_an_oam_read_slot_without_corrupting_the_transfer()
     {
@@ -141,7 +163,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
 
         var clock = Source(board, "CLK", DigitalLevel.Low, chip.MasterClock);
         var reset = Source(board, "RES", DigitalLevel.High, chip.ResetBar);
-        Source(board, "IRQ", DigitalLevel.High, chip.IrqBar);
+        var irq = Source(board, "IRQ", DigitalLevel.High, chip.IrqBar);
         Source(board, "NMI", DigitalLevel.High, chip.NmiBar);
         Source(board, "IN0", controller1, chip.ControllerData1);
         Source(board, "IN1", DigitalLevel.Low, chip.ControllerData2);
@@ -172,7 +194,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         board.PowerOn();
         simulator.Settle();
 
-        return new Fixture(chip, memory, clock, reset, simulator, out0, out1, out2, oe1, oe2);
+        return new Fixture(chip, memory, clock, reset, irq, simulator, out0, out1, out2, oe1, oe2);
     }
 
     private static DigitalSignalSource Source(VirtualHardwareBoard board, string id, DigitalLevel level, DigitalPin target)
@@ -187,6 +209,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         TestBusMemory Memory,
         DigitalSignalSource Clock,
         DigitalSignalSource Reset,
+        DigitalSignalSource Irq,
         VirtualHardwareSimulator Simulator,
         DigitalNet Out0,
         DigitalNet Out1,

@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.48.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.49.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -513,6 +513,11 @@ The standalone RP2A03 arbitration regression now executes two consecutive OAM DM
 
 The standalone RP2A03 DMC DMA unit now retains the interrupted CPU read while it performs explicit halt, dummy, optional alignment, and external sample-read phases. A normal DMC fetch therefore stalls the integrated CPU section for three or four CPU cycles according to the current get/put phase. OAM DMA interleaving remains separate: because OAM already owns the CPU, the DMC takes an eligible OAM read slot and the repeated source read restores alignment without directly advancing CPU execution. Chip-level counters expose total DMC CPU-stall cycles and the most recent fetch length.
 
+
+
+## v0.49.0 Standalone RP2A03 interrupt status-stack sequencing
+
+The RP2A03 hardware-interrupt sequence now writes the pre-interrupt processor status to the external stack bus before asserting the internal interrupt-disable latch. IRQ and NMI therefore stack the original I flag with the break bit clear and the unused bit set, then set I before vector fetch. A chip-level regression drives /IRQ through a named package pin and verifies both the externally stored status byte and the post-entry internal flag state.
 
 ## v0.48.0 Standalone RP2A03 reset-state accuracy
 

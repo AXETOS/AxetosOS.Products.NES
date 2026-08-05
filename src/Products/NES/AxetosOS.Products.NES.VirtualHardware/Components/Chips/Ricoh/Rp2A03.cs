@@ -523,7 +523,14 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             case CycleState.InterruptPushProgramCounterLow:
                 StackPointer--; _state = CycleState.InterruptPushStatus; BeginWrite(StackAddress, StatusForHardwareInterrupt); break;
             case CycleState.InterruptPushStatus:
-                StackPointer--; _state = CycleState.InterruptVectorLow; BeginRead(VectorAddress); break;
+                // The stacked byte reflects the pre-interrupt status.  The
+                // interrupt-disable latch is asserted only after that bus
+                // write has completed, before vector fetch begins.
+                StackPointer--;
+                SetFlag(InterruptDisableFlag, true);
+                _state = CycleState.InterruptVectorLow;
+                BeginRead(VectorAddress);
+                break;
             case CycleState.InterruptVectorLow:
                 if (!TrySampleData(out _lowByte)) return;
                 _state = CycleState.InterruptVectorHigh; BeginRead((ushort)(VectorAddress + 1)); break;
@@ -784,7 +791,9 @@ public sealed class Rp2A03 : VirtualHardwareComponent
 
     private void BeginInterrupt(InterruptKind kind)
     {
-        _activeInterrupt = kind; SetFlag(InterruptDisableFlag, true); _state = CycleState.InterruptDummyRead; BeginRead(ProgramCounter);
+        _activeInterrupt = kind;
+        _state = CycleState.InterruptDummyRead;
+        BeginRead(ProgramCounter);
     }
 
     private void BeginOpcodeFetch() { _operation = Operation.None; _addressingMode = AddressingMode.None; _state = CycleState.FetchOpcode; BeginRead(ProgramCounter, true); }
