@@ -209,6 +209,42 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.True(fixture.Chip.VramTransactionActive);
     }
 
+
+    [Fact]
+    public void Odd_rendering_frame_skips_the_final_pre_render_cycle()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(1, 0x08);
+
+        fixture.PulseClock(341 * 262);
+        Assert.Equal(1UL, fixture.Chip.Frame);
+        Assert.Equal(0, fixture.Chip.Scanline);
+        Assert.Equal(0, fixture.Chip.Dot);
+
+        fixture.PulseClock((341 * 262) - 1);
+
+        Assert.Equal(2UL, fixture.Chip.Frame);
+        Assert.Equal(0, fixture.Chip.Scanline);
+        Assert.Equal(0, fixture.Chip.Dot);
+    }
+
+    [Fact]
+    public void Enabling_nmi_during_vblank_asserts_the_open_drain_pin_once()
+    {
+        var fixture = new Fixture();
+        fixture.PulseClock((241 * 341) + 1);
+
+        Assert.True(fixture.Chip.Vblank);
+        Assert.Equal(0UL, fixture.Chip.NmiFallingEdgeCount);
+
+        fixture.WriteRegister(0, 0x80);
+
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.NmiBar.DriveLevel);
+        Assert.Equal(1UL, fixture.Chip.NmiFallingEdgeCount);
+        fixture.PulseClock(8);
+        Assert.Equal(1UL, fixture.Chip.NmiFallingEdgeCount);
+    }
+
     private sealed class Fixture
     {
         private readonly VirtualHardwareSimulator _sim;

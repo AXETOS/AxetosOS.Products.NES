@@ -558,3 +558,8 @@ CPU-visible reads are latched for the complete asserted `/CS` cycle, preventing 
 - Added immediate palette PPUDATA reads and external mirrored-buffer refill.
 - Added palette-masked PPUDATA writes, grayscale output and emphasis state.
 - Added final output color-code generation and NMI falling-edge accounting.
+
+
+## v0.55.0 — Standalone RP2C02 frame and NMI timing completion
+
+The standalone RP2C02 now applies the NTSC odd-frame cycle skip when background or sprite rendering is enabled: odd pre-render scanlines advance directly from dot 339 to the next frame. Chip-level regressions also verify that enabling NMI during an already active vblank produces exactly one open-drain `/NMI` falling edge and keeps the line asserted without retriggering. This closes the remaining package-level raster and NMI timing foundation before CIC/3193 development begins.

@@ -258,6 +258,20 @@ public sealed class Rp2C02 : VirtualHardwareComponent
 
     private void AdvanceRaster()
     {
+        // NTSC RP2C02 shortens odd frames by one master-clock cycle whenever
+        // either rendering pipeline is enabled. The skipped cycle is the final
+        // pre-render dot, so dot 339 advances directly to scanline 0 dot 0.
+        if (Scanline == PreRenderScanline
+            && Dot == 339
+            && (Frame & 1UL) != 0
+            && (BackgroundRenderingEnabled || SpriteRenderingEnabled))
+        {
+            Dot = 0;
+            Scanline = 0;
+            Frame++;
+            return;
+        }
+
         Dot++;
         if (Dot >= DotsPerScanline)
         {
