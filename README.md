@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.46.2-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.47.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -507,3 +507,8 @@ The standalone RP2A03 now applies the documented nonlinear pulse and TND mixer t
 ## v0.46.2 DMC/OAM DMA overlap regression correction
 
 The standalone RP2A03 arbitration regression now executes two consecutive OAM DMA transfers while the DMC is active. This creates a deterministic external-bus ownership window long enough to include the DMC's retained power-up divider phase, without reaching into private chip state or assuming that a `$4010` rate write restarts the timer. The test still verifies ordered, uncorrupted OAM writes across both transfers.
+
+
+## v0.47.0 Standalone RP2A03 DMC CPU stall sequencing
+
+The standalone RP2A03 DMC DMA unit now retains the interrupted CPU read while it performs explicit halt, dummy, optional alignment, and external sample-read phases. A normal DMC fetch therefore stalls the integrated CPU section for three or four CPU cycles according to the current get/put phase. OAM DMA interleaving remains separate: because OAM already owns the CPU, the DMC takes an eligible OAM read slot and the repeated source read restores alignment without directly advancing CPU execution. Chip-level counters expose total DMC CPU-stall cycles and the most recent fetch length.

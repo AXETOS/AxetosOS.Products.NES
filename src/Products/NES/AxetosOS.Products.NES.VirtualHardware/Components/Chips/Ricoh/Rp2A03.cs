@@ -90,6 +90,9 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     private bool _apuTimerPhase;
     private byte _audioDacLevel;
     private bool _dmcFetchActive;
+    private bool _dmcFetchDuringOamDma;
+    private int _dmcFetchDelayCycles;
+    private int _dmcCurrentFetchStallCycles;
     private ushort _dmcSavedBusAddress;
     private byte _dmcSavedBusWriteValue;
     private bool _dmcSavedBusRead;
@@ -185,6 +188,8 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     public bool DmcIrqPending => _dmc.IrqPending;
     public ulong DmcMemoryReadCount { get; private set; }
     public ulong DmcOamDmaInterleaveCount { get; private set; }
+    public ulong DmcCpuStallCount { get; private set; }
+    public int LastDmcFetchStallCycles { get; private set; }
 
     public override void PowerOn()
     {
@@ -218,12 +223,17 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _apuTimerPhase = false;
         _audioDacLevel = 0;
         _dmcFetchActive = false;
+        _dmcFetchDuringOamDma = false;
+        _dmcFetchDelayCycles = 0;
+        _dmcCurrentFetchStallCycles = 0;
         _dmcSavedBusAddress = 0;
         _dmcSavedBusWriteValue = 0;
         _dmcSavedBusRead = true;
         _dmcSavedSync = false;
         DmcMemoryReadCount = 0;
         DmcOamDmaInterleaveCount = 0;
+        DmcCpuStallCount = 0;
+        LastDmcFetchStallCycles = 0;
         _previousClock = DigitalLevel.Low; _previousNmi = DigitalLevel.High;
         M2.Drive(DigitalLevel.Low);
         ControllerRead1Bar.Drive(DigitalLevel.High);
@@ -294,9 +304,25 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     {
         if (_dmcFetchActive)
         {
+            // Outside OAM DMA, the DMC DMA unit halts the CPU, performs a
+            // dummy cycle, optionally aligns to the APU get phase, and only
+            // then owns the external bus for the sample read.  The package
+            // simulator completes a read on the cycle after BeginRead(), so
+            // one or two retained-bus delay cycles produce the physical
+            // three-or-four-cycle CPU stall.
+            if (_dmcFetchDelayCycles > 0)
+            {
+                _dmcFetchDelayCycles--;
+                CountDmcCpuStallCycle();
+                if (_dmcFetchDelayCycles == 0) BeginRead(_dmc.CurrentAddress);
+                return;
+            }
+
             if (!TrySampleData(out var dmcSample)) return;
+            if (!_dmcFetchDuringOamDma) CountDmcCpuStallCycle();
             _dmc.AcceptSample(dmcSample);
             DmcMemoryReadCount++;
+            LastDmcFetchStallCycles = _dmcCurrentFetchStallCycles;
             _dmcFetchActive = false;
             RestoreBusAfterDmcFetch();
             return;
@@ -312,7 +338,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             if (_dmaActive && _dmaDummyCycles == 0 && _dmaReadPhase && _dmc.NeedsSample)
             {
                 DmcOamDmaInterleaveCount++;
-                BeginDmcFetch();
+                BeginDmcFetch(duringOamDma: true);
                 return;
             }
 
@@ -322,7 +348,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
 
         if (_dmc.NeedsSample && _busRead)
         {
-            BeginDmcFetch();
+            BeginDmcFetch(duringOamDma: false);
             return;
         }
 
@@ -1074,14 +1100,34 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     }
 
 
-    private void BeginDmcFetch()
+    private void BeginDmcFetch(bool duringOamDma)
     {
         _dmcSavedBusAddress = _busAddress;
         _dmcSavedBusWriteValue = _busWriteValue;
         _dmcSavedBusRead = _busRead;
         _dmcSavedSync = _sync;
         _dmcFetchActive = true;
-        BeginRead(_dmc.CurrentAddress);
+        _dmcFetchDuringOamDma = duringOamDma;
+        _dmcCurrentFetchStallCycles = 0;
+
+        if (duringOamDma)
+        {
+            // The CPU is already halted by OAM DMA.  The DMC takes the
+            // selected OAM read slot directly; restoring the repeated OAM
+            // source read provides the required post-read realignment.
+            BeginRead(_dmc.CurrentAddress);
+            return;
+        }
+
+        CountDmcCpuStallCycle();
+        _dmcFetchDelayCycles = (RisingEdgeCount & 1UL) == 0 ? 1 : 2;
+    }
+
+    private void CountDmcCpuStallCycle()
+    {
+        _dmcCurrentFetchStallCycles++;
+        DmcCpuStallCount++;
+        ReadyStallCount++;
     }
 
     private void RestoreBusAfterDmcFetch()

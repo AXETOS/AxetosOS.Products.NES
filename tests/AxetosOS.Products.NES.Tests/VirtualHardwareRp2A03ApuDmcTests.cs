@@ -53,6 +53,26 @@ public sealed class VirtualHardwareRp2A03ApuDmcTests
     }
 
     [Fact]
+    public void Dmc_sample_fetch_stalls_the_cpu_for_three_or_four_cycles()
+    {
+        var fixture = CreateFixture([
+            0xA9, 0x0F, 0x8D, 0x10, 0x40,
+            0xA9, 0x00, 0x8D, 0x12, 0x40,
+            0xA9, 0x00, 0x8D, 0x13, 0x40,
+            0xA9, 0x10, 0x8D, 0x15, 0x40,
+            0x00
+        ]);
+        fixture.Memory.Poke(0xC000, 0x5A);
+
+        fixture.RunCpuCycles(180);
+
+        Assert.Equal(1UL, fixture.Chip.DmcMemoryReadCount);
+        Assert.InRange(fixture.Chip.LastDmcFetchStallCycles, 3, 4);
+        Assert.Equal((ulong)fixture.Chip.LastDmcFetchStallCycles, fixture.Chip.DmcCpuStallCount);
+        Assert.Equal(fixture.Chip.DmcCpuStallCount, fixture.Chip.ReadyStallCount);
+    }
+
+    [Fact]
     public void Dmc_raises_irq_when_non_looping_sample_finishes()
     {
         var fixture = CreateFixture([
