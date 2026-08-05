@@ -548,3 +548,13 @@ The standalone RP2C02 now performs background nametable, attribute and pattern-t
 ## v0.53.0 — Standalone RP2C02 sprite pipeline
 
 The standalone RP2C02 now performs scanline sprite evaluation from its internal primary OAM, copies up to eight in-range entries into secondary OAM, raises sprite overflow for additional entries, and fetches sprite pattern planes exclusively through the package VRAM pins. The chip supports 8×8 and 8×16 sprite addressing, vertical and horizontal flip attributes, X counters, sprite/background priority composition, sprite palette selection, and sprite-zero-hit state. No framebuffer, motherboard, cartridge, CPU, or renderer dependency was added.
+
+
+## v0.54.1 — Standalone RP2C02 palette and output completion
+
+CPU-visible reads are latched for the complete asserted `/CS` cycle, preventing repeated simulator settling from applying `PPUSTATUS` or `PPUDATA` side effects more than once.
+
+- Added internal 32-byte palette RAM with universal-background mirroring.
+- Added immediate palette PPUDATA reads and external mirrored-buffer refill.
+- Added palette-masked PPUDATA writes, grayscale output and emphasis state.
+- Added final output color-code generation and NMI falling-edge accounting.

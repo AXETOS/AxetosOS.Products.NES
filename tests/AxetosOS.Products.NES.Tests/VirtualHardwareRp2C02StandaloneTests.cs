@@ -182,6 +182,33 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.True(fixture.Chip.SpriteOverflow);
     }
 
+    [Fact]
+    public void Palette_ram_is_internal_mirrored_and_masks_color_values()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(6, 0x3F);
+        fixture.WriteRegister(6, 0x10);
+        fixture.WriteRegister(7, 0xFF);
+
+        Assert.Equal((byte)0x3F, fixture.Chip.InspectPalette(0x3F00));
+        Assert.Equal((byte)0x3F, fixture.Chip.InspectPalette(0x3F10));
+        Assert.False(fixture.Chip.VramTransactionActive);
+    }
+
+    [Fact]
+    public void Palette_ppudata_read_bypasses_the_delayed_read_buffer()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(6, 0x3F);
+        fixture.WriteRegister(6, 0x04);
+        fixture.WriteRegister(7, 0x2A);
+        fixture.WriteRegister(6, 0x3F);
+        fixture.WriteRegister(6, 0x04);
+
+        Assert.Equal((byte)0x2A, fixture.ReadRegister(7));
+        Assert.True(fixture.Chip.VramTransactionActive);
+    }
+
     private sealed class Fixture
     {
         private readonly VirtualHardwareSimulator _sim;

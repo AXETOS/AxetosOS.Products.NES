@@ -17,8 +17,11 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     private const int PreRenderScanline = 261;
 
     private readonly byte[] _primaryOam = new byte[256];
+    private readonly byte[] _paletteRam = new byte[32];
     private DigitalLevel _previousClock;
     private bool _cpuSelectedLast;
+    private bool _cpuReadLatchValid;
+    private byte _cpuReadLatch;
     private bool _vblank;
     private bool _spriteZeroHit;
     private bool _spriteOverflow;
@@ -50,6 +53,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     private int _nextSpriteCount;
     private int _spriteEvaluationIndex;
     private int _spriteFetchSlot;
+    private bool _nmiAsserted;
 
     public Rp2C02(string componentId) : base(componentId)
     {
@@ -120,10 +124,14 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     public bool SpriteZeroHit => _spriteZeroHit;
     public byte SpritePixelIndex { get; private set; }
     public byte PixelPaletteIndex { get; private set; }
+    public byte OutputColorCode { get; private set; }
+    public byte ColorEmphasis => (byte)((_mask >> 5) & 0x07);
+    public ulong NmiFallingEdgeCount { get; private set; }
 
     private bool Powered => Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
 
     public byte InspectOam(byte address) => _primaryOam[address];
+    public byte InspectPalette(ushort address) => ReadPalette(address);
 
     public override void PowerOn()
     {
@@ -139,18 +147,24 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         BackgroundPixelIndex = 0;
         SpritePixelIndex = 0;
         PixelPaletteIndex = 0;
+        OutputColorCode = 0;
+        NmiFallingEdgeCount = 0;
         SpriteEvaluationCount = 0;
         SpritePatternFetchCount = 0;
         _secondarySpriteCount = 0;
         _activeSpriteCount = 0;
         _nextSpriteCount = 0;
+        _nmiAsserted = false;
         _spriteEvaluationIndex = 0;
         _spriteFetchSlot = 0;
+        _nmiAsserted = false;
         Array.Clear(_secondaryOam);
         Array.Clear(_activeSprites);
         Array.Clear(_nextSprites);
         _previousClock = DigitalLevel.Low;
         _cpuSelectedLast = false;
+        _cpuReadLatchValid = false;
+        _cpuReadLatch = 0;
         _vblank = false;
         _spriteZeroHit = false;
         _spriteOverflow = false;
@@ -175,6 +189,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _attributeShiftLow = 0;
         _attributeShiftHigh = 0;
         Array.Clear(_primaryOam);
+        Array.Clear(_paletteRam);
         ReleasePackageOutputs();
     }
 
@@ -271,6 +286,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         {
             CpuData.Release();
             _cpuSelectedLast = false;
+            _cpuReadLatchValid = false;
             return;
         }
 
@@ -284,11 +300,21 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         var read = CpuReadWrite.SampledLevel == DigitalLevel.High;
         if (read)
         {
-            var value = ReadCpuRegister(register, !_cpuSelectedLast);
-            CpuData.Drive(value);
+            // A selected CPU read is one physical bus cycle even though the
+            // electrical simulator may settle the component multiple times.
+            // Latch the first result so side effects (PPUSTATUS clearing,
+            // PPUDATA incrementing and transaction starts) occur only once and
+            // D0-D7 remain stable until /CS is released.
+            if (!_cpuReadLatchValid)
+            {
+                _cpuReadLatch = ReadCpuRegister(register, firstSelectedEvaluation: true);
+                _cpuReadLatchValid = true;
+            }
+            CpuData.Drive(_cpuReadLatch);
         }
         else
         {
+            _cpuReadLatchValid = false;
             CpuData.Release();
             if (!_cpuSelectedLast && CpuData.TrySample(out var rawValue))
             {
@@ -321,11 +347,28 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                 value = _primaryOam[_oamAddress];
                 break;
             case 7: // PPUDATA
-                value = _readBuffer;
-                if (firstSelectedEvaluation && _transaction == VramTransaction.None)
+                if ((_vramAddress & 0x3F00) == 0x3F00)
                 {
-                    StartVramTransaction(VramTransaction.Read, 0, VramTransactionPurpose.CpuRead);
-                    IncrementVramAddress();
+                    value = ReadPalette(_vramAddress);
+                    if (firstSelectedEvaluation)
+                    {
+                        // Palette reads bypass the delayed buffer, while the mirrored
+                        // nametable byte still refills it through the external bus.
+                        if (_transaction == VramTransaction.None)
+                        {
+                            StartVramTransactionAt((ushort)(_vramAddress & 0x2FFF), VramTransaction.Read, 0, VramTransactionPurpose.CpuRead);
+                        }
+                        IncrementVramAddress();
+                    }
+                }
+                else
+                {
+                    value = _readBuffer;
+                    if (firstSelectedEvaluation && _transaction == VramTransaction.None)
+                    {
+                        StartVramTransaction(VramTransaction.Read, 0, VramTransactionPurpose.CpuRead);
+                        IncrementVramAddress();
+                    }
                 }
                 break;
             default:
@@ -381,7 +424,12 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                 _writeToggle = !_writeToggle;
                 break;
             case 7: // PPUDATA
-                if (_transaction == VramTransaction.None)
+                if ((_vramAddress & 0x3F00) == 0x3F00)
+                {
+                    WritePalette(_vramAddress, value);
+                    IncrementVramAddress();
+                }
+                else if (_transaction == VramTransaction.None)
                 {
                     StartVramTransaction(VramTransaction.Write, value, VramTransactionPurpose.CpuWrite);
                     IncrementVramAddress();
@@ -391,10 +439,13 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     }
 
     private void StartVramTransaction(VramTransaction transaction, byte writeData, VramTransactionPurpose purpose)
+        => StartVramTransactionAt((ushort)(_vramAddress & 0x3FFF), transaction, writeData, purpose);
+
+    private void StartVramTransactionAt(ushort address, VramTransaction transaction, byte writeData, VramTransactionPurpose purpose)
     {
         _transaction = transaction;
         _transactionPhase = 0;
-        _transactionAddress = (ushort)(_vramAddress & 0x3FFF);
+        _transactionAddress = (ushort)(address & 0x3FFF);
         _transactionWriteData = writeData;
         _transactionPurpose = purpose;
     }
@@ -623,6 +674,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         {
             SpritePixelIndex = 0;
             PixelPaletteIndex = BackgroundPixelIndex;
+            UpdateOutputColor();
             return;
         }
 
@@ -682,6 +734,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         {
             SpritePixelIndex = 0;
             PixelPaletteIndex = BackgroundPixelIndex;
+            UpdateOutputColor();
         }
     }
 
@@ -767,6 +820,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         if (!spriteOpaque) PixelPaletteIndex = background;
         else if (!backgroundOpaque || !spriteBehindBackground) PixelPaletteIndex = SpritePixelIndex;
         else PixelPaletteIndex = background;
+        UpdateOutputColor();
     }
 
     private void AdvanceActiveSpriteUnits()
@@ -831,8 +885,33 @@ public sealed class Rp2C02 : VirtualHardwareComponent
 
     private void DriveNmi()
     {
-        if (_vblank && NmiEnabled) NmiBar.Drive(DigitalLevel.Low);
+        var assert = _vblank && NmiEnabled;
+        if (assert)
+        {
+            NmiBar.Drive(DigitalLevel.Low);
+            if (!_nmiAsserted) NmiFallingEdgeCount++;
+        }
         else NmiBar.Release();
+        _nmiAsserted = assert;
+    }
+
+    private static int PaletteIndex(ushort address)
+    {
+        var index = address & 0x1F;
+        if ((index & 0x13) == 0x10) index &= 0x0F;
+        return index;
+    }
+
+    private byte ReadPalette(ushort address) => _paletteRam[PaletteIndex(address)];
+
+    private void WritePalette(ushort address, byte value) => _paletteRam[PaletteIndex(address)] = (byte)(value & 0x3F);
+
+    private void UpdateOutputColor()
+    {
+        var paletteAddress = (ushort)(0x3F00 | (PixelPaletteIndex & 0x1F));
+        var color = ReadPalette(paletteAddress);
+        if ((_mask & 0x01) != 0) color &= 0x30;
+        OutputColorCode = color;
     }
 
     private void ReleasePackageOutputs()
