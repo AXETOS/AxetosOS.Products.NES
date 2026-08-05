@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.47.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.48.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -512,3 +512,8 @@ The standalone RP2A03 arbitration regression now executes two consecutive OAM DM
 ## v0.47.0 Standalone RP2A03 DMC CPU stall sequencing
 
 The standalone RP2A03 DMC DMA unit now retains the interrupted CPU read while it performs explicit halt, dummy, optional alignment, and external sample-read phases. A normal DMC fetch therefore stalls the integrated CPU section for three or four CPU cycles according to the current get/put phase. OAM DMA interleaving remains separate: because OAM already owns the CPU, the DMC takes an eligible OAM read slot and the repeated source read restores alignment without directly advancing CPU execution. Chip-level counters expose total DMC CPU-stall cycles and the most recent fetch length.
+
+
+## v0.48.0 Standalone RP2A03 reset-state accuracy
+
+The standalone RP2A03 now treats an asserted `/RES` pin as a hardware reset rather than a second power-on. The reset microsequence keeps the chip's existing stack pointer and decrements it through the three external stack-page read cycles, preserves existing arithmetic status state, forces interrupt disable, clears the non-physical break bit, and fetches the reset vector only through package pins. A chip-level regression verifies reset after executed code with a non-default stack pointer and carry state. No motherboard or NES runtime coupling is introduced.

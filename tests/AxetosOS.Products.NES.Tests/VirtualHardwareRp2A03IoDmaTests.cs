@@ -57,6 +57,36 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
     }
 
 
+
+    [Fact]
+    public void Reset_decrements_the_existing_stack_pointer_and_preserves_cpu_flags()
+    {
+        var fixture = CreateFixture([
+            0xA2, 0x80, // LDX #$80
+            0x9A,       // TXS
+            0x38,       // SEC
+            0x58,       // CLI
+            0x00        // halt
+        ]);
+
+        fixture.RunCpuCycles(40);
+
+        Assert.True(fixture.Chip.IsHalted);
+        Assert.Equal((byte)0x80, fixture.Chip.StackPointer);
+        Assert.Equal((byte)0x01, (byte)(fixture.Chip.Status & 0x01));
+        Assert.False(fixture.Chip.InterruptDisable);
+
+        fixture.Reset.Set(DigitalLevel.Low);
+        fixture.RunCpuCycles(1);
+        fixture.Reset.Set(DigitalLevel.High);
+        fixture.RunCpuCycles(7);
+
+        Assert.Equal((byte)0x7D, fixture.Chip.StackPointer);
+        Assert.Equal((byte)0x01, (byte)(fixture.Chip.Status & 0x01));
+        Assert.True(fixture.Chip.InterruptDisable);
+        Assert.Equal((ushort)0x8000, fixture.Chip.ProgramCounter);
+    }
+
     [Fact]
     public void Dmc_fetch_uses_an_oam_read_slot_without_corrupting_the_transfer()
     {
@@ -110,7 +140,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         board.Connect("power.gnd", low.Output, chip.Gnd);
 
         var clock = Source(board, "CLK", DigitalLevel.Low, chip.MasterClock);
-        Source(board, "RES", DigitalLevel.High, chip.ResetBar);
+        var reset = Source(board, "RES", DigitalLevel.High, chip.ResetBar);
         Source(board, "IRQ", DigitalLevel.High, chip.IrqBar);
         Source(board, "NMI", DigitalLevel.High, chip.NmiBar);
         Source(board, "IN0", controller1, chip.ControllerData1);
@@ -142,7 +172,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         board.PowerOn();
         simulator.Settle();
 
-        return new Fixture(chip, memory, clock, simulator, out0, out1, out2, oe1, oe2);
+        return new Fixture(chip, memory, clock, reset, simulator, out0, out1, out2, oe1, oe2);
     }
 
     private static DigitalSignalSource Source(VirtualHardwareBoard board, string id, DigitalLevel level, DigitalPin target)
@@ -156,6 +186,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         Rp2A03 Chip,
         TestBusMemory Memory,
         DigitalSignalSource Clock,
+        DigitalSignalSource Reset,
         VirtualHardwareSimulator Simulator,
         DigitalNet Out0,
         DigitalNet Out1,

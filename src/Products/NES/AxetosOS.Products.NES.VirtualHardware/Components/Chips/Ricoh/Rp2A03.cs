@@ -757,8 +757,18 @@ public sealed class Rp2A03 : VirtualHardwareComponent
 
     private void BeginResetSequence()
     {
-        _state = CycleState.ResetDummyRead1; _activeInterrupt = InterruptKind.None; _operation = Operation.None; _addressingMode = AddressingMode.None;
-        _nmiPending = false; StackPointer = 0; Status = InterruptDisableFlag | UnusedFlag; BeginRead(ProgramCounter);
+        _state = CycleState.ResetDummyRead1;
+        _activeInterrupt = InterruptKind.None;
+        _operation = Operation.None;
+        _addressingMode = AddressingMode.None;
+        _nmiPending = false;
+
+        // /RES is not a second power-on.  The NMOS CPU core performs three
+        // stack-page read cycles and decrements the existing stack pointer;
+        // it does not reload S with a fixed value.  Existing arithmetic flags
+        // remain internal state while reset forces interrupt disable.
+        Status = (byte)((Status | InterruptDisableFlag | UnusedFlag) & ~BreakFlag);
+        BeginRead(ProgramCounter);
     }
 
     private bool TryBeginPendingInterrupt()
