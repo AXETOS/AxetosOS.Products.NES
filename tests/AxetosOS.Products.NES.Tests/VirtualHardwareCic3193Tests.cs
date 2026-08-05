@@ -45,6 +45,53 @@ public sealed class VirtualHardwareCic3193Tests
         Assert.Equal(1UL, fixture.Chip.CompletedSerialNibbleCount);
     }
 
+
+    [Fact]
+    public void Four_valid_response_nibbles_authenticate_through_the_serial_pins()
+    {
+        var fixture = new Fixture();
+        fixture.Pulse(4);
+
+        Assert.Equal(Cic3193AuthenticationState.Authenticating, fixture.Chip.AuthenticationState);
+
+        for (var round = 0; round < 4; round++)
+        {
+            var challenge = (byte)((0x0A ^ ((round * 0x03) & 0x0F)) & 0x0F);
+            var rotated = ((challenge << 1) | (challenge >> 3)) & 0x0F;
+            var response = (byte)((rotated ^ 0x09 ^ round) & 0x0F);
+            fixture.SendNibble(response);
+        }
+
+        Assert.Equal(Cic3193AuthenticationState.Authenticated, fixture.Chip.AuthenticationState);
+        Assert.Equal(1UL, fixture.Chip.SuccessfulAuthenticationCount);
+        Assert.Equal(0UL, fixture.Chip.FailedAuthenticationCount);
+        Assert.Equal(DigitalLevel.High, fixture.Chip.HostResetBar.DriveLevel);
+    }
+
+    [Fact]
+    public void Invalid_response_asserts_host_reset_then_restarts_authentication()
+    {
+        var fixture = new Fixture();
+        fixture.Pulse(4);
+
+        fixture.SendNibble(0x00);
+
+        Assert.Equal(Cic3193AuthenticationState.RetryHold, fixture.Chip.AuthenticationState);
+        Assert.Equal(1UL, fixture.Chip.FailedAuthenticationCount);
+        Assert.Equal(1UL, fixture.Chip.HostResetPulseCount);
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.HostResetBar.DriveLevel);
+        Assert.Equal(DigitalLevel.High, fixture.Chip.SlaveResetBar.DriveLevel);
+
+        fixture.Pulse(7);
+        Assert.Equal(Cic3193AuthenticationState.RetryHold, fixture.Chip.AuthenticationState);
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.HostResetBar.DriveLevel);
+
+        fixture.Pulse(1);
+        Assert.Equal(Cic3193AuthenticationState.Authenticating, fixture.Chip.AuthenticationState);
+        Assert.Equal(0, fixture.Chip.AuthenticationRound);
+        Assert.Equal(DigitalLevel.High, fixture.Chip.HostResetBar.DriveLevel);
+    }
+
     [Fact]
     public void Power_loss_releases_every_output_pin()
     {
@@ -105,6 +152,15 @@ public sealed class VirtualHardwareCic3193Tests
                 _sim.Settle();
                 _clock.Set(DigitalLevel.Low);
                 _sim.Settle();
+            }
+        }
+
+        public void SendNibble(byte value)
+        {
+            for (var bit = 3; bit >= 0; bit--)
+            {
+                DataIn.Set(((value >> bit) & 1) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+                Pulse(1);
             }
         }
 
