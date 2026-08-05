@@ -6,7 +6,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Instrumentation;
 /// External digital stimulus used for switches, test fixtures and future host
 /// connectors. The source still affects the circuit only through its pin.
 /// </summary>
-public sealed class DigitalSignalSource : VirtualHardwareComponent
+public sealed class DigitalSignalSource : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     private DigitalLevel _level;
 

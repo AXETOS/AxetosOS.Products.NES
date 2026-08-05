@@ -9,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 /// background/sprite pixel pipelines are modelled here without using the
 /// playable emulator PPU.
 /// </summary>
-public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
+public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDrivenVirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent
 {
     private readonly byte[] _vram = new byte[0x4000];
     private readonly byte[] _oam = new byte[256];
@@ -134,6 +134,33 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
     public bool SpriteOverflow => _spriteOverflow;
     public int SecondarySpriteCount => _secondarySpriteCount;
     public ReadOnlyMemory<byte> FrameBuffer => _frameBuffer;
+    public bool HasPendingInternalWork => _renderFetchState != RenderFetchState.Idle;
+
+    public bool ShouldWakeForSampledPin(DigitalPin pin)
+    {
+        ArgumentNullException.ThrowIfNull(pin);
+
+        // Input pins always represent external electrical information.
+        if (pin.Direction == PinDirection.Input) return true;
+
+        // CPU data is an input only while the CPU is writing. During a CPU
+        // read the RP2C02 owns the bus and must not wake on its own resolved
+        // output echo.
+        if (Data.Pins.Contains(pin))
+        {
+            return ReadWrite.SampledLevel != DigitalLevel.High;
+        }
+
+        // The external PPU data bus is sampled only while a read phase is
+        // outstanding. During writes, releases, and idle time its resolved
+        // echo is not an input dependency.
+        if (PpuData.Pins.Contains(pin))
+        {
+            return _renderReadIssued || PpuReadBar.DriveLevel == DigitalLevel.Low;
+        }
+
+        return false;
+    }
 
     public byte InspectVram(ushort address) => _vram[address & 0x3FFF];
     public byte InspectOam(byte address) => _oam[address];

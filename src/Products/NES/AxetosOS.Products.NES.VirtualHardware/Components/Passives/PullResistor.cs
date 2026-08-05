@@ -6,7 +6,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Passives;
 /// Behavioral digital resistor. It samples its rail terminal and weakly drives
 /// the node terminal, allowing a strong chip output to override it.
 /// </summary>
-public sealed class PullResistor : VirtualHardwareComponent
+public sealed class PullResistor : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     public PullResistor(string componentId)
         : base(componentId)

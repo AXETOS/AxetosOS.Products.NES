@@ -8,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 /// the integrated 6502-derived execution section. It has no motherboard, RAM,
 /// cartridge, PPU, or other component references.
 /// </summary>
-public sealed class Rp2A03 : VirtualHardwareComponent
+public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     private const byte CarryFlag = 1 << 0;
     private const byte ZeroFlag = 1 << 1;
@@ -151,6 +151,21 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     public byte X { get; private set; }
     public byte Y { get; private set; }
     public byte CurrentOpcode { get; private set; }
+    public string CurrentCycleState => _state.ToString();
+    public ushort CurrentBusAddress => _busAddress;
+    public bool CurrentBusIsRead => _busRead;
+    public DigitalLevel CurrentM2Level => M2.DriveLevel;
+    public bool TryInspectDataBus(out byte value)
+    {
+        if (Data.TrySample(out var raw))
+        {
+            value = (byte)raw;
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
     public bool IsHalted => _state == CycleState.Halted;
     public bool InterruptDisable => IsFlagSet(InterruptDisableFlag);
     public bool NmiPending => _nmiPending;

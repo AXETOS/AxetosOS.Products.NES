@@ -7,7 +7,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 /// three-state output enable. Storage and output behavior are determined only
 /// by package power and pin levels.
 /// </summary>
-public sealed class Sn74Ls373 : VirtualHardwareComponent
+public sealed class Sn74Ls373 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     private byte _latchedValue;
     private byte _latchedKnownMask;

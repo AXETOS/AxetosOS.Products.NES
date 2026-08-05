@@ -24,6 +24,8 @@ public sealed class DigitalPin
     public DigitalDriveStrength DriveStrength => _driveStrength;
     public DigitalLevel SampledLevel => _sampledLevel;
     internal ulong Revision { get; private set; }
+    internal int OwnerComponentIndex { get; set; } = -1;
+    internal Action<int, DigitalPin>? SchedulerSampledChanged { get; set; }
 
     public void Drive(
         DigitalLevel level,
@@ -47,6 +49,7 @@ public sealed class DigitalPin
         _driveLevel = level;
         _driveStrength = strength;
         Revision++;
+        Net?.MarkDirty();
     }
 
     public void Release() => Drive(DigitalLevel.HighImpedance);
@@ -60,5 +63,9 @@ public sealed class DigitalPin
 
         _sampledLevel = level;
         Revision++;
+        if (OwnerComponentIndex >= 0)
+        {
+            SchedulerSampledChanged?.Invoke(OwnerComponentIndex, this);
+        }
     }
 }

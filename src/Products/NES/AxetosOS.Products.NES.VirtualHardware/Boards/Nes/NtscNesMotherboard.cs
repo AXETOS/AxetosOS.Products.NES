@@ -3,6 +3,7 @@ using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Memory;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 using AxetosOS.Products.NES.VirtualHardware.Components.Clock;
 using AxetosOS.Products.NES.VirtualHardware.Components.Instrumentation;
+using AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Components.Passives;
 using AxetosOS.Products.NES.VirtualHardware.Components.Power;
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
@@ -41,6 +42,8 @@ public sealed class NtscNesMotherboard
         AddressDecoder = Board.Add(new Sn74Ls139A("U5.SN74LS139A"));
         PpuAddressLatch = Board.Add(new Sn74Ls373("U6.SN74LS373"));
         BusInverter = Board.Add(new Sn74Ls368A("U7.SN74LS368A"));
+        Controller1 = Board.Add(new NesStandardController("J1.CONTROLLER1"));
+        Controller2 = Board.Add(new NesStandardController("J2.CONTROLLER2"));
         Cic = Board.Add(new Cic3193("U8.CIC3193"));
 
         TiePackagePower();
@@ -72,6 +75,8 @@ public sealed class NtscNesMotherboard
     public Sn74Ls139A AddressDecoder { get; }
     public Sn74Ls373 PpuAddressLatch { get; }
     public Sn74Ls368A BusInverter { get; }
+    public NesStandardController Controller1 { get; }
+    public NesStandardController Controller2 { get; }
     public Cic3193 Cic { get; }
 
     public IReadOnlyList<DigitalNet> CpuAddressNets { get; private set; } = [];
@@ -151,6 +156,8 @@ public sealed class NtscNesMotherboard
         ConnectPower(AddressDecoder.Vcc, AddressDecoder.Gnd);
         ConnectPower(PpuAddressLatch.Vcc, PpuAddressLatch.Gnd);
         ConnectPower(BusInverter.Vcc, BusInverter.Gnd);
+        ConnectPower(Controller1.Vcc, Controller1.Gnd);
+        ConnectPower(Controller2.Vcc, Controller2.Gnd);
         ConnectPower(Cic.Vcc, Cic.Gnd);
     }
 
@@ -257,11 +264,9 @@ public sealed class NtscNesMotherboard
         Board.Connect("CPU.NMI_BAR", NmiPullup.Node, Ppu.NmiBar, Cpu.NmiBar);
 
         // NES controller inputs are future connector nets.
-        Board.Connect("CTRL.DATA1", Cpu.ControllerData1);
-        Board.Connect("CTRL.DATA2", Cpu.ControllerData2);
-        Board.Connect("CTRL.OE1_BAR", Cpu.ControllerRead1Bar);
-        Board.Connect("CTRL.OE2_BAR", Cpu.ControllerRead2Bar);
-        Board.Connect("CTRL.OUT0", Cpu.ControllerOut0);
+        WireStandardControllers();
+
+        // OUT1/OUT2 remain available for Famicom expansion hardware.
         Board.Connect("CTRL.OUT1", Cpu.ControllerOut1);
         Board.Connect("CTRL.OUT2", Cpu.ControllerOut2);
         AudioNet = Board.Connect("AUDIO.OUT", Cpu.AudioOut);
@@ -284,6 +289,24 @@ public sealed class NtscNesMotherboard
         CicDataFromCartridgeNet = Board.Connect("SLOT.CIC.DATA_IN", Cic.DataIn);
 
         Board.Connect("GND", Cic.Nc5, Cic.Nc11, Cic.Nc12, Cic.Nc13, Cic.Nc14, Cic.Nc15);
+    }
+
+    private void WireStandardControllers()
+    {
+        Board.Connect("CTRL.STROBE", Cpu.ControllerOut0, Controller1.Strobe, Controller2.Strobe);
+        Board.Connect("CTRL.OE1_BAR", Cpu.ControllerRead1Bar, Controller1.ClockBar);
+        Board.Connect("CTRL.OE2_BAR", Cpu.ControllerRead2Bar, Controller2.ClockBar);
+        Board.Connect("CTRL.DATA1", Controller1.Data, Cpu.ControllerData1);
+        Board.Connect("CTRL.DATA2", Controller2.Data, Cpu.ControllerData2);
+
+        // Button pins are exposed as board nets. With no external driver they
+        // are sampled as unpressed; the controller still drives a determinate
+        // serial zero onto the CPU input.
+        for (var button = 0; button < 8; button++)
+        {
+            Board.Connect($"CTRL1.BUTTON{button}", Controller1.Buttons.Pins[button]);
+            Board.Connect($"CTRL2.BUTTON{button}", Controller2.Buttons.Pins[button]);
+        }
     }
 
 }

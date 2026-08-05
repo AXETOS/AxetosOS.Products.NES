@@ -8,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 /// Standalone mapper-0 cartridge board. PRG and CHR devices react only to the
 /// normalized cartridge connector pins; no CPU, PPU, or motherboard calls are used.
 /// </summary>
-public sealed class NromCartridge : VirtualHardwareComponent
+public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent
 {
     private byte[] _prg = [];
     private byte[] _chr = [];
@@ -80,8 +80,34 @@ public sealed class NromCartridge : VirtualHardwareComponent
     public bool IsChrRam => _chrRam;
     public bool IsInserted { get; private set; }
     public ulong CpuReadCount { get; private set; }
+    public ushort LastCpuReadAddress { get; private set; }
+    public byte LastCpuReadData { get; private set; }
     public ulong PpuReadCount { get; private set; }
     public ulong PpuWriteCount { get; private set; }
+
+    public bool ShouldWakeForSampledPin(DigitalPin pin)
+    {
+        ArgumentNullException.ThrowIfNull(pin);
+
+        if (pin.Direction == PinDirection.Input) return true;
+
+        // PRG ROM never consumes CPU data. During a selected read this bus is
+        // cartridge output; at every other time it is electrically irrelevant.
+        if (CpuData.Pins.Contains(pin)) return false;
+
+        if (PpuAddressData.Pins.Contains(pin))
+        {
+            // AD0-AD7 are inputs only while ALE exposes the low address byte,
+            // or while CHR RAM is accepting write data. During CHR reads the
+            // resolved level is merely the echo of the cartridge's own output.
+            return PpuAle.SampledLevel == DigitalLevel.High ||
+                (_chrRam &&
+                 PpuAle.SampledLevel != DigitalLevel.High &&
+                 PpuWriteBar.SampledLevel == DigitalLevel.Low);
+        }
+
+        return false;
+    }
 
     public override void PowerOn() => Reset();
     public override void Reset()
@@ -203,6 +229,11 @@ public sealed class NromCartridge : VirtualHardwareComponent
         if (cpuReadTransactionSelected && !_cpuReadActive)
         {
             CpuReadCount++;
+            LastCpuReadAddress = (ushort)cpuAddress;
+            var index = _prg.Length == 16 * 1024
+                ? (int)(cpuAddress & 0x3FFF)
+                : (int)(cpuAddress & 0x7FFF);
+            LastCpuReadData = _prg[index];
         }
 
         _cpuReadActive = cpuReadTransactionSelected;

@@ -1,3 +1,4 @@
+using AxetosOS.Products.NES.VirtualHardware.Components;
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Clock;
@@ -5,7 +6,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Clock;
 /// <summary>
 /// A digital oscillator whose passage of time is advanced by the simulator.
 /// </summary>
-public sealed class DigitalOscillator : VirtualHardwareComponent
+public sealed class DigitalOscillator : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     private bool _high;
 

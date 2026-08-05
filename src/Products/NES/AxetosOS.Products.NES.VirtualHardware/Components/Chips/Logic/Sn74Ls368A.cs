@@ -6,7 +6,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 /// Standalone SN74LS368A hex inverting bus driver with three-state outputs.
 /// Channels 1-4 share 1G_BAR; channels 5-6 share 2G_BAR.
 /// </summary>
-public sealed class Sn74Ls368A : VirtualHardwareComponent
+public sealed class Sn74Ls368A : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     public Sn74Ls368A(string componentId) : base(componentId)
     {

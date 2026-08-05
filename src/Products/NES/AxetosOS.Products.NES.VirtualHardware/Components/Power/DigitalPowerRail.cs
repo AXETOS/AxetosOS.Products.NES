@@ -1,8 +1,9 @@
+using AxetosOS.Products.NES.VirtualHardware.Components;
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Power;
 
-public sealed class DigitalPowerRail : VirtualHardwareComponent
+public sealed class DigitalPowerRail : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     private readonly DigitalLevel _level;
 

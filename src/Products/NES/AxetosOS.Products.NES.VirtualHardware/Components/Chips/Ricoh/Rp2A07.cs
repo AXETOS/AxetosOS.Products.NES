@@ -8,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 /// the integrated 6502-derived execution section. It has no motherboard, RAM,
 /// cartridge, PPU, or other component references.
 /// </summary>
-public sealed class Rp2A07 : VirtualHardwareComponent
+public sealed class Rp2A07 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     private const byte CarryFlag = 1 << 0;
     private const byte ZeroFlag = 1 << 1;

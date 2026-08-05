@@ -9,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 /// External PPU memory is accessed exclusively through AD0-AD7, A8-A13, ALE,
 /// /RD and /WR.
 /// </summary>
-public sealed class Rp2C07 : VirtualHardwareComponent
+public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     private const int DotsPerScanline = 341;
     private const int ScanlinesPerFrame = 312;

@@ -6,7 +6,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 /// Standalone SN74LS139A dual 2-to-4 decoder/demultiplexer package.
 /// Each section has an independent active-low enable and four active-low outputs.
 /// </summary>
-public sealed class Sn74Ls139A : VirtualHardwareComponent
+public sealed class Sn74Ls139A : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
 {
     public Sn74Ls139A(string componentId) : base(componentId)
     {

@@ -7,6 +7,8 @@ namespace AxetosOS.Products.NES.VirtualHardware.Electrical;
 public sealed class DigitalNet
 {
     private readonly List<DigitalPin> _pins = [];
+    private DigitalPin[] _resolvedPins = [];
+    private bool _pinSnapshotDirty = true;
 
     public DigitalNet(string name)
     {
@@ -18,6 +20,9 @@ public sealed class DigitalNet
     public IReadOnlyList<DigitalPin> Pins => _pins;
     public DigitalLevel Level { get; private set; } = DigitalLevel.Unknown;
     public ulong ResolutionCount { get; private set; }
+    internal bool IsDirty { get; private set; } = true;
+    internal int SchedulerIndex { get; set; } = -1;
+    internal Action<int>? SchedulerDirtied { get; set; }
 
     public void Connect(DigitalPin pin)
     {
@@ -34,20 +39,39 @@ public sealed class DigitalNet
         }
 
         _pins.Add(pin);
+        _pinSnapshotDirty = true;
         pin.Net = this;
         pin.SetSampledLevel(Level);
+        MarkDirty();
+    }
+
+    internal void MarkDirty()
+    {
+        if (IsDirty)
+        {
+            return;
+        }
+
+        IsDirty = true;
+        if (SchedulerIndex >= 0)
+        {
+            SchedulerDirtied?.Invoke(SchedulerIndex);
+        }
     }
 
     public DigitalLevel Resolve()
     {
+        IsDirty = false;
+        var pins = GetPinSnapshot();
         var strongest = DigitalDriveStrength.Weak;
         var foundDriver = false;
         var sawLow = false;
         var sawHigh = false;
         var sawUnknown = false;
 
-        foreach (var pin in _pins)
+        for (var index = 0; index < pins.Length; index++)
         {
+            var pin = pins[index];
             var level = pin.DriveLevel;
             if (level == DigitalLevel.HighImpedance)
             {
@@ -95,11 +119,23 @@ public sealed class DigitalNet
         Level = resolved;
         ResolutionCount++;
 
-        foreach (var pin in _pins)
+        for (var index = 0; index < pins.Length; index++)
         {
-            pin.SetSampledLevel(resolved);
+            pins[index].SetSampledLevel(resolved);
         }
 
         return resolved;
+    }
+
+    private DigitalPin[] GetPinSnapshot()
+    {
+        if (!_pinSnapshotDirty)
+        {
+            return _resolvedPins;
+        }
+
+        _resolvedPins = _pins.ToArray();
+        _pinSnapshotDirty = false;
+        return _resolvedPins;
     }
 }

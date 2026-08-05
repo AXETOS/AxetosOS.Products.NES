@@ -1,9 +1,39 @@
-## v0.72.2 — board-local settlement performance correction
+## v0.73.0 — strict quiescent event transactions
 
-- Removes the process-global pin revision introduced by v0.72.1, which allowed parallel test boards to keep one another artificially unsettled.
-- Preserves cached board topology and a cached per-board pin array.
-- Determines settlement from revisions belonging only to the current board.
-- Keeps the original electrical propagation semantics while avoiding repeated component/pin enumeration.
+- Adds a separate zero-scan settlement kernel for boards whose complete topology implements the explicit input/event-driven component contract.
+- A pin drive dirties its connected net; net resolution queues only packages that sample a changed input-capable pin; package output changes feed the next event wave.
+- Explicit pending internal work requeues only the package that owns that unfinished transaction.
+- The Famicom, NTSC and PAL virtual motherboards use this strict kernel because their installed packages and virtual cartridge implement the event contract.
+- Older demonstration/test boards retain the conservative compatibility settlement path.
+- No CPU, PPU, mapper, memory, renderer, audio, bus or clock shortcut is introduced.
+
+## v0.72.10 — restore validated board-local settlement semantics
+
+The self-requeuing scheduler from v0.72.9 was removed after broad regression failures. The simulator again uses the validated board-local settlement loop from v0.72.8: dirty nets are resolved efficiently, every component is evaluated on every propagation pass, and sequential chip packages may advance internal multi-phase transactions even when no external input edge occurs. This release keeps the controller hardware and real-ROM boot progress while restoring correct electrical behavior.
+
+
+## v0.72.9 — self-requeuing electrical settlement scheduler
+
+- Replaces whole-board component scans with board-local electrical work queues.
+- A package is evaluated when a sampled pin changes or when it changes one of its own driven pins.
+- Components self-requeue until multi-phase external transactions finish, preserving RP2C02/RP2C07 fetch sequencing.
+- Dirty nets are resolved before the next component evaluation.
+- No CPU, PPU, mapper, renderer, audio, clock, or bus behavior is bypassed.
+
+## v0.72.7 — board-local settlement hot-path optimization
+
+- Preserves evaluation of every component on every propagation pass, including sequential packages that advance internal multi-phase state without a changed input net.
+- Replaces the per-pass scan of every pin revision with a board-local revision counter updated only when one of that board's pins changes.
+- Resolves only nets marked electrically dirty while retaining the same net-resolution rules, contention behavior, and propagation limit.
+- Automatically tracks pins added when cartridge hardware extends the board topology.
+- Adds no CPU, PPU, cartridge, mapper, rendering, audio, or timing shortcut.
+
+## v0.72.4 — settlement semantic restoration
+
+- Reverts the v0.72.3 dirty-net scheduler because current virtual components can intentionally advance internal multi-phase state across repeated evaluations even when no external net level changes.
+- Restores board-local revision settlement from v0.72.2, retaining cached topology and per-board pin revision tracking.
+- Preserves full component evaluation semantics required by RP2C02/RP2C07 fetch pipelines, memory devices, and other sequential packages.
+- Adds no CPU, PPU, cartridge, mapper, rendering, audio, or timing shortcut.
 
 ## v0.72.1 — NROM CPU read data-hold correction
 
@@ -45,6 +75,31 @@ Version 0.71.1 makes NROM bus ownership idempotent across electrical propagation
 - Removes the motherboard's hard-wired CIRAM A10 and chip-select shortcuts so cartridge wiring owns nametable selection.
 - Rejects unsupported mappers until their standalone cartridge hardware exists.
 # AxetosOS Products / NES
+
+## v0.72.18 — directional memory-bus wake-up
+
+- NROM no longer wakes on the resolved echo of PRG or CHR data it is driving.
+- NROM AD0-AD7 wake the cartridge only during the ALE address phase or a CHR-RAM write.
+- HM6116 data pins wake RAM only during a selected write; read-output echo and deselected bus traffic are ignored.
+- Address, control, power, and genuine external data transitions remain fully event-driven.
+- No CPU, PPU, cartridge, mapper, rendering, audio, or timing shortcut was added.
+
+## v0.72.17 — active component event queue
+
+- Replaced per-pass component scanning with a board-local active-component queue.
+- Sampled input transitions enqueue only the owning component.
+- Dirty nets and active components now propagate in alternating electrical waves until both queues are empty.
+- RP2A03/RP2A07 packages are input-driven by clock, reset, interrupt, controller and data-bus pin transitions.
+- RP2C02/RP2C07 packages wake on clock, CPU-port and external VRAM-bus pin transitions rather than being polled on every propagation pass.
+- Legacy components retain conservative polling for compatibility, while the NES motherboard hot path contains no continuously-polled components.
+
+## v0.72.16 — one-shot sources and selective bidirectional wake-up
+
+- Power rails and oscillators no longer participate in repeated settlement polling; their output pins are changed directly by power/reset/clock control.
+- Added selective sampled-pin wake-up for bidirectional packages.
+- RP2C02 ignores the resolved echo of data buses while it owns those buses, but still wakes while waiting for external read data.
+- No CPU, PPU, cartridge, mapper, rendering, audio, or clock behavior is bypassed.
+
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
@@ -708,3 +763,68 @@ The final regional motherboard now assembles the standalone RP2A07 PAL CPU/APU, 
 - Cached each simulator's component and net arrays after motherboard construction.
 - Preserves the same iterative net resolution and component evaluation semantics; no CPU, PPU, cartridge, mapper, video, or audio shortcut was added.
 - Intended to make real motherboard clocking practical enough for interactive first-ROM diagnostics.
+
+
+
+
+## v0.72.6 CPU halt diagnostics
+
+Desktop diagnostics now expose the fetched opcode, halt state, halt opcode address, and final pin-driven cartridge CPU read so a real ROM boot failure can be traced without inspecting or bypassing CPU memory.
+
+
+## v0.72.7 CPU microstate diagnostics
+
+Adds passive cycle-state, bus-address, data-validity, and M2 diagnostics for stalled real-hardware boot investigation. No execution or memory bypass is introduced.
+
+
+## v0.72.8 — physical controller-port hardware
+
+Adds two standalone pin-driven standard controller shift-register packages to every regional motherboard. The RP2A03/RP2A07 controller strobe, active-low read clocks, and serial input pins are now connected to real controller devices, so reads from `$4016` and `$4017` always resolve electrically even when no buttons are pressed. Button states remain external board nets for the later desktop input adapter; no CPU-memory or controller-read shortcut is introduced.
+
+
+## v0.72.12 — input-driven settled-component scheduling
+
+- Added an explicit input-driven component contract for packages whose state can change only after a package-pin transition.
+- The simulator now skips settled input-driven packages until one of their own pins changes.
+- Output transitions automatically mark the originating package for a follow-up propagation pass, preserving ordinary multi-pass electrical behavior.
+- Applied the contract to NROM, HM6116, SN74LS139A, SN74LS373 and SN74LS368A, the dominant stable-package costs identified by v0.72.11 profiling.
+- RP2A03, RP2A07, RP2C02 and RP2C07 remain continuously evaluated so their internal multi-phase timing behavior is unchanged.
+- Added a regression proving that a settled input-driven package is not polled again until a package pin changes.
+
+## v0.72.11 — measured virtual-circuit profiling
+
+The desktop host accepts `--profile` to measure the validated settlement loop without changing its electrical semantics. The profiler reports settlement-call/pass counts, net-resolution time, and the eight most expensive component packages every five seconds and at shutdown. Profiling is disabled by default and the normal hot path remains separate from the instrumented path.
+
+
+## v0.72.13 — queued dirty-net settlement
+
+- Replaced the per-propagation-pass scan of every motherboard net with a board-local queue populated only when a driver actually dirties a net.
+- Preserved the same digital-net resolver, drive strengths, contention handling, sampled-pin updates and propagation-pass limit.
+- Topology refresh now re-registers cartridge-added nets and seeds unresolved nets into the queue.
+- Added the standard controller and external digital signal-source packages to the validated input-driven component contract.
+- CPU/APU and PPU packages remain continuously evaluated; no clock, bus, instruction, pixel or audio shortcut is introduced.
+
+
+## v0.72.14 — sampled-pin scheduling precision
+
+- Distinguishes package output-drive changes from resolved sampled-pin changes.
+- Input-driven packages are now woken only by resolved electrical changes at their pins, not by their own idempotent output propagation.
+- Downstream components are still scheduled through normal net resolution; board revision and settlement detection still observe every pin transition.
+- Eliminates continuous re-evaluation of static voltage/reset/pull-up sources and reduces self-requeueing of NROM, RAM, latch and controller packages.
+- CPU/APU and PPU packages remain continuously evaluated.
+
+
+## v0.72.15 — explicit event-driven PPU settlement
+
+- Added an explicit event-driven component contract with `HasPendingInternalWork`.
+- RP2C02/RP2C07 register-package execution now wakes on sampled input changes and continues only while an external PPU-bus fetch is unfinished.
+- Preserves every address-drive, read-strobe, data-sample and bus-release phase without evaluating the PPU on unrelated stable propagation passes.
+- Treats external voltage, reset and pull-up signal sources as one-shot drivers because `Set()` updates their output pins immediately.
+- The simulator still uses normal dirty-net resolution and downstream pin notifications; no CPU, PPU, cartridge, rendering or audio bypass is introduced.
+
+
+## v0.74.0 — compiled zero-scan event kernel
+
+The virtual-circuit hot path is compiled into stable component/net indexes and fixed-size ring queues. Pin sampling and net dirties now enqueue integer indexes directly, eliminating hash sets, dictionaries, LINQ scans, and general multicast event dispatch from steady-state execution. Digital nets cache their attached-pin array for allocation-free resolution. The profiler counts every evaluation but samples component timing once per 256 calls so diagnostic timing no longer distorts the ROM benchmark as heavily. `UsesStrictEventKernel` and `LegacyPollingComponents` expose whether a board is actually running without compatibility polling.
+
+The v0.74.0 desktop/boot hot path also caches the selected CPU, PPU, cartridge and motherboard outside the master-cycle loop; removes nested regional dispatch for every cycle; samples diagnostics only until each boot milestone is observed; lets scheduled audio sinks request only the master cycles they need; raises the desktop execution batch to 16,384 cycles; and prints the active kernel mode plus any compatibility-polling blockers at startup.

@@ -13,8 +13,15 @@ const int AudioSampleRate = 44_100;
 string? romArgument = null;
 var boardSelection = NesRegionSelection.NtscJapan;
 var palCic = PalCicVariant.PalA3195;
+var profileSimulation = false;
 for (var index = 0; index < args.Length; index++)
 {
+    if (args[index].Equals("--profile", StringComparison.OrdinalIgnoreCase))
+    {
+        profileSimulation = true;
+        continue;
+    }
+
     if (args[index].Equals("--board", StringComparison.OrdinalIgnoreCase))
     {
         if (++index >= args.Length || !TryParseBoard(args[index], out boardSelection, out palCic))
@@ -27,7 +34,7 @@ for (var index = 0; index < args.Length; index++)
 
     if (romArgument is not null)
     {
-        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto]");
+        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile]");
         return 2;
     }
 
@@ -90,6 +97,14 @@ presenter.KeyStateChanged += (key, pressed) =>
 };
 
 host.PowerAndReleaseReset();
+var activeSimulator = host.Machine.ActiveMotherboard switch
+{
+    ActiveNesMotherboard.Famicom => host.Machine.Famicom.Simulator,
+    ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.Simulator,
+    ActiveNesMotherboard.PalNes => host.Machine.PalNes.Simulator,
+    _ => throw new InvalidOperationException("No active motherboard simulator.")
+};
+if (profileSimulation) activeSimulator.SetProfilingEnabled(true);
 var initial = host.Snapshot();
 Console.WriteLine("AxetosOS Products / NES — virtual hardware desktop host");
 Console.WriteLine($"ROM:        {romPath}");
@@ -101,13 +116,22 @@ Console.WriteLine("Execution:   physical virtual-hardware buses and master clock
 Console.WriteLine("Video:       RP2C02 color output -> AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:       RP2A03 DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
 Console.WriteLine("Controls:    Esc=Exit (controller hardware adapter is the next input milestone)");
+Console.WriteLine($"Kernel:      {(activeSimulator.UsesStrictEventKernel ? "strict indexed event queue" : "compatibility polling")}");
+if (!activeSimulator.UsesStrictEventKernel)
+    Console.WriteLine($"Legacy:      {string.Join(", ", activeSimulator.LegacyPollingComponents)}");
+if (profileSimulation) Console.WriteLine("Profiler:    enabled; component timing sampled 1/256; results every 5 seconds");
 
-const int MasterCyclesPerVideoBatch = 2_048;
+const int MasterCyclesPerVideoBatch = 16_384;
 const int AudioTransferBufferSize = 4_096;
 var audioTransfer = new float[AudioTransferBufferSize];
 var timer = Stopwatch.StartNew();
 var lastPresentedFrame = ulong.MaxValue;
 var lastTitleUpdate = TimeSpan.Zero;
+var haltReported = false;
+var lastInstructionProgress = host.Snapshot().CpuInstructions;
+var lastInstructionProgressFrame = host.Snapshot().PpuFrames;
+var stallReportedForState = string.Empty;
+var lastProfileReport = TimeSpan.Zero;
 
 while (presenter.IsOpen)
 {
@@ -131,11 +155,56 @@ while (presenter.IsOpen)
     if (now - lastTitleUpdate >= TimeSpan.FromMilliseconds(500))
     {
         var diagnostics = host.Snapshot();
+        if (diagnostics.CpuInstructions != lastInstructionProgress)
+        {
+            lastInstructionProgress = diagnostics.CpuInstructions;
+            lastInstructionProgressFrame = diagnostics.PpuFrames;
+            stallReportedForState = string.Empty;
+        }
+
+        var stalled = !diagnostics.CpuHalted &&
+            diagnostics.PpuFrames >= lastInstructionProgressFrame + 2;
+        var dataText = diagnostics.CpuDataBusKnown ? $"${diagnostics.CpuDataBusValue:X2}" : "??";
+        var waitText = stalled
+            ? $" | WAIT {diagnostics.CpuCycleState} A${diagnostics.CpuBusAddress:X4} D{dataText} M2={diagnostics.CpuM2Level}"
+            : string.Empty;
+
         presenter.SetTitle(
             $"{Path.GetFileNameWithoutExtension(romPath)} | {diagnostics.Motherboard} | " +
             $"Frame {diagnostics.PpuFrames:N0} | PC ${diagnostics.ProgramCounter:X4} | " +
-            $"CPU {diagnostics.CpuInstructions:N0} | Audio {audio.BufferedMilliseconds:F0} ms");
+            $"OP ${diagnostics.CurrentOpcode:X2}{(diagnostics.CpuHalted ? " HALT" : string.Empty)} | " +
+            $"CPU {diagnostics.CpuInstructions:N0}{waitText} | Audio {audio.BufferedMilliseconds:F0} ms");
+
+        if (stalled)
+        {
+            var stallKey = $"{diagnostics.CpuCycleState}:{diagnostics.CpuBusAddress:X4}:{dataText}:{diagnostics.CpuM2Level}";
+            if (!string.Equals(stallReportedForState, stallKey, StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine(
+                    $"CPU STALL: state={diagnostics.CpuCycleState}; PC=${diagnostics.ProgramCounter:X4}; " +
+                    $"opcode=${diagnostics.CurrentOpcode:X2}; bus={(diagnostics.CpuBusIsRead ? "READ" : "WRITE")} " +
+                    $"${diagnostics.CpuBusAddress:X4}; data={dataText}; M2={diagnostics.CpuM2Level}; " +
+                    $"last cartridge read=${diagnostics.LastCartridgeCpuReadAddress:X4} -> ${diagnostics.LastCartridgeCpuReadData:X2}; " +
+                    $"instructions={diagnostics.CpuInstructions:N0}; frame={diagnostics.PpuFrames:N0}");
+                stallReportedForState = stallKey;
+            }
+        }
+
+        if (diagnostics.CpuHalted && !haltReported)
+        {
+            Console.Error.WriteLine(
+                $"CPU HALT: opcode=${diagnostics.CurrentOpcode:X2} at ${diagnostics.HaltOpcodeAddress:X4}; " +
+                $"last cartridge read=${diagnostics.LastCartridgeCpuReadAddress:X4} -> ${diagnostics.LastCartridgeCpuReadData:X2}; " +
+                $"instructions={diagnostics.CpuInstructions:N0}, frame={diagnostics.PpuFrames:N0}");
+            haltReported = true;
+        }
         lastTitleUpdate = now;
+    }
+
+    if (profileSimulation && now - lastProfileReport >= TimeSpan.FromSeconds(5))
+    {
+        PrintProfile(activeSimulator.GetProfileSnapshot());
+        lastProfileReport = now;
     }
 
     if (audio.BufferedMilliseconds > 120) Thread.Sleep(1);
@@ -144,7 +213,17 @@ while (presenter.IsOpen)
 var final = host.Snapshot();
 Console.WriteLine($"Stopped:     master={final.MasterCycles:N0}, instructions={final.CpuInstructions:N0}, frames={final.PpuFrames:N0}");
 Console.WriteLine($"Boot checks: reset-vector={final.ResetVectorObserved}, opcode={final.FirstOpcodeObserved}, vblank={final.FirstVblankObserved}, nmi={final.FirstNmiObserved}");
+if (profileSimulation) PrintProfile(activeSimulator.GetProfileSnapshot());
 return 0;
+
+static void PrintProfile(AxetosOS.Products.NES.VirtualHardware.Simulation.VirtualHardwareSimulationProfile profile)
+{
+    Console.WriteLine($"PROFILE: board={profile.BoardId}; settles={profile.SettleCalls:N0}; passes={profile.PropagationPasses:N0}; avg={profile.AveragePassesPerSettle:F2}; max={profile.MaximumPassesPerSettle}; settle={profile.TotalSettleTime.TotalSeconds:F2}s; nets={profile.NetResolutionTime.TotalSeconds:F2}s");
+    foreach (var component in profile.Components.OrderByDescending(static item => item.EvaluationTime).Take(8))
+    {
+        Console.WriteLine($"PROFILE COMPONENT: {component.ComponentId}; evaluations={component.EvaluationCount:N0}; time={component.EvaluationTime.TotalSeconds:F2}s");
+    }
+}
 
 static bool TryParseBoard(string value, out NesRegionSelection selection, out PalCicVariant palCic)
 {
@@ -207,11 +286,13 @@ sealed class NativeFrameVideoSink : IVirtualNesVideoSink
     }
 }
 
-sealed class NativePcmAudioSink(double masterClockHz, int sampleRate) : IVirtualNesAudioSink
+sealed class NativePcmAudioSink(double masterClockHz, int sampleRate) : IVirtualNesScheduledAudioSink
 {
     private readonly Queue<float> _samples = new();
     private readonly double _masterCyclesPerSample = masterClockHz / sampleRate;
     private double _nextSampleCycle;
+
+    public ulong NextRequiredMasterCycle => (ulong)Math.Ceiling(_nextSampleCycle);
 
     public void AcceptSample(ulong masterCycle, byte dacLevel)
     {
