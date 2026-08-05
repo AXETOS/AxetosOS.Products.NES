@@ -34,6 +34,7 @@ public sealed class VirtualHardwareSimulator
 
     private DigitalNet[] _nets;
     private IVirtualHardwareComponent[] _components;
+    private IEventDrivenVirtualHardwareComponent?[] _eventDrivenComponents;
     private int _knownNetCount;
     private int _knownComponentCount;
 
@@ -67,6 +68,7 @@ public sealed class VirtualHardwareSimulator
         Board = board ?? throw new ArgumentNullException(nameof(board));
         _nets = Board.Nets.ToArray();
         _components = Board.Components.ToArray();
+        _eventDrivenComponents = new IEventDrivenVirtualHardwareComponent?[_components.Length];
         _componentQueued = new bool[_components.Length];
         _componentQueue = new int[Math.Max(1, _components.Length)];
         _netQueued = new bool[_nets.Length];
@@ -152,64 +154,100 @@ public sealed class VirtualHardwareSimulator
             : SettleCompatibility(maximumPropagationPasses);
     }
 
-    private int SettleStrict(int maximumWaves)
+    private int SettleStrict(int maximumEvents)
     {
-        var wave = 0;
-        while (_componentQueueCount != 0 || _netQueueCount != 0)
-        {
-            if (++wave > maximumWaves)
-            {
-                ThrowDidNotSettle(maximumWaves, "event waves");
-            }
-
-            ResolveDirtyNets();
-            EvaluateActiveComponents(false);
-            SettleCount++;
-        }
-
-        if (wave == 0)
-        {
-            SettleCount++;
-            return 1;
-        }
-
-        return wave;
+        var events = DrainStrictEventQueue(maximumEvents, false);
+        SettleCount++;
+        return events == 0 ? 1 : events;
     }
 
-    private int SettleStrictProfiled(int maximumWaves)
+    private int SettleStrictProfiled(int maximumEvents)
     {
         var started = Stopwatch.GetTimestamp();
         _profileSettleCalls++;
-        var wave = 0;
         try
         {
-            while (_componentQueueCount != 0 || _netQueueCount != 0)
-            {
-                if (++wave > maximumWaves)
-                {
-                    ThrowDidNotSettle(maximumWaves, "event waves");
-                }
-
-                ResolveDirtyNetsProfiled();
-                EvaluateActiveComponents(true);
-                SettleCount++;
-                _profilePropagationPasses++;
-            }
-
-            if (wave == 0)
-            {
-                SettleCount++;
-                _profilePropagationPasses++;
-                wave = 1;
-            }
-
-            if (wave > _profileMaximumPasses) _profileMaximumPasses = wave;
-            return wave;
+            var events = DrainStrictEventQueue(maximumEvents, true);
+            SettleCount++;
+            var reported = events == 0 ? 1 : events;
+            _profilePropagationPasses += (ulong)reported;
+            if (reported > _profileMaximumPasses) _profileMaximumPasses = reported;
+            return reported;
         }
         finally
         {
             _profileSettleTicks += Stopwatch.GetTimestamp() - started;
         }
+    }
+
+    private int DrainStrictEventQueue(int maximumEvents, bool profile)
+    {
+        var events = 0;
+        while (_netQueueCount != 0 || _componentQueueCount != 0)
+        {
+            if (++events > maximumEvents * 32)
+            {
+                ThrowDidNotSettle(maximumEvents * 32, "queued events");
+            }
+
+            // Electrical changes always settle before the next package runs.
+            // This preserves causality while avoiding propagation-wave loops.
+            if (_netQueueCount != 0)
+            {
+                if (profile)
+                {
+                    var started = Stopwatch.GetTimestamp();
+                    ResolveOneDirtyNet();
+                    _profileNetResolutionTicks += Stopwatch.GetTimestamp() - started;
+                }
+                else
+                {
+                    ResolveOneDirtyNet();
+                }
+                continue;
+            }
+
+            EvaluateOneActiveComponent(profile);
+        }
+
+        return events;
+    }
+
+    private void ResolveOneDirtyNet()
+    {
+        var index = DequeueNet();
+        _netQueued[index] = false;
+        var net = _nets[index];
+        if (net.IsDirty) net.Resolve();
+    }
+
+    private void EvaluateOneActiveComponent(bool profile)
+    {
+        var index = DequeueComponent();
+        _componentQueued[index] = false;
+
+        if (!profile)
+        {
+            _components[index].Evaluate();
+        }
+        else
+        {
+            var evaluation = ++_profileComponentEvaluations[index];
+            if ((evaluation - 1) % ProfileTimingSampleInterval == 0)
+            {
+                var started = Stopwatch.GetTimestamp();
+                _components[index].Evaluate();
+                _profileComponentTicks[index] += Stopwatch.GetTimestamp() - started;
+                _profileComponentTimedEvaluations[index]++;
+            }
+            else
+            {
+                _components[index].Evaluate();
+            }
+        }
+
+        var eventDriven = _eventDrivenComponents[index];
+        if (eventDriven is not null && eventDriven.HasPendingInternalWork) QueueComponent(index);
     }
 
     private int SettleCompatibility(int maximumPasses)
@@ -286,10 +324,8 @@ public sealed class VirtualHardwareSimulator
                 }
             }
 
-            if (_components[index] is IEventDrivenVirtualHardwareComponent { HasPendingInternalWork: true })
-            {
-                QueueComponent(index);
-            }
+            var eventDriven = _eventDrivenComponents[index];
+            if (eventDriven is not null && eventDriven.HasPendingInternalWork) QueueComponent(index);
         }
     }
 
@@ -313,38 +349,41 @@ public sealed class VirtualHardwareSimulator
 
     private void CompileTopology()
     {
-        for (var netIndex = 0; netIndex < _nets.Length; netIndex++)
-        {
-            var net = _nets[netIndex];
-            net.SchedulerIndex = netIndex;
-            net.SchedulerDirtied = QueueDirtyNet;
-            if (net.IsDirty) QueueDirtyNet(netIndex);
-        }
-
+        // Bind package ownership and execution contracts before compiling net
+        // fan-out. Net regions depend on the stable owner indexes assigned here.
         for (var componentIndex = 0; componentIndex < _components.Length; componentIndex++)
         {
-            var pins = _components[componentIndex].Pins;
+            var component = _components[componentIndex];
+            _eventDrivenComponents[componentIndex] = component as IEventDrivenVirtualHardwareComponent;
+            var clockEdgeOwner = component as IClockEdgeDrivenVirtualHardwareComponent;
+            var selectiveInputOwner = component as ISelectiveInputDrivenVirtualHardwareComponent;
+            var pins = component.Pins;
             for (var pinIndex = 0; pinIndex < pins.Count; pinIndex++)
             {
                 var pin = pins[pinIndex];
                 pin.OwnerComponentIndex = componentIndex;
-                pin.SchedulerSampledChanged = OnPinSampledChanged;
+                pin.Scheduler = this;
+                pin.ClockEdgeOwner = clockEdgeOwner;
+                pin.SelectiveInputOwner = selectiveInputOwner;
+                pin.WakeOwnerOnSampleChange = pin.Direction != PinDirection.Output;
             }
+        }
+
+        for (var netIndex = 0; netIndex < _nets.Length; netIndex++)
+        {
+            var net = _nets[netIndex];
+            net.InvalidateCompiledTopology();
+            net.CompileTopology();
+            net.SchedulerIndex = netIndex;
+            net.Scheduler = this;
+            if (net.IsDirty) NotifyNetDirty(netIndex);
         }
     }
 
-    private void OnPinSampledChanged(int componentIndex, DigitalPin pin)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal void NotifyComponentActive(int componentIndex)
     {
-        if (pin.Direction == PinDirection.Output) return;
-
-        var component = _components[componentIndex];
-        if (component is ISelectiveInputDrivenVirtualHardwareComponent selective &&
-            !selective.ShouldWakeForSampledPin(pin))
-        {
-            return;
-        }
-
-        QueueComponent(componentIndex);
+        if (componentIndex >= 0) QueueComponent(componentIndex);
     }
 
     private void QueueAllComponents()
@@ -379,7 +418,8 @@ public sealed class VirtualHardwareSimulator
         return index;
     }
 
-    private void QueueDirtyNet(int index)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal void NotifyNetDirty(int index)
     {
         if (_netQueued[index]) return;
         _netQueued[index] = true;
@@ -414,6 +454,7 @@ public sealed class VirtualHardwareSimulator
         _knownNetCount = _nets.Length;
         _knownComponentCount = _components.Length;
 
+        _eventDrivenComponents = new IEventDrivenVirtualHardwareComponent?[_components.Length];
         _componentQueued = new bool[_components.Length];
         _componentQueue = new int[Math.Max(1, _components.Length)];
         _componentQueueHead = 0;

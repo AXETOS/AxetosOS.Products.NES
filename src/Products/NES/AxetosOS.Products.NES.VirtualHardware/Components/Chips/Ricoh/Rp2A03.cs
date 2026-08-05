@@ -8,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 /// the integrated 6502-derived execution section. It has no motherboard, RAM,
 /// cartridge, PPU, or other component references.
 /// </summary>
-public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
+public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent, IClockEdgeDrivenVirtualHardwareComponent
 {
     private const byte CarryFlag = 1 << 0;
     private const byte ZeroFlag = 1 << 1;
@@ -206,6 +206,24 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     public ulong DmcOamDmaInterleaveCount { get; private set; }
     public ulong DmcCpuStallCount { get; private set; }
     public int LastDmcFetchStallCycles { get; private set; }
+
+    public bool TryHandleClockSample(DigitalPin pin, DigitalLevel level)
+    {
+        if (!ReferenceEquals(pin, MasterClock)) return false;
+
+        // Falling edges only arm the next rising edge. No package-wide
+        // evaluation is required because these models change functional state
+        // exclusively on the rising master-clock edge.
+        if (level == DigitalLevel.Low)
+        {
+            _previousClock = DigitalLevel.Low;
+            return true;
+        }
+
+        // A resolved rising edge must run the package exactly once. Returning
+        // false lets the simulator enqueue the normal Evaluate call.
+        return false;
+    }
 
     public override void PowerOn()
     {

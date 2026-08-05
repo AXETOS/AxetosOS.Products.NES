@@ -1,3 +1,7 @@
+using System.Runtime.CompilerServices;
+using AxetosOS.Products.NES.VirtualHardware.Components;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
+
 namespace AxetosOS.Products.NES.VirtualHardware.Electrical;
 
 /// <summary>
@@ -25,8 +29,12 @@ public sealed class DigitalPin
     public DigitalLevel SampledLevel => _sampledLevel;
     internal ulong Revision { get; private set; }
     internal int OwnerComponentIndex { get; set; } = -1;
-    internal Action<int, DigitalPin>? SchedulerSampledChanged { get; set; }
+    internal VirtualHardwareSimulator? Scheduler { get; set; }
+    internal IClockEdgeDrivenVirtualHardwareComponent? ClockEdgeOwner { get; set; }
+    internal ISelectiveInputDrivenVirtualHardwareComponent? SelectiveInputOwner { get; set; }
+    internal bool WakeOwnerOnSampleChange { get; set; }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Drive(
         DigitalLevel level,
         DigitalDriveStrength strength = DigitalDriveStrength.Strong)
@@ -56,16 +64,47 @@ public sealed class DigitalPin
 
     internal void SetSampledLevel(DigitalLevel level)
     {
-        if (_sampledLevel == level)
+        if (!ApplySampledLevel(level) || !WakeOwnerOnSampleChange)
         {
             return;
         }
 
+        if (HandlesSampleChangeWithoutQueue(level))
+        {
+            return;
+        }
+
+        Scheduler?.NotifyComponentActive(OwnerComponentIndex);
+    }
+
+    /// <summary>
+    /// Applies the electrical observation without scheduling the owner. Compiled
+    /// net fan-out uses this to update every physical pin first and then wake each
+    /// affected package at most once.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool ApplySampledLevel(DigitalLevel level)
+    {
+        if (_sampledLevel == level)
+        {
+            return false;
+        }
+
         _sampledLevel = level;
         Revision++;
-        if (OwnerComponentIndex >= 0)
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool HandlesSampleChangeWithoutQueue(DigitalLevel level)
+    {
+        var clockEdgeOwner = ClockEdgeOwner;
+        if (clockEdgeOwner is not null && clockEdgeOwner.TryHandleClockSample(this, level))
         {
-            SchedulerSampledChanged?.Invoke(OwnerComponentIndex, this);
+            return true;
         }
+
+        var selectiveInputOwner = SelectiveInputOwner;
+        return selectiveInputOwner is not null && !selectiveInputOwner.ShouldWakeForSampledPin(this);
     }
 }

@@ -1,3 +1,6 @@
+using System.Runtime.CompilerServices;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
+
 namespace AxetosOS.Products.NES.VirtualHardware.Electrical;
 
 /// <summary>
@@ -8,7 +11,11 @@ public sealed class DigitalNet
 {
     private readonly List<DigitalPin> _pins = [];
     private DigitalPin[] _resolvedPins = [];
+    private DigitalPin[] _driverPins = [];
+    private ObserverGroup[] _observerGroups = [];
+    private DigitalPin[] _passivePins = [];
     private bool _pinSnapshotDirty = true;
+    private NetResolverKind _resolverKind;
 
     public DigitalNet(string name)
     {
@@ -22,7 +29,7 @@ public sealed class DigitalNet
     public ulong ResolutionCount { get; private set; }
     internal bool IsDirty { get; private set; } = true;
     internal int SchedulerIndex { get; set; } = -1;
-    internal Action<int>? SchedulerDirtied { get; set; }
+    internal VirtualHardwareSimulator? Scheduler { get; set; }
 
     public void Connect(DigitalPin pin)
     {
@@ -45,6 +52,7 @@ public sealed class DigitalNet
         MarkDirty();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void MarkDirty()
     {
         if (IsDirty)
@@ -55,23 +63,104 @@ public sealed class DigitalNet
         IsDirty = true;
         if (SchedulerIndex >= 0)
         {
-            SchedulerDirtied?.Invoke(SchedulerIndex);
+            Scheduler?.NotifyNetDirty(SchedulerIndex);
         }
     }
 
     public DigitalLevel Resolve()
     {
         IsDirty = false;
-        var pins = GetPinSnapshot();
+        if (_pinSnapshotDirty) CompileTopology();
+
+        var resolved = _resolverKind switch
+        {
+            NetResolverKind.Floating => DigitalLevel.Unknown,
+            NetResolverKind.SingleDriver => ResolveSingleDriver(_driverPins[0]),
+            _ => ResolveMultipleDrivers(_driverPins)
+        };
+
+        ResolutionCount++;
+
+        // A large proportion of electrical events are control/strength changes
+        // that settle back to the already-observed logic level. Do not walk and
+        // callback every attached package when the electrical observation did
+        // not actually change.
+        if (Level == resolved)
+        {
+            return resolved;
+        }
+
+        Level = resolved;
+        PropagateCompiledFanOut(resolved);
+        return resolved;
+    }
+
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void PropagateCompiledFanOut(DigitalLevel resolved)
+    {
+        // Pins without an owning package still retain the exact sampled state.
+        var passivePins = _passivePins;
+        for (var index = 0; index < passivePins.Length; index++)
+        {
+            passivePins[index].ApplySampledLevel(resolved);
+        }
+
+        // A net may connect several input pins on the same package. The generic
+        // pin path would attempt to queue that package once per changed pin. The
+        // compiled fan-out updates every physical pin but performs one causal
+        // wake decision for the package after all of its pins have sampled the
+        // new electrical level.
+        var groups = _observerGroups;
+        for (var groupIndex = 0; groupIndex < groups.Length; groupIndex++)
+        {
+            ref readonly var group = ref groups[groupIndex];
+            var pins = group.Pins;
+            var wake = false;
+            for (var pinIndex = 0; pinIndex < pins.Length; pinIndex++)
+            {
+                var pin = pins[pinIndex];
+                if (!pin.ApplySampledLevel(resolved) || !pin.WakeOwnerOnSampleChange)
+                {
+                    continue;
+                }
+
+                if (!pin.HandlesSampleChangeWithoutQueue(resolved))
+                {
+                    wake = true;
+                }
+            }
+
+            if (wake)
+            {
+                Scheduler?.NotifyComponentActive(group.OwnerComponentIndex);
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static DigitalLevel ResolveSingleDriver(DigitalPin driver)
+    {
+        return driver.DriveLevel switch
+        {
+            DigitalLevel.HighImpedance => DigitalLevel.Unknown,
+            DigitalLevel.Low => DigitalLevel.Low,
+            DigitalLevel.High => DigitalLevel.High,
+            _ => DigitalLevel.Unknown
+        };
+    }
+
+    private static DigitalLevel ResolveMultipleDrivers(DigitalPin[] drivers)
+    {
         var strongest = DigitalDriveStrength.Weak;
         var foundDriver = false;
         var sawLow = false;
         var sawHigh = false;
         var sawUnknown = false;
 
-        for (var index = 0; index < pins.Length; index++)
+        for (var index = 0; index < drivers.Length; index++)
         {
-            var pin = pins[index];
+            var pin = drivers[index];
             var level = pin.DriveLevel;
             if (level == DigitalLevel.HighImpedance)
             {
@@ -106,7 +195,7 @@ public sealed class DigitalNet
             }
         }
 
-        var resolved = !foundDriver
+        return !foundDriver
             ? DigitalLevel.Unknown
             : sawLow && sawHigh
                 ? DigitalLevel.Contention
@@ -115,27 +204,68 @@ public sealed class DigitalNet
                     : sawHigh
                         ? DigitalLevel.High
                         : DigitalLevel.Low;
-
-        Level = resolved;
-        ResolutionCount++;
-
-        for (var index = 0; index < pins.Length; index++)
-        {
-            pins[index].SetSampledLevel(resolved);
-        }
-
-        return resolved;
     }
 
-    private DigitalPin[] GetPinSnapshot()
+    internal void InvalidateCompiledTopology() => _pinSnapshotDirty = true;
+
+    internal void CompileTopology()
     {
-        if (!_pinSnapshotDirty)
-        {
-            return _resolvedPins;
-        }
+        if (!_pinSnapshotDirty) return;
 
         _resolvedPins = _pins.ToArray();
+        var driverCount = 0;
+        for (var index = 0; index < _resolvedPins.Length; index++)
+        {
+            if (_resolvedPins[index].Direction != PinDirection.Input) driverCount++;
+        }
+
+        _driverPins = new DigitalPin[driverCount];
+        var driverIndex = 0;
+        for (var index = 0; index < _resolvedPins.Length; index++)
+        {
+            var pin = _resolvedPins[index];
+            if (pin.Direction != PinDirection.Input) _driverPins[driverIndex++] = pin;
+        }
+        _resolverKind = driverCount switch
+        {
+            0 => NetResolverKind.Floating,
+            1 => NetResolverKind.SingleDriver,
+            _ => NetResolverKind.MultipleDrivers
+        };
+
+        var grouped = new Dictionary<int, List<DigitalPin>>();
+        var passive = new List<DigitalPin>();
+        for (var index = 0; index < _resolvedPins.Length; index++)
+        {
+            var pin = _resolvedPins[index];
+            if (pin.OwnerComponentIndex < 0)
+            {
+                passive.Add(pin);
+                continue;
+            }
+
+            if (!grouped.TryGetValue(pin.OwnerComponentIndex, out var ownerPins))
+            {
+                ownerPins = [];
+                grouped.Add(pin.OwnerComponentIndex, ownerPins);
+            }
+            ownerPins.Add(pin);
+        }
+
+        _passivePins = passive.ToArray();
+        _observerGroups = grouped
+            .Select(static pair => new ObserverGroup(pair.Key, pair.Value.ToArray()))
+            .ToArray();
         _pinSnapshotDirty = false;
-        return _resolvedPins;
+    }
+
+    private readonly record struct ObserverGroup(int OwnerComponentIndex, DigitalPin[] Pins);
+
+    private enum NetResolverKind : byte
+    {
+        Floating,
+        SingleDriver,
+        MultipleDrivers
     }
 }
+

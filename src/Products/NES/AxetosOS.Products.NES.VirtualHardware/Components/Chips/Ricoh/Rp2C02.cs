@@ -9,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 /// External PPU memory is accessed exclusively through AD0-AD7, A8-A13, ALE,
 /// /RD and /WR.
 /// </summary>
-public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
+public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent, IClockEdgeDrivenVirtualHardwareComponent
 {
     private const int DotsPerScanline = 341;
     private const int ScanlinesPerFrame = 262;
@@ -138,6 +138,24 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
 
     public byte InspectOam(byte address) => _primaryOam[address];
     public byte InspectPalette(ushort address) => ReadPalette(address);
+
+    public bool TryHandleClockSample(DigitalPin pin, DigitalLevel level)
+    {
+        if (!ReferenceEquals(pin, Clock)) return false;
+
+        // Falling edges only arm the next rising edge. No package-wide
+        // evaluation is required because these models change functional state
+        // exclusively on the rising master-clock edge.
+        if (level == DigitalLevel.Low)
+        {
+            _previousClock = DigitalLevel.Low;
+            return true;
+        }
+
+        // A resolved rising edge must run the package exactly once. Returning
+        // false lets the simulator enqueue the normal Evaluate call.
+        return false;
+    }
 
     public override void PowerOn()
     {

@@ -1,3 +1,19 @@
+## v0.75.1 — live desktop FPS counter
+
+- Shows measured emulated frames per real second in the native window title.
+- Shows the corresponding percentage of NTSC real-time speed against 60.0988 FPS.
+- Prints average FPS in the shutdown summary for repeatable non-profiled comparisons.
+- Does not alter CPU, PPU, APU, cartridge, clock, bus, rendering or settlement behavior.
+
+
+## v0.80.0 — topology-compiled net fan-out regions
+
+- Compiles each resolved net into package-local observer groups.
+- Updates every physical sampled pin while waking each affected chip at most once per net transition.
+- Preserves clock-edge contracts, selective input wake rules, electrical contention, pin revisions, and standalone chip behaviour.
+- Applies to arbitrary chips and motherboards; no NES-specific behaviour is embedded in the shared simulator.
+- Establishes the first dense combinational-region primitive needed by motherboard-specific execution plans.
+
 ## v0.73.0 — strict quiescent event transactions
 
 - Adds a separate zero-scan settlement kernel for boards whose complete topology implements the explicit input/event-driven component contract.
@@ -823,8 +839,55 @@ The desktop host accepts `--profile` to measure the validated settlement loop wi
 - The simulator still uses normal dirty-net resolution and downstream pin notifications; no CPU, PPU, cartridge, rendering or audio bypass is introduced.
 
 
-## v0.74.0 — compiled zero-scan event kernel
+## v0.75.0 — compiled zero-scan event kernel
 
 The virtual-circuit hot path is compiled into stable component/net indexes and fixed-size ring queues. Pin sampling and net dirties now enqueue integer indexes directly, eliminating hash sets, dictionaries, LINQ scans, and general multicast event dispatch from steady-state execution. Digital nets cache their attached-pin array for allocation-free resolution. The profiler counts every evaluation but samples component timing once per 256 calls so diagnostic timing no longer distorts the ROM benchmark as heavily. `UsesStrictEventKernel` and `LegacyPollingComponents` expose whether a board is actually running without compatibility polling.
 
 The v0.74.0 desktop/boot hot path also caches the selected CPU, PPU, cartridge and motherboard outside the master-cycle loop; removes nested regional dispatch for every cycle; samples diagnostics only until each boot milestone is observed; lets scheduled audio sinks request only the master cycles they need; raises the desktop execution batch to 16,384 cycles; and prints the active kernel mode plus any compatibility-polling blockers at startup.
+
+
+## v0.75.0 performance kernel
+
+- Drains strict event topology as a single quiescent transaction instead of propagation waves.
+- Resolves one dirty net before executing the next affected package, preserving electrical causality.
+- Caches driver-only net snapshots so input pins are not scanned as possible drivers.
+- Adds event-native clock dispatch: RP2A03/RP2C02 falling edges arm the next edge without package-wide evaluation; rising edges retain normal pin-driven execution.
+- Keeps the compatibility settlement path for non-event-driven example circuits.
+
+## v0.76.0 — stable FPS telemetry and unchanged-net fast path
+
+- Desktop title now reports current, minimum, maximum and average FPS after a two-second warm-up.
+- FPS current/min/max samples use one-second windows, while average uses the complete post-warm-up run.
+- Increased desktop master-cycle batching to reduce host dispatch overhead without changing virtual hardware timing.
+- Digital nets now skip all sampled-pin callbacks when a dirty resolution returns to the already-observed level.
+- Single-driver nets use a direct resolution path; multi-driver contention and strength rules remain unchanged.
+- Net driver snapshots are built without LINQ allocations.
+
+
+## v0.77.0 — direct scheduler links and array-backed bus hot path
+
+- Replaced per-transition scheduler delegates on every digital pin and net with direct compiled simulator links.
+- Added aggressively inlined net-dirty and sampled-pin dispatch into the strict indexed event kernel.
+- Reworked `DigitalBus` around concrete pin arrays and specialized the heavily used 8-bit sampler.
+- Removed `IReadOnlyList` indexing and `foreach` overhead from bus sampling, driving, and release.
+- Kept full multi-driver contention/strength resolution and the complete physical pin/net route.
+- Restored the desktop presentation batch to 16,384 master cycles for steadier FPS/audio delivery.
+- Retained current/minimum/maximum/average FPS telemetry.
+
+
+## v0.78.0 — topology-compiled sampled-pin dispatch
+
+- Compiles each physical pin directly to its owning package's clock-edge and selective-input contracts when the board topology is assembled.
+- Removes repeated component-array lookup and runtime interface discovery from every sampled electrical transition.
+- Keeps clock handling, selective wake decisions, ordinary package scheduling, pin revisions, net resolution and contention semantics unchanged.
+- Applies to arbitrary chips and motherboards through shared virtual-hardware contracts; no NES, Famicom, PPU, cartridge or mapper behavior is encoded in the kernel.
+- Rebuilds all direct pin bindings whenever board topology changes, preserving interchangeable chip and plug-in module composition.
+
+
+## v0.79.0 — topology-compiled resolver and component execution slots
+
+- Compiles every digital net's immutable pin and driver layout when the assembled topology is built, rather than rediscovering resolver shape during live settlement.
+- Selects floating, single-driver, or full multi-driver electrical resolution once per topology while preserving strength, high-impedance, unknown, and contention semantics.
+- Compiles event-driven component contracts into dense parallel execution slots, removing repeated runtime type tests after each package evaluation.
+- Rebuilds resolver and component slots whenever modules are added to the board, so chip replacement and arbitrary motherboard composition remain supported.
+- Contains no NES, Famicom, PPU, cartridge, mapper, video, or audio-specific execution path.

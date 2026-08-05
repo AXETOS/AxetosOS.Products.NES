@@ -127,6 +127,15 @@ var audioTransfer = new float[AudioTransferBufferSize];
 var timer = Stopwatch.StartNew();
 var lastPresentedFrame = ulong.MaxValue;
 var lastTitleUpdate = TimeSpan.Zero;
+var lastFpsSampleTime = TimeSpan.Zero;
+var lastFpsSampleFrame = initial.PpuFrames;
+var displayedFps = 0.0;
+var minimumFps = double.PositiveInfinity;
+var maximumFps = 0.0;
+var averageFps = 0.0;
+var fpsStatisticsStarted = false;
+var fpsStatisticsStartTime = TimeSpan.Zero;
+var fpsStatisticsStartFrame = initial.PpuFrames;
 var haltReported = false;
 var lastInstructionProgress = host.Snapshot().CpuInstructions;
 var lastInstructionProgressFrame = host.Snapshot().PpuFrames;
@@ -155,6 +164,30 @@ while (presenter.IsOpen)
     if (now - lastTitleUpdate >= TimeSpan.FromMilliseconds(500))
     {
         var diagnostics = host.Snapshot();
+        if (!fpsStatisticsStarted && now >= TimeSpan.FromSeconds(2))
+        {
+            fpsStatisticsStarted = true;
+            fpsStatisticsStartTime = now;
+            fpsStatisticsStartFrame = diagnostics.PpuFrames;
+            lastFpsSampleTime = now;
+            lastFpsSampleFrame = diagnostics.PpuFrames;
+        }
+
+        var fpsElapsed = now - lastFpsSampleTime;
+        if (fpsStatisticsStarted && fpsElapsed >= TimeSpan.FromSeconds(1))
+        {
+            var completedFrames = diagnostics.PpuFrames - lastFpsSampleFrame;
+            displayedFps = completedFrames / fpsElapsed.TotalSeconds;
+            minimumFps = Math.Min(minimumFps, displayedFps);
+            maximumFps = Math.Max(maximumFps, displayedFps);
+            var statisticsElapsed = now - fpsStatisticsStartTime;
+            averageFps = statisticsElapsed.TotalSeconds > 0
+                ? (diagnostics.PpuFrames - fpsStatisticsStartFrame) / statisticsElapsed.TotalSeconds
+                : 0.0;
+            lastFpsSampleFrame = diagnostics.PpuFrames;
+            lastFpsSampleTime = now;
+        }
+
         if (diagnostics.CpuInstructions != lastInstructionProgress)
         {
             lastInstructionProgress = diagnostics.CpuInstructions;
@@ -171,6 +204,8 @@ while (presenter.IsOpen)
 
         presenter.SetTitle(
             $"{Path.GetFileNameWithoutExtension(romPath)} | {diagnostics.Motherboard} | " +
+            $"FPS C {displayedFps:F1} | Min {(double.IsPositiveInfinity(minimumFps) ? 0.0 : minimumFps):F1} | " +
+            $"Max {maximumFps:F1} | Avg {averageFps:F1} ({averageFps / 60.0988 * 100.0:F0}%) | " +
             $"Frame {diagnostics.PpuFrames:N0} | PC ${diagnostics.ProgramCounter:X4} | " +
             $"OP ${diagnostics.CurrentOpcode:X2}{(diagnostics.CpuHalted ? " HALT" : string.Empty)} | " +
             $"CPU {diagnostics.CpuInstructions:N0}{waitText} | Audio {audio.BufferedMilliseconds:F0} ms");
@@ -211,7 +246,13 @@ while (presenter.IsOpen)
 }
 
 var final = host.Snapshot();
-Console.WriteLine($"Stopped:     master={final.MasterCycles:N0}, instructions={final.CpuInstructions:N0}, frames={final.PpuFrames:N0}");
+var finalAverageFps = fpsStatisticsStarted && timer.Elapsed > fpsStatisticsStartTime
+    ? (final.PpuFrames - fpsStatisticsStartFrame) / (timer.Elapsed - fpsStatisticsStartTime).TotalSeconds
+    : timer.Elapsed.TotalSeconds > 0 ? final.PpuFrames / timer.Elapsed.TotalSeconds : 0.0;
+Console.WriteLine(
+    $"Stopped:     master={final.MasterCycles:N0}, instructions={final.CpuInstructions:N0}, frames={final.PpuFrames:N0}, " +
+    $"current={displayedFps:F2}, min={(double.IsPositiveInfinity(minimumFps) ? 0.0 : minimumFps):F2}, " +
+    $"max={maximumFps:F2}, average={finalAverageFps:F2} FPS");
 Console.WriteLine($"Boot checks: reset-vector={final.ResetVectorObserved}, opcode={final.FirstOpcodeObserved}, vblank={final.FirstVblankObserved}, nmi={final.FirstNmiObserved}");
 if (profileSimulation) PrintProfile(activeSimulator.GetProfileSnapshot());
 return 0;
