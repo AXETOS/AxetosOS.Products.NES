@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.49.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.50.0-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -522,3 +522,8 @@ The RP2A03 hardware-interrupt sequence now writes the pre-interrupt processor st
 ## v0.48.0 Standalone RP2A03 reset-state accuracy
 
 The standalone RP2A03 now treats an asserted `/RES` pin as a hardware reset rather than a second power-on. The reset microsequence keeps the chip's existing stack pointer and decrements it through the three external stack-page read cycles, preserves existing arithmetic status state, forces interrupt disable, clears the non-physical break bit, and fetches the reset vector only through package pins. A chip-level regression verifies reset after executed code with a non-default stack pointer and carry state. No motherboard or NES runtime coupling is introduced.
+
+
+## v0.50.0 Standalone RP2C02 package foundation
+
+Version 0.50.0 begins the final standalone RP2C02 chip. The new reusable package exposes the RP2C02 power, reset, master-clock, CPU register, multiplexed VRAM address/data, high-address, control, extension and open-drain /NMI pins. Its first internal sections implement NTSC 341-by-262 raster counters, vblank state, the CPU-visible PPUCTRL and PPUSTATUS foundation, and pin-only package operation without motherboard, CPU, cartridge, renderer or memory references. Independent chip-level tests verify clock-driven raster progression and CPU register writes through the package pins.
