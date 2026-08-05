@@ -637,3 +637,8 @@ The RP2C07 and RP2C02 remain separate public chip packages so each motherboard c
 Version 0.65.0 adds the separate `Cic3195` PAL-A and `Cic3197` PAL-B lock packages needed by the regional motherboard set. Each package retains the same sixteen-pin, pin-only electrical contract as the completed `Cic3193`, but captures its own regional identity during startup and advances an incompatible deterministic challenge/response stream. Neither package calls a motherboard, cartridge, CPU, PPU, region selector, or external authentication service.
 
 Both PAL packages include startup reset ownership, MSB-first serial transfer, sixteen-round initial authentication, continuous verification, exact eight-clock retry hold, external reset handling, power-loss state discard, and diagnostic counters. Their independent tests cover complete authentication, distinct regional streams, cross-region rejection, retry timing, external reset, and power interruption. The models remain clean-room digital package models rather than byte-for-byte reproductions of Nintendo mask-ROM programs.
+
+
+## v0.67.0 — North American NTSC NES motherboard assembly
+
+Adds the North American NTSC NES motherboard as a net-bound assembly of the completed standalone RP2A03, RP2C02, CIC3193, HM6116, SN74LS139A, SN74LS373, and SN74LS368A packages. The CIC owns the active-low CPU/PPU host-reset chain, uses an independent board clock, and exposes its serial lock/key and slave-reset signals as normalized virtual-slot nets. CPU, PPU, IRQ, controller, audio, and cartridge-facing buses remain board-owned electrical nets with no ROM, mapper, or host callback attached.
