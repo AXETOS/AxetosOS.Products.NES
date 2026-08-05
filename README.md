@@ -2,7 +2,7 @@
 
 [![Status](https://img.shields.io/badge/status-playable-brightgreen)](#playable-nes-emulator)
 [![Playable emulator](https://img.shields.io/badge/playable_emulator-v0.23.0-blue)](#playable-nes-emulator)
-[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.45.0-blueviolet)](#virtualhardware-nes)
+[![VirtualHardware](https://img.shields.io/badge/virtualhardware-v0.46.2-blueviolet)](#virtualhardware-nes)
 [![Platform](https://img.shields.io/badge/platform-AxetosOS-informational)](#axetosos-native-product)
 [![Language](https://img.shields.io/badge/language-C%23-512BD4)](#technology)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -491,7 +491,19 @@ The standalone Ricoh `RP2A03` package now contains independent triangle and nois
 
 The standalone Ricoh RP2A03 package now contains its delta modulation channel: `$4010`–`$4013` control registers, NTSC rate divider, 7-bit output counter, sample address and length counters, sample buffer, output shift register, loop control, DMC IRQ state, `$4015` status/enable behavior, address wrap from `$FFFF` to `$8000`, and external sample reads performed through the package CPU address/data/control pins. DMC memory requests temporarily retain and restore the interrupted CPU read cycle; no RAM, cartridge, motherboard, or sample provider is referenced by the chip.
 
+## v0.46.0 Standalone RP2A03 DMC/OAM DMA arbitration
+
+- allows the internal DMC sample reader to take an eligible OAM DMA read slot on the shared external CPU bus;
+- repeats the interrupted OAM source read before its paired `$2004` write so all 256 bytes remain ordered and uncorrupted;
+- keeps DMC fetches out of OAM write slots and exposes an interleave counter for chip-level timing diagnostics;
+- adds a standalone pin/bus-level regression test covering simultaneous DMC playback and OAM DMA.
+
 ## v0.45.0 Standalone RP2A03 APU accuracy hardening
 
 The standalone RP2A03 now applies the documented nonlinear pulse and TND mixer transfer curves instead of adding channel DAC codes linearly. `$4017` writes use a phase-dependent three-or-four CPU-cycle delayed frame-counter reload, with immediate frame-IRQ clearing when inhibit is written. Dedicated chip tests verify nonlinear DAC output, internal `$4015` channel status, and delayed five-step mode activation. No motherboard or NES runtime wiring is introduced.
 
+
+
+## v0.46.2 DMC/OAM DMA overlap regression correction
+
+The standalone RP2A03 arbitration regression now executes two consecutive OAM DMA transfers while the DMC is active. This creates a deterministic external-bus ownership window long enough to include the DMC's retained power-up divider phase, without reaching into private chip state or assuming that a `$4010` rate write restarts the timer. The test still verifies ordered, uncorrupted OAM writes across both transfers.

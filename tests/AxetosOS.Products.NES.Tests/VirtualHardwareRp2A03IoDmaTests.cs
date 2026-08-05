@@ -56,6 +56,48 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         Assert.Equal(Enumerable.Range(0, 256).Select(value => (byte)value), fixture.Memory.OamWrites);
     }
 
+
+    [Fact]
+    public void Dmc_fetch_uses_an_oam_read_slot_without_corrupting_the_transfer()
+    {
+        var program = new byte[]
+        {
+            0xA9, 0x0F, 0x8D, 0x10, 0x40, // fastest DMC period
+            0xA9, 0x00, 0x8D, 0x12, 0x40, // sample starts at $C000
+            0xA9, 0x01, 0x8D, 0x13, 0x40, // 17-byte sample
+            0xA9, 0x10, 0x8D, 0x15, 0x40, // enable DMC
+            0xA9, 0x02, 0x8D, 0x14, 0x40, // first OAM DMA from $0200
+            0xA9, 0x02, 0x8D, 0x14, 0x40, // second consecutive OAM DMA
+            0x00
+        };
+
+        var fixture = CreateFixture(program);
+
+        for (var index = 0; index < 256; index++)
+        {
+            fixture.Memory.Poke(0x0200 + index, (byte)(index ^ 0xA5));
+        }
+        for (var index = 0; index < 17; index++)
+        {
+            fixture.Memory.Poke(0xC000 + index, 0xFF);
+        }
+
+        // One OAM transfer can finish before the DMC's retained power-up
+        // divider phase empties its first sample buffer.  Two consecutive
+        // transfers provide a deterministic bus-ownership window without
+        // reaching into the chip or forcing its private timer state.
+        fixture.RunCpuCycles(1_500);
+
+        Assert.True(fixture.Chip.IsHalted);
+        Assert.False(fixture.Chip.DmaActive);
+        Assert.True(fixture.Chip.DmcOamDmaInterleaveCount > 0);
+        Assert.True(fixture.Chip.DmcMemoryReadCount > 1);
+        Assert.Equal(512UL, fixture.Chip.DmaTransferCount);
+
+        var expectedTransfer = Enumerable.Range(0, 256).Select(value => (byte)(value ^ 0xA5));
+        Assert.Equal(expectedTransfer.Concat(expectedTransfer), fixture.Memory.OamWrites);
+    }
+
     private static Fixture CreateFixture(byte[] program, DigitalLevel controller1 = DigitalLevel.Low)
     {
         var board = new VirtualHardwareBoard("chiptest.rp2a03.io-dma");

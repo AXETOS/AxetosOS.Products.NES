@@ -184,6 +184,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
     public ushort DmcBytesRemaining => _dmc.BytesRemaining;
     public bool DmcIrqPending => _dmc.IrqPending;
     public ulong DmcMemoryReadCount { get; private set; }
+    public ulong DmcOamDmaInterleaveCount { get; private set; }
 
     public override void PowerOn()
     {
@@ -222,6 +223,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _dmcSavedBusRead = true;
         _dmcSavedSync = false;
         DmcMemoryReadCount = 0;
+        DmcOamDmaInterleaveCount = 0;
         _previousClock = DigitalLevel.Low; _previousNmi = DigitalLevel.High;
         M2.Drive(DigitalLevel.Low);
         ControllerRead1Bar.Drive(DigitalLevel.High);
@@ -302,6 +304,18 @@ public sealed class Rp2A03 : VirtualHardwareComponent
 
         if (_dmaPending || _dmaActive)
         {
+            // The DMC and OAM engines share the package CPU bus.  A DMC
+            // sample request may take an OAM read slot, after which the same
+            // OAM source read is repeated before its paired $2004 write.
+            // Never interrupt an OAM write slot: the latched byte must reach
+            // the external bus unchanged.
+            if (_dmaActive && _dmaDummyCycles == 0 && _dmaReadPhase && _dmc.NeedsSample)
+            {
+                DmcOamDmaInterleaveCount++;
+                BeginDmcFetch();
+                return;
+            }
+
             ExecuteDmaCycle();
             return;
         }
