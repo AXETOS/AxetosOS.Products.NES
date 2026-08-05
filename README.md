@@ -610,8 +610,20 @@ The final standalone discrete-chip audit completes the SN74LS139A, SN74LS373, SN
 
 Residual limitations are restricted to analog TTL voltage thresholds, propagation-delay distributions, setup/hold metastability, SRAM cell leakage, process-dependent power-up values, and destructive operation outside rated supply conditions. These are intentionally outside the deterministic digital package-model scope.
 
-## v0.64.0 — standalone RP2A07 PAL completion sweep
+## v0.63.0 — standalone RP2A07 PAL completion sweep
 
 Adds the PAL Ricoh RP2A07 as an independent reusable package rather than a region switch inside RP2A03. The package retains the completed 6502-derived CPU, controller I/O, OAM DMA, DMC DMA arbitration, interrupt/reset sequencing, and five APU channels, while replacing the region-dependent silicon timing with the PAL clock divider, PAL frame-sequencer cadence, PAL noise periods, and PAL DMC rates. It exposes the same named electrical package interface as the RP2A03 and has no motherboard, cartridge, PPU, renderer, or host dependency.
 
 The RP2A07 and RP2A03 are deliberately separate public chip components so future NTSC and PAL motherboards can contain the correct physical package without regional branches inside a motherboard.
+
+## v0.64.0 — standalone RP2C07 PAL completion sweep
+
+Adds the PAL Ricoh RP2C07 as an independent reusable package rather than a region switch inside RP2C02. It retains the completed CPU register interface, VRAM bus, scrolling, background and sprite pipelines, palette/OAM behavior, open bus, forced blanking, vblank/status races, and open-drain NMI while replacing the regional raster and color-emphasis behavior with PAL timing: 341 dots, 312 scanlines, no NTSC odd-frame skip, and PAL red/green emphasis wiring.
+
+The RP2C07 and RP2C02 remain separate public chip packages so each motherboard can contain the correct regional silicon without motherboard-level region branches.
+
+## v0.65.0 — standalone PAL CIC family completion sweep
+
+Version 0.65.0 adds the separate `Cic3195` PAL-A and `Cic3197` PAL-B lock packages needed by the regional motherboard set. Each package retains the same sixteen-pin, pin-only electrical contract as the completed `Cic3193`, but captures its own regional identity during startup and advances an incompatible deterministic challenge/response stream. Neither package calls a motherboard, cartridge, CPU, PPU, region selector, or external authentication service.
+
+Both PAL packages include startup reset ownership, MSB-first serial transfer, sixteen-round initial authentication, continuous verification, exact eight-clock retry hold, external reset handling, power-loss state discard, and diagnostic counters. Their independent tests cover complete authentication, distinct regional streams, cross-region rejection, retry timing, external reset, and power interruption. The models remain clean-room digital package models rather than byte-for-byte reproductions of Nintendo mask-ROM programs.
