@@ -543,3 +543,8 @@ The standalone RP2C02 now performs background nametable, attribute and pattern-t
 
 ### v0.52.1
 - Corrected the standalone RP2C02 background-pipeline test fixture so the external VRAM model supplies attribute bytes across the complete `$23C0-$23FF` attribute-table range.
+
+
+## v0.53.0 — Standalone RP2C02 sprite pipeline
+
+The standalone RP2C02 now performs scanline sprite evaluation from its internal primary OAM, copies up to eight in-range entries into secondary OAM, raises sprite overflow for additional entries, and fetches sprite pattern planes exclusively through the package VRAM pins. The chip supports 8×8 and 8×16 sprite addressing, vertical and horizontal flip attributes, X counters, sprite/background priority composition, sprite palette selection, and sprite-zero-hit state. No framebuffer, motherboard, cartridge, CPU, or renderer dependency was added.

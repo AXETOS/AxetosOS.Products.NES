@@ -132,6 +132,56 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.NotEqual((ushort)0, (ushort)(fixture.Chip.PatternShiftLow | fixture.Chip.PatternShiftHigh));
     }
 
+    [Fact]
+    public void Sprite_pipeline_evaluates_fetches_and_composes_a_visible_sprite_through_vram_pins()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(3, 0x00);
+        for (var sprite = 0; sprite < 64; sprite++)
+        {
+            fixture.WriteRegister(4, sprite == 0 ? (byte)0x00 : (byte)0xF0);
+            fixture.WriteRegister(4, 0x02);
+            fixture.WriteRegister(4, sprite == 0 ? (byte)0x01 : (byte)0x00);
+            fixture.WriteRegister(4, 0x00);
+        }
+        fixture.WriteRegister(1, 0x14); // sprites enabled, including the leftmost eight pixels
+
+        var addresses = fixture.PulseClockWithVram(342, address => address switch
+        {
+            0x0020 => 0x80,
+            0x0028 => 0x00,
+            _ => 0x00
+        });
+
+        Assert.Contains((ushort)0x0020, addresses);
+        Assert.Contains((ushort)0x0028, addresses);
+        Assert.True(fixture.Chip.SpriteEvaluationCount >= 64);
+        Assert.Equal(1, fixture.Chip.EvaluatedSpriteCount);
+        Assert.Equal(2UL, fixture.Chip.SpritePatternFetchCount);
+        Assert.Equal((byte)0x15, fixture.Chip.SpritePixelIndex);
+        Assert.Equal((byte)0x15, fixture.Chip.PixelPaletteIndex);
+    }
+
+    [Fact]
+    public void Sprite_evaluation_limits_secondary_oam_to_eight_entries_and_sets_overflow()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(3, 0x00);
+        for (var sprite = 0; sprite < 64; sprite++)
+        {
+            fixture.WriteRegister(4, sprite < 9 ? (byte)0x00 : (byte)0xF0);
+            fixture.WriteRegister(4, (byte)sprite);
+            fixture.WriteRegister(4, 0x00);
+            fixture.WriteRegister(4, (byte)(sprite * 2));
+        }
+        fixture.WriteRegister(1, 0x10);
+
+        fixture.PulseClock(257);
+
+        Assert.Equal(8, fixture.Chip.EvaluatedSpriteCount);
+        Assert.True(fixture.Chip.SpriteOverflow);
+    }
+
     private sealed class Fixture
     {
         private readonly VirtualHardwareSimulator _sim;

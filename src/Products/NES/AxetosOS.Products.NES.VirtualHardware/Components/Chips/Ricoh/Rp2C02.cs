@@ -42,6 +42,14 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     private ushort _patternShiftHigh;
     private ushort _attributeShiftLow;
     private ushort _attributeShiftHigh;
+    private readonly SpriteEntry[] _secondaryOam = new SpriteEntry[8];
+    private readonly SpriteRenderUnit[] _activeSprites = new SpriteRenderUnit[8];
+    private readonly SpriteRenderUnit[] _nextSprites = new SpriteRenderUnit[8];
+    private int _secondarySpriteCount;
+    private int _activeSpriteCount;
+    private int _nextSpriteCount;
+    private int _spriteEvaluationIndex;
+    private int _spriteFetchSlot;
 
     public Rp2C02(string componentId) : base(componentId)
     {
@@ -105,6 +113,13 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     public byte NextTileAttribute => _nextTileAttribute;
     public ushort PatternShiftLow => _patternShiftLow;
     public ushort PatternShiftHigh => _patternShiftHigh;
+    public ulong SpriteEvaluationCount { get; private set; }
+    public ulong SpritePatternFetchCount { get; private set; }
+    public int EvaluatedSpriteCount => _secondarySpriteCount;
+    public bool SpriteOverflow => _spriteOverflow;
+    public bool SpriteZeroHit => _spriteZeroHit;
+    public byte SpritePixelIndex { get; private set; }
+    public byte PixelPaletteIndex { get; private set; }
 
     private bool Powered => Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
 
@@ -122,6 +137,18 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         BackgroundAttributeFetchCount = 0;
         BackgroundPatternFetchCount = 0;
         BackgroundPixelIndex = 0;
+        SpritePixelIndex = 0;
+        PixelPaletteIndex = 0;
+        SpriteEvaluationCount = 0;
+        SpritePatternFetchCount = 0;
+        _secondarySpriteCount = 0;
+        _activeSpriteCount = 0;
+        _nextSpriteCount = 0;
+        _spriteEvaluationIndex = 0;
+        _spriteFetchSlot = 0;
+        Array.Clear(_secondaryOam);
+        Array.Clear(_activeSprites);
+        Array.Clear(_nextSprites);
         _previousClock = DigitalLevel.Low;
         _cpuSelectedLast = false;
         _vblank = false;
@@ -166,6 +193,14 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _transactionPhase = 0;
         _transactionPurpose = VramTransactionPurpose.None;
         BackgroundPixelIndex = 0;
+        SpritePixelIndex = 0;
+        PixelPaletteIndex = 0;
+        _secondarySpriteCount = 0;
+        _activeSpriteCount = 0;
+        _nextSpriteCount = 0;
+        Array.Clear(_secondaryOam);
+        Array.Clear(_activeSprites);
+        Array.Clear(_nextSprites);
         _patternShiftLow = 0;
         _patternShiftHigh = 0;
         _attributeShiftLow = 0;
@@ -197,6 +232,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
             AdvanceRaster();
             AdvanceVramTransaction();
             AdvanceBackgroundPipeline();
+            AdvanceSpritePipeline();
         }
         _previousClock = clock;
 
@@ -485,6 +521,24 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                 _nextTileHigh = data;
                 BackgroundPatternFetchCount++;
                 break;
+            case VramTransactionPurpose.SpritePatternLow:
+                if (_spriteFetchSlot < _nextSpriteCount)
+                {
+                    var unit = _nextSprites[_spriteFetchSlot];
+                    unit.PatternLow = unit.HorizontalFlip ? ReverseBits(data) : data;
+                    _nextSprites[_spriteFetchSlot] = unit;
+                    SpritePatternFetchCount++;
+                }
+                break;
+            case VramTransactionPurpose.SpritePatternHigh:
+                if (_spriteFetchSlot < _nextSpriteCount)
+                {
+                    var unit = _nextSprites[_spriteFetchSlot];
+                    unit.PatternHigh = unit.HorizontalFlip ? ReverseBits(data) : data;
+                    _nextSprites[_spriteFetchSlot] = unit;
+                    SpritePatternFetchCount++;
+                }
+                break;
         }
     }
 
@@ -560,6 +614,183 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _vramAddress = (ushort)((_vramAddress & ~0x7BE0) | (_temporaryAddress & 0x7BE0));
     }
 
+
+    private bool SpriteRenderingEnabled => (_mask & 0x10) != 0;
+
+    private void AdvanceSpritePipeline()
+    {
+        if (!IsRenderingScanline())
+        {
+            SpritePixelIndex = 0;
+            PixelPaletteIndex = BackgroundPixelIndex;
+            return;
+        }
+
+        if (Dot == 1)
+        {
+            _activeSpriteCount = _nextSpriteCount;
+            Array.Copy(_nextSprites, _activeSprites, _activeSprites.Length);
+        }
+
+        if (Dot == 65)
+        {
+            _secondarySpriteCount = 0;
+            _spriteEvaluationIndex = 0;
+            Array.Clear(_secondaryOam);
+        }
+
+        if (Dot >= 65 && Dot <= 256 && ((Dot - 65) % 3) == 0 && _spriteEvaluationIndex < 64)
+        {
+            EvaluateOneSpriteForNextScanline(_spriteEvaluationIndex++);
+        }
+
+        if (Dot == 257)
+        {
+            _nextSpriteCount = _secondarySpriteCount;
+            for (var index = 0; index < _nextSpriteCount; index++)
+            {
+                var entry = _secondaryOam[index];
+                _nextSprites[index] = new SpriteRenderUnit
+                {
+                    XCounter = entry.X,
+                    Attributes = entry.Attributes,
+                    SpriteZero = entry.SpriteIndex == 0,
+                    Tile = entry.Tile,
+                    Row = entry.Row
+                };
+            }
+            for (var index = _nextSpriteCount; index < 8; index++) _nextSprites[index] = default;
+        }
+
+        if (Dot >= 257 && Dot <= 320)
+        {
+            _spriteFetchSlot = (Dot - 257) >> 3;
+            var phase = (Dot - 257) & 7;
+            if (_spriteFetchSlot < _nextSpriteCount)
+            {
+                if (phase == 4) BeginBackgroundRead(SpritePatternAddress(_nextSprites[_spriteFetchSlot], false), VramTransactionPurpose.SpritePatternLow);
+                else if (phase == 6) BeginBackgroundRead(SpritePatternAddress(_nextSprites[_spriteFetchSlot], true), VramTransactionPurpose.SpritePatternHigh);
+            }
+        }
+
+        if (Dot >= 1 && Dot <= 256)
+        {
+            UpdateSpritePixelAndComposition();
+            AdvanceActiveSpriteUnits();
+        }
+        else
+        {
+            SpritePixelIndex = 0;
+            PixelPaletteIndex = BackgroundPixelIndex;
+        }
+    }
+
+    private void EvaluateOneSpriteForNextScanline(int spriteIndex)
+    {
+        SpriteEvaluationCount++;
+        var baseAddress = spriteIndex * 4;
+        var y = _primaryOam[baseAddress];
+        var targetScanline = Scanline == PreRenderScanline ? 0 : Scanline + 1;
+        var height = (_control & 0x20) != 0 ? 16 : 8;
+        var row = targetScanline - (y + 1);
+        if (row < 0 || row >= height) return;
+
+        if (_secondarySpriteCount >= 8)
+        {
+            _spriteOverflow = true;
+            return;
+        }
+
+        var attributes = _primaryOam[baseAddress + 2];
+        if ((attributes & 0x80) != 0) row = height - 1 - row;
+        _secondaryOam[_secondarySpriteCount++] = new SpriteEntry
+        {
+            Tile = _primaryOam[baseAddress + 1],
+            Attributes = attributes,
+            X = _primaryOam[baseAddress + 3],
+            Row = (byte)row,
+            SpriteIndex = (byte)spriteIndex
+        };
+    }
+
+    private ushort SpritePatternAddress(SpriteRenderUnit sprite, bool highPlane)
+    {
+        if ((_control & 0x20) == 0)
+        {
+            var table = (_control & 0x08) != 0 ? 0x1000 : 0;
+            return (ushort)(table | (sprite.Tile << 4) | sprite.Row | (highPlane ? 8 : 0));
+        }
+
+        var tableBase = (sprite.Tile & 1) << 12;
+        var tile = sprite.Tile & 0xFE;
+        var row = sprite.Row;
+        if (row >= 8)
+        {
+            tile++;
+            row -= 8;
+        }
+        return (ushort)(tableBase | (tile << 4) | row | (highPlane ? 8 : 0));
+    }
+
+    private void UpdateSpritePixelAndComposition()
+    {
+        byte spritePattern = 0;
+        byte spritePalette = 0;
+        bool spriteBehindBackground = false;
+        bool spriteZero = false;
+
+        if (SpriteRenderingEnabled && (Dot > 8 || (_mask & 0x04) != 0))
+        {
+            for (var index = 0; index < _activeSpriteCount; index++)
+            {
+                var sprite = _activeSprites[index];
+                if (sprite.XCounter != 0) continue;
+                var pattern = (byte)(((sprite.PatternLow & 0x80) != 0 ? 1 : 0)
+                    | ((sprite.PatternHigh & 0x80) != 0 ? 2 : 0));
+                if (pattern == 0) continue;
+                spritePattern = pattern;
+                spritePalette = (byte)(sprite.Attributes & 3);
+                spriteBehindBackground = (sprite.Attributes & 0x20) != 0;
+                spriteZero = sprite.SpriteZero;
+                break;
+            }
+        }
+
+        var background = BackgroundPixelIndex;
+        if (Dot <= 8 && (_mask & 0x02) == 0) background = 0;
+        var backgroundOpaque = (background & 3) != 0;
+        var spriteOpaque = spritePattern != 0;
+        SpritePixelIndex = spriteOpaque ? (byte)(0x10 | (spritePalette << 2) | spritePattern) : (byte)0;
+
+        if (spriteZero && spriteOpaque && backgroundOpaque && Dot < 256) _spriteZeroHit = true;
+
+        if (!spriteOpaque) PixelPaletteIndex = background;
+        else if (!backgroundOpaque || !spriteBehindBackground) PixelPaletteIndex = SpritePixelIndex;
+        else PixelPaletteIndex = background;
+    }
+
+    private void AdvanceActiveSpriteUnits()
+    {
+        for (var index = 0; index < _activeSpriteCount; index++)
+        {
+            var sprite = _activeSprites[index];
+            if (sprite.XCounter > 0) sprite.XCounter--;
+            else
+            {
+                sprite.PatternLow <<= 1;
+                sprite.PatternHigh <<= 1;
+            }
+            _activeSprites[index] = sprite;
+        }
+    }
+
+    private static byte ReverseBits(byte value)
+    {
+        value = (byte)(((value & 0x55) << 1) | ((value >> 1) & 0x55));
+        value = (byte)(((value & 0x33) << 2) | ((value >> 2) & 0x33));
+        return (byte)((value << 4) | (value >> 4));
+    }
+
     private void DriveVramBus()
     {
         Extension.Release();
@@ -633,6 +864,29 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         BackgroundNametable,
         BackgroundAttribute,
         BackgroundPatternLow,
-        BackgroundPatternHigh
+        BackgroundPatternHigh,
+        SpritePatternLow,
+        SpritePatternHigh
+    }
+
+    private struct SpriteEntry
+    {
+        public byte Tile;
+        public byte Attributes;
+        public byte X;
+        public byte Row;
+        public byte SpriteIndex;
+    }
+
+    private struct SpriteRenderUnit
+    {
+        public byte Tile;
+        public byte Attributes;
+        public byte XCounter;
+        public byte Row;
+        public byte PatternLow;
+        public byte PatternHigh;
+        public bool SpriteZero;
+        public bool HorizontalFlip => (Attributes & 0x40) != 0;
     }
 }
