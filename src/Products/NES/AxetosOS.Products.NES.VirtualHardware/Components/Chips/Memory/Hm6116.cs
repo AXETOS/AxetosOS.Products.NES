@@ -9,6 +9,8 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Memory;
 public sealed class Hm6116 : VirtualHardwareComponent
 {
     private readonly byte[] _memory = new byte[2048];
+    private readonly byte[] _knownMasks = new byte[2048];
+    private bool _wasPowered;
 
     public Hm6116(string componentId) : base(componentId)
     {
@@ -34,15 +36,42 @@ public sealed class Hm6116 : VirtualHardwareComponent
     public DigitalBus Address { get; }
     public DigitalBus Data { get; }
 
-    public override void PowerOn() => Data.Release();
-
-    public override void Reset() => Data.Release();
+    public override void PowerOn()
+    {
+        Array.Clear(_memory);
+        Array.Clear(_knownMasks);
+        _wasPowered = false;
+        Data.Release();
+    }
 
     public override void Evaluate()
     {
-        if (!IsPowered() || ChipSelectBar.SampledLevel != DigitalLevel.Low)
+        var powered = IsPowered();
+        if (!powered)
+        {
+            _wasPowered = false;
+            Data.Release();
+            return;
+        }
+
+        if (!_wasPowered)
+        {
+            // SRAM data is not retained without package power. Keep a
+            // deterministic value array but mark every bit electrically unknown.
+            Array.Clear(_memory);
+            Array.Clear(_knownMasks);
+            _wasPowered = true;
+        }
+
+        if (ChipSelectBar.SampledLevel == DigitalLevel.High)
         {
             Data.Release();
+            return;
+        }
+
+        if (ChipSelectBar.SampledLevel != DigitalLevel.Low)
+        {
+            DriveIndeterminateSelection();
             return;
         }
 
@@ -54,36 +83,133 @@ public sealed class Hm6116 : VirtualHardwareComponent
 
         var address = (int)(rawAddress & 0x07FF);
 
-        if (WriteEnableBar.SampledLevel == DigitalLevel.Low)
+        switch (WriteEnableBar.SampledLevel)
         {
-            Data.Release();
-            if (Data.TrySample(out var value))
-            {
-                _memory[address] = (byte)value;
-            }
-
-            return;
+            case DigitalLevel.Low:
+                Data.Release();
+                CaptureWrite(address);
+                return;
+            case DigitalLevel.High:
+                EvaluateRead(address);
+                return;
+            default:
+                // An uncertain /WE while selected may write an arbitrary value.
+                _knownMasks[address] = 0;
+                Data.Release();
+                return;
         }
-
-        if (WriteEnableBar.SampledLevel == DigitalLevel.High &&
-            OutputEnableBar.SampledLevel == DigitalLevel.Low)
-        {
-            Data.Drive(_memory[address]);
-            return;
-        }
-
-        Data.Release();
     }
 
     /// <summary>Test/inspection access only; not an electrical communication path.</summary>
     public byte Inspect(int address)
     {
-        if ((uint)address >= _memory.Length)
+        ValidateAddress(address);
+        return _memory[address];
+    }
+
+    /// <summary>Returns which inspected bits have a determinate stored value.</summary>
+    public byte InspectKnownMask(int address)
+    {
+        ValidateAddress(address);
+        return _knownMasks[address];
+    }
+
+    public bool TryInspect(int address, out byte value)
+    {
+        ValidateAddress(address);
+        value = _memory[address];
+        return _knownMasks[address] == byte.MaxValue;
+    }
+
+    private void CaptureWrite(int address)
+    {
+        var value = _memory[address];
+        var knownMask = _knownMasks[address];
+
+        for (var bit = 0; bit < Data.Width; bit++)
+        {
+            var mask = (byte)(1 << bit);
+            switch (Data.Pins[bit].SampledLevel)
+            {
+                case DigitalLevel.Low:
+                    value &= (byte)~mask;
+                    knownMask |= mask;
+                    break;
+                case DigitalLevel.High:
+                    value |= mask;
+                    knownMask |= mask;
+                    break;
+                default:
+                    knownMask &= (byte)~mask;
+                    break;
+            }
+        }
+
+        _memory[address] = value;
+        _knownMasks[address] = knownMask;
+    }
+
+    private void EvaluateRead(int address)
+    {
+        switch (OutputEnableBar.SampledLevel)
+        {
+            case DigitalLevel.Low:
+                DriveStoredValue(address);
+                break;
+            case DigitalLevel.High:
+                Data.Release();
+                break;
+            default:
+                DriveUnknownData();
+                break;
+        }
+    }
+
+    private void DriveStoredValue(int address)
+    {
+        var value = _memory[address];
+        var knownMask = _knownMasks[address];
+        for (var bit = 0; bit < Data.Width; bit++)
+        {
+            var mask = 1 << bit;
+            if ((knownMask & mask) == 0)
+            {
+                Data.Pins[bit].Drive(DigitalLevel.Unknown);
+            }
+            else
+            {
+                Data.Pins[bit].Drive((value & mask) == 0 ? DigitalLevel.Low : DigitalLevel.High);
+            }
+        }
+    }
+
+    private void DriveIndeterminateSelection()
+    {
+        if (WriteEnableBar.SampledLevel == DigitalLevel.High &&
+            OutputEnableBar.SampledLevel != DigitalLevel.High)
+        {
+            DriveUnknownData();
+        }
+        else
+        {
+            Data.Release();
+        }
+    }
+
+    private void DriveUnknownData()
+    {
+        foreach (var pin in Data.Pins)
+        {
+            pin.Drive(DigitalLevel.Unknown);
+        }
+    }
+
+    private static void ValidateAddress(int address)
+    {
+        if ((uint)address >= 2048)
         {
             throw new ArgumentOutOfRangeException(nameof(address));
         }
-
-        return _memory[address];
     }
 
     private bool IsPowered() =>

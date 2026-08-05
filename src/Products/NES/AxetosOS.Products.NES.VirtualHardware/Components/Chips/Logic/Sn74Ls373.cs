@@ -4,11 +4,14 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 
 /// <summary>
 /// Standalone SN74LS373 octal transparent D-type latch with active-low
-/// three-state output enable.
+/// three-state output enable. Storage and output behavior are determined only
+/// by package power and pin levels.
 /// </summary>
 public sealed class Sn74Ls373 : VirtualHardwareComponent
 {
     private byte _latchedValue;
+    private byte _latchedKnownMask;
+    private bool _wasPowered;
 
     public Sn74Ls373(string componentId) : base(componentId)
     {
@@ -32,38 +35,102 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent
     public DigitalBus D { get; }
     public DigitalBus Q { get; }
     public byte LatchedValue => _latchedValue;
+    public byte LatchedKnownMask => _latchedKnownMask;
+    public bool IsLatchedValueKnown => _latchedKnownMask == byte.MaxValue;
 
-    public override void PowerOn() => _latchedValue = 0;
-
-    public override void Reset() => _latchedValue = 0;
+    public override void PowerOn()
+    {
+        _latchedValue = 0;
+        _latchedKnownMask = 0;
+        _wasPowered = false;
+        Q.Release();
+    }
 
     public override void Evaluate()
     {
-        if (!IsPowered())
+        var powered = IsPowered();
+        if (!powered)
         {
+            _wasPowered = false;
             Q.Release();
             return;
         }
 
-        if (LatchEnable.SampledLevel == DigitalLevel.High && D.TrySample(out var data))
+        if (!_wasPowered)
         {
-            _latchedValue = (byte)data;
+            // A real unclocked latch has no guaranteed power-up contents.
+            _latchedValue = 0;
+            _latchedKnownMask = 0;
+            _wasPowered = true;
+        }
+
+        if (LatchEnable.SampledLevel == DigitalLevel.High)
+        {
+            CaptureInputs();
+        }
+        else if (LatchEnable.SampledLevel is not DigitalLevel.Low)
+        {
+            // An indeterminate LE can change any storage node.
+            _latchedKnownMask = 0;
         }
 
         switch (OutputEnableBar.SampledLevel)
         {
             case DigitalLevel.Low:
-                Q.Drive(_latchedValue);
+                DriveLatchedValue();
                 break;
             case DigitalLevel.High:
                 Q.Release();
                 break;
             default:
-                foreach (var pin in Q.Pins)
-                {
-                    pin.Drive(DigitalLevel.Unknown);
-                }
+                DriveUnknownOutputs();
                 break;
+        }
+    }
+
+    private void CaptureInputs()
+    {
+        for (var bit = 0; bit < D.Width; bit++)
+        {
+            var mask = (byte)(1 << bit);
+            switch (D.Pins[bit].SampledLevel)
+            {
+                case DigitalLevel.Low:
+                    _latchedValue &= (byte)~mask;
+                    _latchedKnownMask |= mask;
+                    break;
+                case DigitalLevel.High:
+                    _latchedValue |= mask;
+                    _latchedKnownMask |= mask;
+                    break;
+                default:
+                    _latchedKnownMask &= (byte)~mask;
+                    break;
+            }
+        }
+    }
+
+    private void DriveLatchedValue()
+    {
+        for (var bit = 0; bit < Q.Width; bit++)
+        {
+            var mask = 1 << bit;
+            if ((_latchedKnownMask & mask) == 0)
+            {
+                Q.Pins[bit].Drive(DigitalLevel.Unknown);
+            }
+            else
+            {
+                Q.Pins[bit].Drive((_latchedValue & mask) == 0 ? DigitalLevel.Low : DigitalLevel.High);
+            }
+        }
+    }
+
+    private void DriveUnknownOutputs()
+    {
+        foreach (var pin in Q.Pins)
+        {
+            pin.Drive(DigitalLevel.Unknown);
         }
     }
 
