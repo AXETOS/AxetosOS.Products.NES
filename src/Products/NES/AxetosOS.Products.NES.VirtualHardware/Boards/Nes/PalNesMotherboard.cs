@@ -28,6 +28,9 @@ public sealed class PalNesMotherboard
     public const long MasterClockHertz = 26_601_712;
     public const long CicClockHertz = 4_000_000;
 
+    private CompiledClockExecutionPlan _masterExecutionPlan = null!;
+    private CompiledClockExecutionPlan _cicExecutionPlan = null!;
+
     public PalNesMotherboard(PalCicVariant cicVariant = PalCicVariant.PalA3195)
     {
         CicVariant = cicVariant;
@@ -69,6 +72,8 @@ public sealed class PalNesMotherboard
         WireCicAndResetChain();
 
         Simulator = new VirtualHardwareSimulator(Board);
+        _masterExecutionPlan = new CompiledClockExecutionPlan(MasterClock, Simulator);
+        _cicExecutionPlan = new CompiledClockExecutionPlan(CicClock, Simulator);
     }
 
     public VirtualHardwareBoard Board { get; }
@@ -133,37 +138,13 @@ public sealed class PalNesMotherboard
         Simulator.Settle();
     }
 
-    public void AdvanceMasterHalfCycle()
-    {
-        MasterClock.AdvanceHalfCycle();
-        Simulator.Settle();
-    }
+    public void AdvanceMasterHalfCycle() => _masterExecutionPlan.AdvanceHalfCycle();
 
-    public void AdvanceCicHalfCycle()
-    {
-        CicClock.AdvanceHalfCycle();
-        Simulator.Settle();
-    }
+    public void AdvanceCicHalfCycle() => _cicExecutionPlan.AdvanceHalfCycle();
 
-    public void AdvanceCicCycles(int cycles)
-    {
-        if (cycles < 0) throw new ArgumentOutOfRangeException(nameof(cycles));
-        for (var cycle = 0; cycle < cycles; cycle++)
-        {
-            AdvanceCicHalfCycle();
-            AdvanceCicHalfCycle();
-        }
-    }
+    public void AdvanceCicCycles(int cycles) => _cicExecutionPlan.AdvanceCycles(cycles);
 
-    public void AdvanceMasterCycles(int cycles)
-    {
-        if (cycles < 0) throw new ArgumentOutOfRangeException(nameof(cycles));
-        for (var cycle = 0; cycle < cycles; cycle++)
-        {
-            AdvanceMasterHalfCycle();
-            AdvanceMasterHalfCycle();
-        }
-    }
+    public void AdvanceMasterCycles(int cycles) => _masterExecutionPlan.AdvanceCycles(cycles);
 
     private void TiePackagePower()
     {

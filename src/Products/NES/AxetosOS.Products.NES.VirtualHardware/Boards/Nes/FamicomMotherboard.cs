@@ -20,6 +20,8 @@ public sealed class FamicomMotherboard
 {
     public const long MasterClockHertz = 21_477_272;
 
+    private CompiledClockExecutionPlan _executionPlan = null!;
+
     public FamicomMotherboard()
     {
         Board = new VirtualHardwareBoard("famicom.mainboard");
@@ -48,6 +50,7 @@ public sealed class FamicomMotherboard
         WireInterruptsAndIo();
 
         Simulator = new VirtualHardwareSimulator(Board);
+        _executionPlan = new CompiledClockExecutionPlan(MasterClock, Simulator);
     }
 
     public VirtualHardwareBoard Board { get; }
@@ -101,21 +104,12 @@ public sealed class FamicomMotherboard
         Simulator.Settle();
     }
 
-    public void AdvanceMasterHalfCycle()
-    {
-        MasterClock.AdvanceHalfCycle();
-        Simulator.Settle();
-    }
+    public void AdvanceMasterHalfCycle() => _executionPlan.AdvanceHalfCycle();
 
-    public void AdvanceMasterCycles(int cycles)
-    {
-        if (cycles < 0) throw new ArgumentOutOfRangeException(nameof(cycles));
-        for (var cycle = 0; cycle < cycles; cycle++)
-        {
-            AdvanceMasterHalfCycle();
-            AdvanceMasterHalfCycle();
-        }
-    }
+    public void AdvanceMasterCycles(int cycles) => _executionPlan.AdvanceCycles(cycles);
+
+    public void AdvanceMasterCycles(int cycles, Action afterCycle) =>
+        _executionPlan.AdvanceCycles(cycles, afterCycle);
 
     private void TiePackagePower()
     {

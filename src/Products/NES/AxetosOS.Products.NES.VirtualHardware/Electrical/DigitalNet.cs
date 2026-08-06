@@ -12,8 +12,6 @@ public sealed class DigitalNet
     private readonly List<DigitalPin> _pins = [];
     private DigitalPin[] _resolvedPins = [];
     private DigitalPin[] _driverPins = [];
-    private ObserverGroup[] _observerGroups = [];
-    private DigitalPin[] _passivePins = [];
     private bool _pinSnapshotDirty = true;
     private NetResolverKind _resolverKind;
 
@@ -72,6 +70,7 @@ public sealed class DigitalNet
         IsDirty = false;
         if (_pinSnapshotDirty) CompileTopology();
 
+        var pins = _resolvedPins;
         var resolved = _resolverKind switch
         {
             NetResolverKind.Floating => DigitalLevel.Unknown,
@@ -91,51 +90,12 @@ public sealed class DigitalNet
         }
 
         Level = resolved;
-        PropagateCompiledFanOut(resolved);
+        for (var index = 0; index < pins.Length; index++)
+        {
+            pins[index].SetSampledLevel(resolved);
+        }
+
         return resolved;
-    }
-
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void PropagateCompiledFanOut(DigitalLevel resolved)
-    {
-        // Pins without an owning package still retain the exact sampled state.
-        var passivePins = _passivePins;
-        for (var index = 0; index < passivePins.Length; index++)
-        {
-            passivePins[index].ApplySampledLevel(resolved);
-        }
-
-        // A net may connect several input pins on the same package. The generic
-        // pin path would attempt to queue that package once per changed pin. The
-        // compiled fan-out updates every physical pin but performs one causal
-        // wake decision for the package after all of its pins have sampled the
-        // new electrical level.
-        var groups = _observerGroups;
-        for (var groupIndex = 0; groupIndex < groups.Length; groupIndex++)
-        {
-            ref readonly var group = ref groups[groupIndex];
-            var pins = group.Pins;
-            var wake = false;
-            for (var pinIndex = 0; pinIndex < pins.Length; pinIndex++)
-            {
-                var pin = pins[pinIndex];
-                if (!pin.ApplySampledLevel(resolved) || !pin.WakeOwnerOnSampleChange)
-                {
-                    continue;
-                }
-
-                if (!pin.HandlesSampleChangeWithoutQueue(resolved))
-                {
-                    wake = true;
-                }
-            }
-
-            if (wake)
-            {
-                Scheduler?.NotifyComponentActive(group.OwnerComponentIndex);
-            }
-        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -206,8 +166,6 @@ public sealed class DigitalNet
                         : DigitalLevel.Low;
     }
 
-    internal void InvalidateCompiledTopology() => _pinSnapshotDirty = true;
-
     internal void CompileTopology()
     {
         if (!_pinSnapshotDirty) return;
@@ -232,34 +190,8 @@ public sealed class DigitalNet
             1 => NetResolverKind.SingleDriver,
             _ => NetResolverKind.MultipleDrivers
         };
-
-        var grouped = new Dictionary<int, List<DigitalPin>>();
-        var passive = new List<DigitalPin>();
-        for (var index = 0; index < _resolvedPins.Length; index++)
-        {
-            var pin = _resolvedPins[index];
-            if (pin.OwnerComponentIndex < 0)
-            {
-                passive.Add(pin);
-                continue;
-            }
-
-            if (!grouped.TryGetValue(pin.OwnerComponentIndex, out var ownerPins))
-            {
-                ownerPins = [];
-                grouped.Add(pin.OwnerComponentIndex, ownerPins);
-            }
-            ownerPins.Add(pin);
-        }
-
-        _passivePins = passive.ToArray();
-        _observerGroups = grouped
-            .Select(static pair => new ObserverGroup(pair.Key, pair.Value.ToArray()))
-            .ToArray();
         _pinSnapshotDirty = false;
     }
-
-    private readonly record struct ObserverGroup(int OwnerComponentIndex, DigitalPin[] Pins);
 
     private enum NetResolverKind : byte
     {

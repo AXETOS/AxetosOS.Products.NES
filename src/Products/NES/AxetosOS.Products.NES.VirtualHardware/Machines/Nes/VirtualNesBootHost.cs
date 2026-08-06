@@ -165,13 +165,11 @@ public sealed class VirtualNesBootHost
         var cpu = _activeCpu!;
         var ppu = _activePpu!;
         var cartridge = _activeCartridge;
-        for (var index = 0; index < cycles; index++)
+        board.AdvanceMasterCycles(cycles, () =>
         {
-            board.AdvanceMasterHalfCycle();
-            board.AdvanceMasterHalfCycle();
             _masterCycles++;
             ObserveSelectedHardware(cpu, ppu, cartridge);
-        }
+        });
     }
 
     private void AdvanceNtsc(int cycles)
@@ -180,13 +178,11 @@ public sealed class VirtualNesBootHost
         var cpu = _activeCpu!;
         var ppu = _activePpu!;
         var cartridge = _activeCartridge;
-        for (var index = 0; index < cycles; index++)
+        board.AdvanceMasterCycles(cycles, () =>
         {
-            board.AdvanceMasterHalfCycle();
-            board.AdvanceMasterHalfCycle();
             _masterCycles++;
             ObserveSelectedHardware(cpu, ppu, cartridge);
-        }
+        });
     }
 
     public VirtualNesBootDiagnostics RunUntil(

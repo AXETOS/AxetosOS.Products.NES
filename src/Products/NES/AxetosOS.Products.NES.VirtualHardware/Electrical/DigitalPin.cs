@@ -64,47 +64,35 @@ public sealed class DigitalPin
 
     internal void SetSampledLevel(DigitalLevel level)
     {
-        if (!ApplySampledLevel(level) || !WakeOwnerOnSampleChange)
+        if (_sampledLevel == level)
         {
             return;
         }
 
-        if (HandlesSampleChangeWithoutQueue(level))
+        _sampledLevel = level;
+        Revision++;
+
+        // The topology compiler binds each physical pin directly to the
+        // applicable package contracts. This keeps the pin-driven model while
+        // removing component-array lookup and repeated interface discovery
+        // from every resolved electrical transition.
+        if (!WakeOwnerOnSampleChange)
+        {
+            return;
+        }
+
+        var clockEdgeOwner = ClockEdgeOwner;
+        if (clockEdgeOwner is not null && clockEdgeOwner.TryHandleClockSample(this, level))
+        {
+            return;
+        }
+
+        var selectiveInputOwner = SelectiveInputOwner;
+        if (selectiveInputOwner is not null && !selectiveInputOwner.ShouldWakeForSampledPin(this))
         {
             return;
         }
 
         Scheduler?.NotifyComponentActive(OwnerComponentIndex);
-    }
-
-    /// <summary>
-    /// Applies the electrical observation without scheduling the owner. Compiled
-    /// net fan-out uses this to update every physical pin first and then wake each
-    /// affected package at most once.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool ApplySampledLevel(DigitalLevel level)
-    {
-        if (_sampledLevel == level)
-        {
-            return false;
-        }
-
-        _sampledLevel = level;
-        Revision++;
-        return true;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool HandlesSampleChangeWithoutQueue(DigitalLevel level)
-    {
-        var clockEdgeOwner = ClockEdgeOwner;
-        if (clockEdgeOwner is not null && clockEdgeOwner.TryHandleClockSample(this, level))
-        {
-            return true;
-        }
-
-        var selectiveInputOwner = SelectiveInputOwner;
-        return selectiveInputOwner is not null && !selectiveInputOwner.ShouldWakeForSampledPin(this);
     }
 }

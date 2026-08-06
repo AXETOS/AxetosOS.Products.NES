@@ -21,6 +21,8 @@ public sealed class NtscNesMotherboard
     public const long MasterClockHertz = 21_477_272;
     public const long CicClockHertz = 4_000_000;
 
+    private CompiledClockExecutionPlan _executionPlan = null!;
+
     public NtscNesMotherboard()
     {
         Board = new VirtualHardwareBoard("nes.ntsc.mainboard");
@@ -54,6 +56,7 @@ public sealed class NtscNesMotherboard
         WireCicAndResetChain();
 
         Simulator = new VirtualHardwareSimulator(Board);
+        _executionPlan = new CompiledClockExecutionPlan(MasterClock, Simulator);
     }
 
     public VirtualHardwareBoard Board { get; }
@@ -115,11 +118,7 @@ public sealed class NtscNesMotherboard
         Simulator.Settle();
     }
 
-    public void AdvanceMasterHalfCycle()
-    {
-        MasterClock.AdvanceHalfCycle();
-        Simulator.Settle();
-    }
+    public void AdvanceMasterHalfCycle() => _executionPlan.AdvanceHalfCycle();
 
     public void AdvanceCicHalfCycle()
     {
@@ -137,15 +136,10 @@ public sealed class NtscNesMotherboard
         }
     }
 
-    public void AdvanceMasterCycles(int cycles)
-    {
-        if (cycles < 0) throw new ArgumentOutOfRangeException(nameof(cycles));
-        for (var cycle = 0; cycle < cycles; cycle++)
-        {
-            AdvanceMasterHalfCycle();
-            AdvanceMasterHalfCycle();
-        }
-    }
+    public void AdvanceMasterCycles(int cycles) => _executionPlan.AdvanceCycles(cycles);
+
+    public void AdvanceMasterCycles(int cycles, Action afterCycle) =>
+        _executionPlan.AdvanceCycles(cycles, afterCycle);
 
     private void TiePackagePower()
     {

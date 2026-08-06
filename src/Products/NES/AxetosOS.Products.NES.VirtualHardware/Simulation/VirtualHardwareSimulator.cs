@@ -37,6 +37,7 @@ public sealed class VirtualHardwareSimulator
     private IEventDrivenVirtualHardwareComponent?[] _eventDrivenComponents;
     private int _knownNetCount;
     private int _knownComponentCount;
+    private ulong _knownTopologyRevision;
 
     private bool[] _componentQueued;
     private int[] _componentQueue;
@@ -80,6 +81,7 @@ public sealed class VirtualHardwareSimulator
         _profileComponentTicks = new long[_components.Length];
         _knownNetCount = _nets.Length;
         _knownComponentCount = _components.Length;
+        _knownTopologyRevision = Board.TopologyRevision;
         CompileTopology();
         QueueAllComponents();
     }
@@ -153,6 +155,28 @@ public sealed class VirtualHardwareSimulator
             ? SettleCompatibilityProfiled(maximumPropagationPasses)
             : SettleCompatibility(maximumPropagationPasses);
     }
+
+    /// <summary>
+    /// Executes settlement for a motherboard-owned compiled plan. The plan
+    /// validates topology once per batch, so individual clock phases avoid
+    /// repeating public argument and topology-discovery work.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal int SettleCompiled(int maximumPropagationPasses = 64)
+    {
+        if (_strictEventDrivenTopology)
+        {
+            return _profilingEnabled
+                ? SettleStrictProfiled(maximumPropagationPasses)
+                : SettleStrict(maximumPropagationPasses);
+        }
+
+        return _profilingEnabled
+            ? SettleCompatibilityProfiled(maximumPropagationPasses)
+            : SettleCompatibility(maximumPropagationPasses);
+    }
+
+    internal void EnsureCompiledTopologyCurrent() => RefreshTopologyIfNeeded();
 
     private int SettleStrict(int maximumEvents)
     {
@@ -349,8 +373,15 @@ public sealed class VirtualHardwareSimulator
 
     private void CompileTopology()
     {
-        // Bind package ownership and execution contracts before compiling net
-        // fan-out. Net regions depend on the stable owner indexes assigned here.
+        for (var netIndex = 0; netIndex < _nets.Length; netIndex++)
+        {
+            var net = _nets[netIndex];
+            net.CompileTopology();
+            net.SchedulerIndex = netIndex;
+            net.Scheduler = this;
+            if (net.IsDirty) NotifyNetDirty(netIndex);
+        }
+
         for (var componentIndex = 0; componentIndex < _components.Length; componentIndex++)
         {
             var component = _components[componentIndex];
@@ -367,16 +398,6 @@ public sealed class VirtualHardwareSimulator
                 pin.SelectiveInputOwner = selectiveInputOwner;
                 pin.WakeOwnerOnSampleChange = pin.Direction != PinDirection.Output;
             }
-        }
-
-        for (var netIndex = 0; netIndex < _nets.Length; netIndex++)
-        {
-            var net = _nets[netIndex];
-            net.InvalidateCompiledTopology();
-            net.CompileTopology();
-            net.SchedulerIndex = netIndex;
-            net.Scheduler = this;
-            if (net.IsDirty) NotifyNetDirty(netIndex);
         }
     }
 
@@ -447,12 +468,18 @@ public sealed class VirtualHardwareSimulator
 
     private void RefreshTopologyIfNeeded()
     {
-        if (_knownNetCount == Board.Nets.Count && _knownComponentCount == Board.Components.Count) return;
+        if (_knownTopologyRevision == Board.TopologyRevision &&
+            _knownNetCount == Board.Nets.Count &&
+            _knownComponentCount == Board.Components.Count)
+        {
+            return;
+        }
 
         _nets = Board.Nets.ToArray();
         _components = Board.Components.ToArray();
         _knownNetCount = _nets.Length;
         _knownComponentCount = _components.Length;
+        _knownTopologyRevision = Board.TopologyRevision;
 
         _eventDrivenComponents = new IEventDrivenVirtualHardwareComponent?[_components.Length];
         _componentQueued = new bool[_components.Length];

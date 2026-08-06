@@ -21,6 +21,7 @@ public sealed class VirtualHardwareBoard
     public string BoardId { get; }
     public IReadOnlyList<IVirtualHardwareComponent> Components => _components;
     public IReadOnlyList<DigitalNet> Nets => _nets;
+    public ulong TopologyRevision { get; private set; }
 
     public T Add<T>(T component) where T : IVirtualHardwareComponent
     {
@@ -31,6 +32,7 @@ public sealed class VirtualHardwareBoard
         }
 
         _components.Add(component);
+        TopologyRevision++;
         return component;
     }
 
@@ -43,6 +45,7 @@ public sealed class VirtualHardwareBoard
 
         var net = new DigitalNet(name);
         _nets.Add(net);
+        TopologyRevision++;
         return net;
     }
 
@@ -55,9 +58,15 @@ public sealed class VirtualHardwareBoard
         }
 
         var net = _nets.FirstOrDefault(existing => existing.Name == netName) ?? AddNet(netName);
+        var previousPinCount = net.Pins.Count;
         foreach (var pin in pins)
         {
             net.Connect(pin);
+        }
+
+        if (net.Pins.Count != previousPinCount)
+        {
+            TopologyRevision++;
         }
 
         return net;
