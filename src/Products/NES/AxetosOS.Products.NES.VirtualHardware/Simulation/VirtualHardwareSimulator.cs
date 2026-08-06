@@ -36,6 +36,7 @@ public sealed class VirtualHardwareSimulator
     private IVirtualHardwareComponent[] _components;
     private IEventDrivenVirtualHardwareComponent?[] _eventDrivenComponents;
     private ICompiledInputDrivenVirtualHardwareComponent?[] _compiledInputComponents;
+    private bool[] _directRouteEligibleComponents;
     private ulong[] _componentChangedInputMasks;
     private int _knownNetCount;
     private int _knownComponentCount;
@@ -52,6 +53,22 @@ public sealed class VirtualHardwareSimulator
     private int _netQueueHead;
     private int _netQueueTail;
     private int _netQueueCount;
+
+    // Direct motherboard signal-chain queues. These are used only when the
+    // global kernel has reached a single causal branch. Output nets and their
+    // downstream packages then remain inside one compiled routing loop instead
+    // of being returned to the global queues between every chip and wire.
+    private bool _directRouting;
+    private bool[] _directComponentQueued;
+    private int[] _directComponentQueue;
+    private int _directComponentQueueHead;
+    private int _directComponentQueueTail;
+    private int _directComponentQueueCount;
+    private bool[] _directNetQueued;
+    private int[] _directNetQueue;
+    private int _directNetQueueHead;
+    private int _directNetQueueTail;
+    private int _directNetQueueCount;
 
     private int[] _continuouslyPolledComponents;
     private bool _strictEventDrivenTopology;
@@ -73,11 +90,16 @@ public sealed class VirtualHardwareSimulator
         _components = Board.Components.ToArray();
         _eventDrivenComponents = new IEventDrivenVirtualHardwareComponent?[_components.Length];
         _compiledInputComponents = new ICompiledInputDrivenVirtualHardwareComponent?[_components.Length];
+        _directRouteEligibleComponents = new bool[_components.Length];
         _componentChangedInputMasks = new ulong[_components.Length];
         _componentQueued = new bool[_components.Length];
         _componentQueue = new int[Math.Max(1, _components.Length)];
         _netQueued = new bool[_nets.Length];
         _netQueue = new int[Math.Max(1, _nets.Length)];
+        _directComponentQueued = new bool[_components.Length];
+        _directComponentQueue = new int[Math.Max(1, _components.Length)];
+        _directNetQueued = new bool[_nets.Length];
+        _directNetQueue = new int[Math.Max(1, _nets.Length)];
         _continuouslyPolledComponents = FindContinuouslyPolledComponents();
         _strictEventDrivenTopology = _continuouslyPolledComponents.Length == 0;
         _profileComponentEvaluations = new ulong[_components.Length];
@@ -92,6 +114,7 @@ public sealed class VirtualHardwareSimulator
 
     public VirtualHardwareBoard Board { get; }
     public ulong SettleCount { get; private set; }
+    public ulong DirectSignalChainCount { get; private set; }
     public bool ProfilingEnabled => _profilingEnabled;
     public bool UsesStrictEventKernel => _strictEventDrivenTopology;
     public IReadOnlyList<string> LegacyPollingComponents =>
@@ -286,11 +309,12 @@ public sealed class VirtualHardwareSimulator
     private int DrainStrictEventQueue(int maximumEvents, bool profile)
     {
         var events = 0;
+        var eventLimit = maximumEvents * 32;
         while (_netQueueCount != 0 || _componentQueueCount != 0)
         {
-            if (++events > maximumEvents * 32)
+            if (++events > eventLimit)
             {
-                ThrowDidNotSettle(maximumEvents * 32, "queued events");
+                ThrowDidNotSettle(eventLimit, "queued events");
             }
 
             // Electrical changes always settle before the next package runs.
@@ -310,10 +334,79 @@ public sealed class VirtualHardwareSimulator
                 continue;
             }
 
-            EvaluateOneActiveComponent(profile);
+            var index = DequeueComponent();
+            _componentQueued[index] = false;
+
+            // Direct causal-chain execution remains disabled until it can
+            // preserve every CPU/RAM bus phase across complete motherboard
+            // workloads. Always use the validated strict global ordering.
+            EvaluateComponent(index, profile);
+            var eventDriven = _eventDrivenComponents[index];
+            if (eventDriven is not null && eventDriven.HasPendingInternalWork)
+            {
+                QueueComponent(index);
+            }
         }
 
         return events;
+    }
+
+    private int DrainDirectSignalChain(int firstComponentIndex, bool profile, int remainingEventLimit)
+    {
+        _directRouting = true;
+        DirectSignalChainCount++;
+        var events = 0;
+        try
+        {
+            QueueDirectComponent(firstComponentIndex);
+
+            while (_directNetQueueCount != 0 || _directComponentQueueCount != 0)
+            {
+                if (++events > remainingEventLimit)
+                {
+                    ThrowDidNotSettle(remainingEventLimit, "direct routed events");
+                }
+
+                if (_directNetQueueCount != 0)
+                {
+                    var netIndex = DequeueDirectNet();
+                    _directNetQueued[netIndex] = false;
+                    var net = _nets[netIndex];
+                    if (net.IsDirty)
+                    {
+                        if (profile)
+                        {
+                            var started = Stopwatch.GetTimestamp();
+                            net.Resolve();
+                            _profileNetResolutionTicks += Stopwatch.GetTimestamp() - started;
+                        }
+                        else
+                        {
+                            net.Resolve();
+                        }
+                    }
+
+                    continue;
+                }
+
+                var componentIndex = DequeueDirectComponent();
+                _directComponentQueued[componentIndex] = false;
+                EvaluateComponent(componentIndex, profile);
+
+                var eventDriven = _eventDrivenComponents[componentIndex];
+                if (eventDriven is not null && eventDriven.HasPendingInternalWork)
+                {
+                    QueueDirectComponent(componentIndex);
+                }
+            }
+        }
+        finally
+        {
+            _directRouting = false;
+        }
+
+        // The caller already counted the first component as a global event.
+        return events == 0 ? 0 : events - 1;
     }
 
     private void ResolveOneDirtyNet()
@@ -322,17 +415,6 @@ public sealed class VirtualHardwareSimulator
         _netQueued[index] = false;
         var net = _nets[index];
         if (net.IsDirty) net.Resolve();
-    }
-
-    private void EvaluateOneActiveComponent(bool profile)
-    {
-        var index = DequeueComponent();
-        _componentQueued[index] = false;
-
-        EvaluateComponent(index, profile);
-
-        var eventDriven = _eventDrivenComponents[index];
-        if (eventDriven is not null && eventDriven.HasPendingInternalWork) QueueComponent(index);
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -460,6 +542,7 @@ public sealed class VirtualHardwareSimulator
             var component = _components[componentIndex];
             _eventDrivenComponents[componentIndex] = component as IEventDrivenVirtualHardwareComponent;
             _compiledInputComponents[componentIndex] = component as ICompiledInputDrivenVirtualHardwareComponent;
+            _directRouteEligibleComponents[componentIndex] = component is ICombinationalVirtualHardwareComponent;
             var clockEdgeOwner = component as IClockEdgeDrivenVirtualHardwareComponent;
             var activationProvider = component as IInputActivationContractProvider;
             var selectiveInputOwner = component as ISelectiveInputDrivenVirtualHardwareComponent;
@@ -519,7 +602,7 @@ public sealed class VirtualHardwareSimulator
         // Once a package is already scheduled, further changed pins are folded
         // into its pending package-level mask. There is no need to re-run gate
         // predicates or queue logic for every additional pin transition.
-        if (_componentQueued[componentIndex])
+        if (_componentQueued[componentIndex] || _directComponentQueued[componentIndex])
         {
             _componentChangedInputMasks[componentIndex] |= changedInputMask;
             return;
@@ -527,13 +610,16 @@ public sealed class VirtualHardwareSimulator
 
         if (!activationContract.IsActive()) return;
         _componentChangedInputMasks[componentIndex] |= changedInputMask;
-        QueueComponent(componentIndex);
+        if (_directRouting && _directRouteEligibleComponents[componentIndex]) QueueDirectComponent(componentIndex);
+        else QueueComponent(componentIndex);
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal void NotifyComponentActive(int componentIndex)
     {
-        if (componentIndex >= 0) QueueComponent(componentIndex);
+        if (componentIndex < 0) return;
+        if (_directRouting && _directRouteEligibleComponents[componentIndex]) QueueDirectComponent(componentIndex);
+        else QueueComponent(componentIndex);
     }
 
     private void QueueAllComponents()
@@ -575,12 +661,58 @@ public sealed class VirtualHardwareSimulator
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal void NotifyNetDirty(int index)
     {
+        if (_directRouting)
+        {
+            QueueDirectNet(index);
+            return;
+        }
+
         if (_netQueued[index]) return;
         _netQueued[index] = true;
         _netQueue[_netQueueTail] = index;
         _netQueueTail++;
         if (_netQueueTail == _netQueue.Length) _netQueueTail = 0;
         _netQueueCount++;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private void QueueDirectComponent(int index)
+    {
+        if (_directComponentQueued[index]) return;
+        _directComponentQueued[index] = true;
+        _directComponentQueue[_directComponentQueueTail] = index;
+        _directComponentQueueTail++;
+        if (_directComponentQueueTail == _directComponentQueue.Length) _directComponentQueueTail = 0;
+        _directComponentQueueCount++;
+    }
+
+    private int DequeueDirectComponent()
+    {
+        var index = _directComponentQueue[_directComponentQueueHead];
+        _directComponentQueueHead++;
+        if (_directComponentQueueHead == _directComponentQueue.Length) _directComponentQueueHead = 0;
+        _directComponentQueueCount--;
+        return index;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private void QueueDirectNet(int index)
+    {
+        if (_directNetQueued[index]) return;
+        _directNetQueued[index] = true;
+        _directNetQueue[_directNetQueueTail] = index;
+        _directNetQueueTail++;
+        if (_directNetQueueTail == _directNetQueue.Length) _directNetQueueTail = 0;
+        _directNetQueueCount++;
+    }
+
+    private int DequeueDirectNet()
+    {
+        var index = _directNetQueue[_directNetQueueHead];
+        _directNetQueueHead++;
+        if (_directNetQueueHead == _directNetQueue.Length) _directNetQueueHead = 0;
+        _directNetQueueCount--;
+        return index;
     }
 
     private int DequeueNet()
@@ -616,6 +748,7 @@ public sealed class VirtualHardwareSimulator
 
         _eventDrivenComponents = new IEventDrivenVirtualHardwareComponent?[_components.Length];
         _compiledInputComponents = new ICompiledInputDrivenVirtualHardwareComponent?[_components.Length];
+        _directRouteEligibleComponents = new bool[_components.Length];
         _componentChangedInputMasks = new ulong[_components.Length];
         _componentQueued = new bool[_components.Length];
         _componentQueue = new int[Math.Max(1, _components.Length)];
@@ -628,6 +761,18 @@ public sealed class VirtualHardwareSimulator
         _netQueueHead = 0;
         _netQueueTail = 0;
         _netQueueCount = 0;
+
+        _directRouting = false;
+        _directComponentQueued = new bool[_components.Length];
+        _directComponentQueue = new int[Math.Max(1, _components.Length)];
+        _directComponentQueueHead = 0;
+        _directComponentQueueTail = 0;
+        _directComponentQueueCount = 0;
+        _directNetQueued = new bool[_nets.Length];
+        _directNetQueue = new int[Math.Max(1, _nets.Length)];
+        _directNetQueueHead = 0;
+        _directNetQueueTail = 0;
+        _directNetQueueCount = 0;
 
         _continuouslyPolledComponents = FindContinuouslyPolledComponents();
         _strictEventDrivenTopology = _continuouslyPolledComponents.Length == 0;

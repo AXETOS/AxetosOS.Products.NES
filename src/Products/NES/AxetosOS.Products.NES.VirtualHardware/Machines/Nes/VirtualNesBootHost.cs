@@ -1,6 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
-using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
@@ -44,15 +43,6 @@ public interface IVirtualNesVideoSink
 public interface IVirtualNesAudioSink
 {
     void AcceptSample(ulong masterCycle, byte dacLevel);
-}
-
-/// <summary>
-/// Optional host contract for sinks that consume samples at scheduled master
-/// cycles. It avoids invoking a resampler on every virtual master tick.
-/// </summary>
-public interface IVirtualNesScheduledAudioSink : IVirtualNesAudioSink
-{
-    ulong NextRequiredMasterCycle { get; }
 }
 
 public sealed class VirtualNesFrameBuffer : IVirtualNesVideoSink
@@ -99,9 +89,10 @@ public sealed class VirtualNesBootHost
     private bool _firstOpcodeObserved;
     private bool _firstVblankObserved;
     private bool _firstNmiObserved;
-    private Rp2A03? _activeCpu;
-    private Rp2C02? _activePpu;
-    private NromCartridge? _activeCartridge;
+    private ulong _lastCpuReadCount;
+    private ulong _lastVideoFrame = ulong.MaxValue;
+    private int _lastVideoScanline = int.MinValue;
+    private int _lastVideoDot = int.MinValue;
 
     public RegionalNesVirtualMachine Machine => _machine;
     public IVirtualNesVideoSink? VideoSink { get; set; }
@@ -125,7 +116,6 @@ public sealed class VirtualNesBootHost
     {
         ResetDiagnostics();
         _machine.InsertRom(image, sourceName, regionSelection, palCicVariant);
-        CacheSelectedHardware();
     }
 
     public void PowerAndReleaseReset(int resetMasterCycles = 32)
@@ -139,50 +129,12 @@ public sealed class VirtualNesBootHost
     public void AdvanceMasterCycles(int cycles)
     {
         if (cycles < 0) throw new ArgumentOutOfRangeException(nameof(cycles));
-        if (cycles == 0) return;
-        EnsureSelectedHardwareCached();
-
-        switch (_machine.ActiveMotherboard)
+        for (var index = 0; index < cycles; index++)
         {
-            case ActiveNesMotherboard.Famicom:
-                AdvanceFamicom(cycles);
-                break;
-            case ActiveNesMotherboard.NtscNes:
-                AdvanceNtsc(cycles);
-                break;
-            case ActiveNesMotherboard.PalNes:
-                _machine.PalNes.AdvanceMasterCycles(cycles);
-                _masterCycles += (ulong)cycles;
-                break;
-            default:
-                throw new InvalidOperationException("No motherboard is selected.");
+            _machine.AdvanceMasterCycles(1);
+            _masterCycles++;
+            ObserveSelectedHardware();
         }
-    }
-
-    private void AdvanceFamicom(int cycles)
-    {
-        var board = _machine.Famicom;
-        var cpu = _activeCpu!;
-        var ppu = _activePpu!;
-        var cartridge = _activeCartridge;
-        board.AdvanceMasterCycles(cycles, () =>
-        {
-            _masterCycles++;
-            ObserveSelectedHardware(cpu, ppu, cartridge);
-        });
-    }
-
-    private void AdvanceNtsc(int cycles)
-    {
-        var board = _machine.NtscNes;
-        var cpu = _activeCpu!;
-        var ppu = _activePpu!;
-        var cartridge = _activeCartridge;
-        board.AdvanceMasterCycles(cycles, () =>
-        {
-            _masterCycles++;
-            ObserveSelectedHardware(cpu, ppu, cartridge);
-        });
     }
 
     public VirtualNesBootDiagnostics RunUntil(
@@ -202,10 +154,8 @@ public sealed class VirtualNesBootHost
 
     public VirtualNesBootDiagnostics Snapshot()
     {
-        EnsureSelectedHardwareCached();
-        var cpu = _activeCpu!;
-        var ppu = _activePpu!;
-        var cartridge = _activeCartridge;
+        var (cpu, ppu) = GetActiveProcessors();
+        var cartridge = _machine.Slot.Cartridge;
         var dataBusKnown = cpu.TryInspectDataBus(out var dataBusValue);
         return new VirtualNesBootDiagnostics(
             _machine.ActiveMotherboard,
@@ -239,70 +189,49 @@ public sealed class VirtualNesBootHost
             _firstNmiObserved);
     }
 
-    private void ObserveSelectedHardware(Rp2A03 cpu, Rp2C02 ppu, NromCartridge? cartridge)
+    private void ObserveSelectedHardware()
     {
-        if (!_resetVectorObserved)
+        var (cpu, ppu) = GetActiveProcessors();
+        var cartridge = _machine.Slot.Cartridge;
+        var cpuReads = cartridge?.CpuReadCount ?? 0;
+        if (cpuReads > _lastCpuReadCount)
         {
-            var cpuReads = cartridge?.CpuReadCount ?? 0;
             if (cpuReads >= 2) _resetVectorObserved = true;
+            _lastCpuReadCount = cpuReads;
         }
-        if (!_firstOpcodeObserved && cpu.CompletedInstructionCount > 0) _firstOpcodeObserved = true;
-        if (!_firstVblankObserved && ppu.Vblank) _firstVblankObserved = true;
-        if (!_firstNmiObserved && ppu.NmiFallingEdgeCount > 0) _firstNmiObserved = true;
+        if (cpu.CompletedInstructionCount > 0) _firstOpcodeObserved = true;
+        if (ppu.Vblank) _firstVblankObserved = true;
+        if (ppu.NmiFallingEdgeCount > 0) _firstNmiObserved = true;
 
-        var videoSink = VideoSink;
-        if (videoSink is not null && ppu.Scanline is >= 0 and < 240 && ppu.Dot is >= 1 and <= 256)
+        if (ppu.Scanline is >= 0 and < 240 && ppu.Dot is >= 1 and <= 256 &&
+            (ppu.Frame != _lastVideoFrame || ppu.Scanline != _lastVideoScanline || ppu.Dot != _lastVideoDot))
         {
+            // The RP2C02 raster now advances once per four console master clocks.
+            // ObserveSelectedHardware still runs every master clock, so suppress the
+            // three repeated observations of the same physical output pixel.
+            _lastVideoFrame = ppu.Frame;
+            _lastVideoScanline = ppu.Scanline;
+            _lastVideoDot = ppu.Dot;
+
+            var x = ppu.Dot - 1;
             var color = ppu.OutputColorCode;
-            videoSink.AcceptPixel(ppu.Frame, ppu.Dot - 1, ppu.Scanline, color, ppu.ColorEmphasis);
+            VideoSink?.AcceptPixel(ppu.Frame, x, ppu.Scanline, color, ppu.ColorEmphasis);
             if (color != 0) _nonUniversalPixels++;
         }
 
-        var audioSink = AudioSink;
-        if (audioSink is not null &&
-            (audioSink is not IVirtualNesScheduledAudioSink scheduled ||
-             _masterCycles >= scheduled.NextRequiredMasterCycle))
-        {
-            audioSink.AcceptSample(_masterCycles, cpu.AudioDacLevel);
-            _audioSamples++;
-        }
-    }
-
-    private void CacheSelectedHardware()
-    {
-        _activeCartridge = _machine.Slot.Cartridge;
-        switch (_machine.ActiveMotherboard)
-        {
-            case ActiveNesMotherboard.Famicom:
-                _activeCpu = _machine.Famicom.Cpu;
-                _activePpu = _machine.Famicom.Ppu;
-                break;
-            case ActiveNesMotherboard.NtscNes:
-                _activeCpu = _machine.NtscNes.Cpu;
-                _activePpu = _machine.NtscNes.Ppu;
-                break;
-            case ActiveNesMotherboard.PalNes:
-                _activeCpu = null;
-                _activePpu = null;
-                break;
-            default:
-                _activeCpu = null;
-                _activePpu = null;
-                break;
-        }
-    }
-
-    private void EnsureSelectedHardwareCached()
-    {
-        if (_machine.ActiveMotherboard == ActiveNesMotherboard.PalNes) return;
-        if (_activeCpu is null || _activePpu is null) CacheSelectedHardware();
+        AudioSink?.AcceptSample(_masterCycles, cpu.AudioDacLevel);
+        _audioSamples++;
     }
 
     private (Rp2A03 Cpu, Rp2C02 Ppu) GetActiveProcessors()
     {
-        EnsureSelectedHardwareCached();
-        return (_activeCpu ?? throw new InvalidOperationException("Use PAL processor access through the PAL-specific diagnostics path."),
-            _activePpu ?? throw new InvalidOperationException("No motherboard is selected."));
+        return _machine.ActiveMotherboard switch
+        {
+            ActiveNesMotherboard.Famicom => (_machine.Famicom.Cpu, _machine.Famicom.Ppu),
+            ActiveNesMotherboard.NtscNes => (_machine.NtscNes.Cpu, _machine.NtscNes.Ppu),
+            ActiveNesMotherboard.PalNes => throw new InvalidOperationException("Use PAL processor access through the PAL-specific diagnostics path."),
+            _ => throw new InvalidOperationException("No motherboard is selected.")
+        };
     }
 
     private void ResetDiagnostics()
@@ -314,5 +243,9 @@ public sealed class VirtualNesBootHost
         _firstOpcodeObserved = false;
         _firstVblankObserved = false;
         _firstNmiObserved = false;
+        _lastCpuReadCount = 0;
+        _lastVideoFrame = ulong.MaxValue;
+        _lastVideoScanline = int.MinValue;
+        _lastVideoDot = int.MinValue;
     }
 }

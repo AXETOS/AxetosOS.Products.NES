@@ -4,7 +4,7 @@ A modular AxetosOS hardware product that builds NES-family machines from reusabl
 
 ## Current status
 
-**VirtualHardware version: v0.84.0**
+**VirtualHardware version: v0.86.5**
 
 The Famicom composition boots and runs real NROM software through the virtual RP2A03, RP2C02, RAM, address latch, controller hardware, cartridge board, pins, nets and clocks. Video comes from the RP2C02 output and audio comes from the RP2A03 DAC output.
 
@@ -47,15 +47,17 @@ This startup work is intentionally performed once. A visible loading pause is pr
 
 The chips remain authoritative for their internal state and outputs. The motherboard only routes signals and decides when a real chip package can possibly need evaluation.
 
-## v0.84.0 — package-level compiled input masks
+## v0.85.3 — direct motherboard signal-chain routing
 
-- Combines multiple changed package pins into one pending 64-bit input mask.
-- Avoids repeating activation-predicate and queue checks after a package is already scheduled.
-- Lets compiled chip packages receive one input-change event for all changes accumulated since their previous evaluation.
-- Keeps every individual pin level and revision observable.
-- Keeps clock-edge handling, electrical resolution, contention and chip behavior unchanged.
-- Uses the existing generic `Evaluate()` path for modules that have not adopted the optional compiled-input contract.
-- Rebuilds all package pin masks automatically when the topology changes.
+- Keeps a single causal chip-and-net branch inside one compiled motherboard routing loop.
+- Routes output nets immediately after the real chip drives its pins.
+- Sends resolved input changes directly to the next activated package in the same chain.
+- Avoids returning to the global net and component queues between every step when no unrelated hardware event is waiting.
+- Preserves the global ordering path whenever multiple independent events are already pending.
+- Continues to use the actual chip implementations, pins, electrical net resolution, activation contracts and package input masks.
+- Rebuilds all direct routing structures when the motherboard topology changes.
+
+The generic event kernel remains the fallback and correctness path. Direct routing is selected only when the motherboard can prove that the remaining work is one causal branch.
 
 ## Repository layout
 
@@ -116,3 +118,59 @@ The Famicom is the first demanding benchmark, not a special case inside the gene
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+
+### v0.85.3 direct-routing safety
+
+Direct motherboard signal chains now stop at stateful, clocked, timed, memory, CPU, PPU, and other sequential package boundaries. Only chips that explicitly declare zero-delay combinational behavior may remain inside one direct chain. This preserves the physical signal route while preventing a fast path from advancing hardware that must wait for a later clock or control event.
+
+### v0.85.3 correctness rollback
+
+The experimental direct causal signal-chain fast path is disabled for complete motherboard execution after Super Mario Bros. exposed an undefined internal-RAM read at `$07DC`. The validated strict indexed event ordering remains active while the direct-route compiler is redesigned with full bus-phase equivalence tests.
+
+
+### v0.85.4 strict-routing regression test correction
+
+The combinational propagation regression test now verifies that the disabled experimental direct-route counter remains unchanged while the complete signal chain still settles through the validated strict indexed event queue. This corrects the contradictory v0.85.3 assertion without weakening the electrical propagation checks.
+
+
+### v0.85.5 SRAM power-up stabilization
+
+HM6116 SRAM now powers up with an arbitrary but electrically determinate bit pattern. Real SRAM does not retain its previous contents after power loss, but powered cells settle to concrete zero or one values rather than remaining indefinitely unknown. This prevents valid software reads of untouched work RAM from producing an undefined CPU data bus. The experimental direct motherboard signal-chain fast path remains disabled.
+
+
+
+
+
+### v0.86.5 RP2C02 CPU-bus transaction latching
+
+The RP2C02 CPU register port now captures register select, direction and write data once on the active edge of `/CS`. The captured transaction remains authoritative until `/CS` is released, so electrical settlement or transient address/R/W changes cannot create duplicate `PPUSTATUS` reads or interrupt paired `PPUSCROLL` writes. Held reads keep their latched data on D0-D7 while register side effects occur exactly once.
+
+### v0.86.4 RP2C02 split-screen timing trace
+
+Adds an opt-in `--ppu-split-trace` desktop-host diagnostic that records sprite-zero hits and CPU accesses to PPUSTATUS, PPUSCROLL and PPUADDR with exact frame, scanline, dot and `v/t/x/w` state. This isolates Super Mario Bros. split-screen timing faults without changing emulation behaviour.
+
+### v0.86.3 DesktopHost audio-interface build correction
+
+- Corrected `NativePcmAudioSink` to implement the existing `IVirtualNesAudioSink` contract.
+- This resolves the DesktopHost-only `CS0246` build failure that was not exercised by `dotnet test`.
+- Release validation now requires building the DesktopHost explicitly in addition to running the test suite.
+
+### v0.86.2 atomic completed-frame presentation
+
+The native desktop video sink now uses separate render and completed-frame buffers. The PPU writes the active frame only into the render buffer, and the buffers swap after the final visible pixel. This prevents a large master-clock batch from partially overwriting the frame waiting to be presented with pixels from the next frame.
+
+### v0.86.0 RP2C02 master-clock divider correction
+
+The NTSC RP2C02 now advances its raster, external VRAM transaction engine, background pipeline and sprite pipeline at the physical master-clock divided-by-four rate. Its CPU register port remains asynchronous and is still observed on every package evaluation. This restores the required three PPU dots per CPU cycle relationship used by timing-sensitive games such as Super Mario Bros. for sprite-zero split scrolling.
+
+### v0.85.6 deterministic cold-start RAM state
+
+HM6116 SRAM now selects an all-zero, electrically defined state after power is applied. Physical SRAM power-up data is unspecified, and zero is one valid settled state. Using zero prevents an arbitrary deterministic pattern from accidentally matching a game's warm-reset signature. Super Mario Bros. exposed this by bypassing its normal title-screen initialization and entering gameplay with corrupted scroll state. The strict indexed event queue remains the active execution path.
+
+
+## v0.86.2
+
+- Emits each RP2C02 output pixel once even though the raster position remains stable for four console master-clock observations.
+- Prevents repeated final-pixel notifications from swapping the desktop frame buffers multiple times and returning the presenter to a blank buffer.
+- Keeps completed-frame presentation atomic while preserving the corrected master-clock divider.

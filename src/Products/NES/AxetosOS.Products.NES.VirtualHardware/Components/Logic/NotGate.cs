@@ -5,7 +5,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Logic;
 /// <summary>
 /// A pin-driven inverter. It has no knowledge of a board or machine.
 /// </summary>
-public sealed class NotGate : VirtualHardwareComponent
+public sealed class NotGate : VirtualHardwareComponent, ICombinationalVirtualHardwareComponent
 {
     public NotGate(string componentId)
         : base(componentId)

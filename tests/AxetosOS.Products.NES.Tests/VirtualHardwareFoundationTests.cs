@@ -245,4 +245,31 @@ public sealed class VirtualHardwareFoundationTests
     }
 
 
+    [Fact]
+    public void Strict_motherboard_routing_preserves_complete_combinational_signal_chain()
+    {
+        var board = new VirtualHardwareBoard("test.board.direct-signal-chain");
+        var source = board.Add(new DigitalSignalSource("test.source", DigitalLevel.Low));
+        var first = board.Add(new NotGate("test.first"));
+        var second = board.Add(new NotGate("test.second"));
+        board.Connect("SOURCE", source.Output, first.Input);
+        board.Connect("MIDDLE", first.Output, second.Input);
+        var output = board.Connect("OUTPUT", second.Output);
+
+        var simulator = new VirtualHardwareSimulator(board);
+        board.PowerOn();
+        simulator.Settle();
+        var before = simulator.DirectSignalChainCount;
+
+        source.Set(DigitalLevel.High);
+        simulator.Settle();
+
+        Assert.Equal(before, simulator.DirectSignalChainCount);
+        Assert.Equal(DigitalLevel.High, first.Input.SampledLevel);
+        Assert.Equal(DigitalLevel.Low, first.Output.SampledLevel);
+        Assert.Equal(DigitalLevel.Low, second.Input.SampledLevel);
+        Assert.Equal(DigitalLevel.High, output.Level);
+    }
+
+
 }

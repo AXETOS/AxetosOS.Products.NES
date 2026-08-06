@@ -16,7 +16,7 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
 
         fixture.PulseClock(342);
 
-        Assert.Equal(342UL, fixture.Chip.MasterClockRisingEdgeCount);
+        Assert.Equal(1_368UL, fixture.Chip.MasterClockRisingEdgeCount);
         Assert.Equal(1, fixture.Chip.Scanline);
         Assert.Equal(1, fixture.Chip.Dot);
         Assert.Equal(0UL, fixture.Chip.Frame);
@@ -367,6 +367,50 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.True(fixture.Chip.SpriteOverflow);
     }
 
+    [Fact]
+    public void Held_ppustatus_read_applies_side_effects_once_per_chip_select_transaction()
+    {
+        var fixture = new Fixture();
+        var statusReads = 0;
+        fixture.Chip.SplitTrace += trace =>
+        {
+            if (trace.Operation == "PPUSTATUS read") statusReads++;
+        };
+
+        fixture.WriteRegister(5, 0x2D);
+        Assert.True(fixture.Chip.WriteToggle);
+
+        fixture.BeginRegisterRead(2);
+        fixture.PulseClock(16);
+
+        Assert.False(fixture.Chip.WriteToggle);
+        Assert.Equal(1, statusReads);
+
+        fixture.EndRegisterRead();
+    }
+
+    [Fact]
+    public void Selected_transaction_ignores_transient_register_and_direction_changes_until_chip_select_releases()
+    {
+        var fixture = new Fixture();
+
+        fixture.BeginRegisterWrite(5, 0x00);
+        Assert.True(fixture.Chip.WriteToggle);
+
+        fixture.ChangeSelectedBus(register: 2, read: true, value: 0x00);
+        fixture.ChangeSelectedBus(register: 5, read: false, value: 0x73);
+
+        Assert.True(fixture.Chip.WriteToggle);
+        Assert.Equal((byte)0, fixture.Chip.FineX);
+        Assert.Equal((ushort)0, fixture.Chip.TemporaryVramAddress);
+
+        fixture.EndSelectedTransaction();
+        fixture.WriteRegister(5, 0x73);
+
+        Assert.False(fixture.Chip.WriteToggle);
+        Assert.NotEqual((ushort)0, fixture.Chip.TemporaryVramAddress);
+    }
+
     private sealed class Fixture
     {
         private readonly VirtualHardwareSimulator _sim;
@@ -419,10 +463,15 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
 
         public void PulseClock(int count)
         {
-            for (var cycle = 0; cycle < count; cycle++)
+            // RP2C02 receives the console master clock and advances one PPU dot
+            // for every four rising edges internally.
+            for (var dot = 0; dot < count; dot++)
             {
-                _clock.Set(DigitalLevel.High); _sim.Settle();
-                _clock.Set(DigitalLevel.Low); _sim.Settle();
+                for (var divider = 0; divider < 4; divider++)
+                {
+                    _clock.Set(DigitalLevel.High); _sim.Settle();
+                    _clock.Set(DigitalLevel.Low); _sim.Settle();
+                }
             }
         }
 
@@ -431,34 +480,64 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
             var addresses = new List<ushort>();
             ushort latchedAddress = 0;
 
-            for (var cycle = 0; cycle < count; cycle++)
+            for (var dot = 0; dot < count; dot++)
             {
-                _clock.Set(DigitalLevel.High);
-                _sim.Settle();
-
-                if (Chip.AddressLatchEnable.DriveLevel == DigitalLevel.High)
+                for (var divider = 0; divider < 4; divider++)
                 {
-                    Release(_externalAd);
+                    _clock.Set(DigitalLevel.High);
                     _sim.Settle();
-                    Assert.True(Chip.MultiplexedAddressData.TrySample(out var low));
-                    Assert.True(Chip.HighAddress.TrySample(out var high));
-                    latchedAddress = (ushort)(((high & 0x3F) << 8) | low);
-                    addresses.Add(latchedAddress);
-                }
 
-                if (Chip.VramReadBar.DriveLevel == DigitalLevel.Low)
-                {
-                    Set(_externalAd, readMemory(latchedAddress));
+                    if (Chip.AddressLatchEnable.DriveLevel == DigitalLevel.High)
+                    {
+                        Release(_externalAd);
+                        _sim.Settle();
+                        Assert.True(Chip.MultiplexedAddressData.TrySample(out var low));
+                        Assert.True(Chip.HighAddress.TrySample(out var high));
+                        latchedAddress = (ushort)(((high & 0x3F) << 8) | low);
+                        addresses.Add(latchedAddress);
+                    }
+
+                    if (Chip.VramReadBar.DriveLevel == DigitalLevel.Low)
+                    {
+                        Set(_externalAd, readMemory(latchedAddress));
+                        _sim.Settle();
+                    }
+
+                    _clock.Set(DigitalLevel.Low);
                     _sim.Settle();
                 }
-
-                _clock.Set(DigitalLevel.Low);
-                _sim.Settle();
             }
 
             Release(_externalAd);
             _sim.Settle();
             return addresses;
+        }
+
+        public void BeginRegisterWrite(byte register, byte value)
+        {
+            Set(_rs, register);
+            Set(_data, value);
+            _rw.Set(DigitalLevel.Low);
+            _cs.Set(DigitalLevel.Low);
+            _sim.Settle();
+        }
+
+        public void ChangeSelectedBus(byte register, bool read, byte value)
+        {
+            Set(_rs, register);
+            if (read) Release(_data);
+            else Set(_data, value);
+            _rw.Set(read ? DigitalLevel.High : DigitalLevel.Low);
+            _sim.Settle();
+        }
+
+        public void EndSelectedTransaction()
+        {
+            _cs.Set(DigitalLevel.High);
+            _sim.Settle();
+            _rw.Set(DigitalLevel.High);
+            Release(_data);
+            _sim.Settle();
         }
 
         public void WriteRegister(byte register, byte value)

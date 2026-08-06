@@ -217,7 +217,7 @@ public sealed class VirtualHardwareDiscreteChipCompletionTests
     }
 
     [Fact]
-    public void Hm6116_loses_determinate_contents_after_power_interruption_and_requires_rewrite()
+    public void Hm6116_loses_previous_contents_and_uses_defined_zero_cold_start_state()
     {
         var fixture = CreateRamFixture();
         fixture.Board.PowerOn();
@@ -236,9 +236,11 @@ public sealed class VirtualHardwareDiscreteChipCompletionTests
         DriveHighImpedance(fixture.Data);
         fixture.Simulator.Settle();
 
-        Assert.False(fixture.Chip.TryInspect(0x7FF, out _));
-        Assert.Equal((byte)0x00, fixture.Chip.InspectKnownMask(0x7FF));
-        Assert.All(fixture.DataNets, net => Assert.Equal(DigitalLevel.Unknown, net.Level));
+        Assert.True(fixture.Chip.TryInspect(0x7FF, out var after));
+        Assert.Equal((byte)0x00, after);
+        Assert.Equal(byte.MaxValue, fixture.Chip.InspectKnownMask(0x7FF));
+        Assert.All(fixture.DataNets, net => Assert.True(
+            net.Level is DigitalLevel.Low or DigitalLevel.High));
     }
 
     private static RamFixture CreateRamFixture()

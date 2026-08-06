@@ -2,6 +2,17 @@ using AxetosOS.Products.NES.VirtualHardware.Electrical;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 
+public sealed record Rp2C02SplitTraceEvent(
+    ulong Frame,
+    int Scanline,
+    int Dot,
+    string Operation,
+    byte Value,
+    ushort VramAddress,
+    ushort TemporaryAddress,
+    byte FineX,
+    bool WriteToggle);
+
 /// <summary>
 /// Standalone NTSC Ricoh RP2C02 package. All observable behaviour is driven by
 /// package power, reset, clock and bus pins. The chip owns only physical
@@ -15,12 +26,15 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     private const int ScanlinesPerFrame = 262;
     private const int VblankStartScanline = 241;
     private const int PreRenderScanline = 261;
+    private const int MasterClockDivider = 4;
 
     private readonly byte[] _primaryOam = new byte[256];
     private readonly byte[] _paletteRam = new byte[32];
     private DigitalLevel _previousClock;
-    private bool _cpuSelectedLast;
-    private bool _cpuReadLatchValid;
+    private int _masterClockDividerPhase;
+    private bool _cpuTransactionActive;
+    private bool _cpuTransactionRead;
+    private int _cpuTransactionRegister;
     private byte _cpuReadLatch;
     private bool _vblank;
     private bool _spriteZeroHit;
@@ -133,6 +147,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     public ulong VblankSuppressionCount { get; private set; }
     public ulong RenderingOamWriteCount { get; private set; }
     public ulong ForcedBlankPaletteOutputCount { get; private set; }
+    public event Action<Rp2C02SplitTraceEvent>? SplitTrace;
 
     private bool Powered => Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
 
@@ -192,8 +207,10 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         Array.Clear(_activeSprites);
         Array.Clear(_nextSprites);
         _previousClock = DigitalLevel.Low;
-        _cpuSelectedLast = false;
-        _cpuReadLatchValid = false;
+        _masterClockDividerPhase = 0;
+        _cpuTransactionActive = false;
+        _cpuTransactionRead = false;
+        _cpuTransactionRegister = 0;
         _cpuReadLatch = 0;
         _vblank = false;
         _suppressVblankSet = false;
@@ -234,7 +251,10 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         _control = 0;
         _mask = 0;
         _writeToggle = false;
-        _cpuSelectedLast = false;
+        _masterClockDividerPhase = 0;
+        _cpuTransactionActive = false;
+        _cpuTransactionRead = false;
+        _cpuTransactionRegister = 0;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
         _transactionPurpose = VramTransactionPurpose.None;
@@ -262,7 +282,9 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         {
             ReleasePackageOutputs();
             _previousClock = Clock.SampledLevel;
-            _cpuSelectedLast = false;
+            _cpuTransactionActive = false;
+            _cpuTransactionRead = false;
+            CpuData.Release();
             return;
         }
 
@@ -277,13 +299,21 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         if (clock == DigitalLevel.High && _previousClock != DigitalLevel.High)
         {
             MasterClockRisingEdgeCount++;
-            AdvanceRaster();
-            AdvanceVramTransaction();
-            AdvanceBackgroundPipeline();
-            AdvanceSpritePipeline();
+            _masterClockDividerPhase++;
+            if (_masterClockDividerPhase >= MasterClockDivider)
+            {
+                _masterClockDividerPhase = 0;
+                AdvanceRaster();
+                AdvanceVramTransaction();
+                AdvanceBackgroundPipeline();
+                AdvanceSpritePipeline();
+            }
         }
         _previousClock = clock;
 
+        // The CPU register port is asynchronous to the PPU dot divider. It is
+        // still observed on every package evaluation while the raster and VRAM
+        // engines advance only at the RP2C02's internal master/4 rate.
         HandleCpuPort();
         DriveVramBus();
         DriveNmi();
@@ -345,46 +375,42 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         if (!selected)
         {
             CpuData.Release();
-            _cpuSelectedLast = false;
-            _cpuReadLatchValid = false;
+            _cpuTransactionActive = false;
+            _cpuTransactionRead = false;
             return;
         }
 
-        if (!RegisterSelect.TrySample(out var rawRegister))
+        // /CS defines the physical CPU-to-PPU register transaction. Address,
+        // R/W and D0-D7 are captured only when /CS first becomes active and
+        // remain authoritative until /CS is released. This prevents transient
+        // address or R/W changes during circuit settlement from creating a
+        // second register access inside the same physical CPU bus cycle.
+        if (!_cpuTransactionActive)
         {
-            CpuData.Release();
-            return;
-        }
-
-        var register = (int)(rawRegister & 7);
-        var read = CpuReadWrite.SampledLevel == DigitalLevel.High;
-        if (read)
-        {
-            // A selected CPU read is one physical bus cycle even though the
-            // electrical simulator may settle the component multiple times.
-            // Latch the first result so side effects (PPUSTATUS clearing,
-            // PPUDATA incrementing and transaction starts) occur only once and
-            // D0-D7 remain stable until /CS is released.
-            if (!_cpuReadLatchValid)
+            if (!RegisterSelect.TrySample(out var rawRegister))
             {
-                _cpuReadLatch = ReadCpuRegister(register, firstSelectedEvaluation: true);
-                _cpuReadLatchValid = true;
+                CpuData.Release();
+                return;
             }
-            CpuData.Drive(_cpuReadLatch);
-        }
-        else
-        {
-            _cpuReadLatchValid = false;
-            CpuData.Release();
-            if (!_cpuSelectedLast && CpuData.TrySample(out var rawValue))
+
+            _cpuTransactionActive = true;
+            _cpuTransactionRegister = (int)(rawRegister & 7);
+            _cpuTransactionRead = CpuReadWrite.SampledLevel == DigitalLevel.High;
+
+            if (_cpuTransactionRead)
+            {
+                _cpuReadLatch = ReadCpuRegister(_cpuTransactionRegister, firstSelectedEvaluation: true);
+            }
+            else if (CpuData.TrySample(out var rawValue))
             {
                 var value = (byte)rawValue;
                 _openBus = value;
-                WriteCpuRegister(register, value);
+                WriteCpuRegister(_cpuTransactionRegister, value);
             }
         }
 
-        _cpuSelectedLast = true;
+        if (_cpuTransactionRead) CpuData.Drive(_cpuReadLatch);
+        else CpuData.Release();
     }
 
     private byte ReadCpuRegister(int register, bool firstSelectedEvaluation)
@@ -408,6 +434,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
                     }
                     _vblank = false;
                     _writeToggle = false;
+                    TraceSplit("PPUSTATUS read", value);
                 }
                 break;
             case 4: // OAMDATA
@@ -489,6 +516,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
                         | ((value & 0xF8) << 2));
                 }
                 _writeToggle = !_writeToggle;
+                TraceSplit("PPUSCROLL write", value);
                 break;
             case 6: // PPUADDR
                 if (!_writeToggle)
@@ -501,6 +529,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
                     _vramAddress = (ushort)(_temporaryAddress & 0x3FFF);
                 }
                 _writeToggle = !_writeToggle;
+                TraceSplit("PPUADDR write", value);
                 break;
             case 7: // PPUDATA
                 if ((_vramAddress & 0x3F00) == 0x3F00)
@@ -921,7 +950,11 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         var spriteOpaque = spritePattern != 0;
         SpritePixelIndex = spriteOpaque ? (byte)(0x10 | (spritePalette << 2) | spritePattern) : (byte)0;
 
-        if (spriteZero && spriteOpaque && backgroundOpaque && Dot < 256) _spriteZeroHit = true;
+        if (spriteZero && spriteOpaque && backgroundOpaque && Dot < 256 && !_spriteZeroHit)
+        {
+            _spriteZeroHit = true;
+            TraceSplit("sprite-zero hit", 0);
+        }
 
         if (!spriteOpaque) PixelPaletteIndex = background;
         else if (!backgroundOpaque || !spriteBehindBackground) PixelPaletteIndex = SpritePixelIndex;
@@ -949,6 +982,13 @@ public sealed class Rp2C02 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         value = (byte)(((value & 0x55) << 1) | ((value >> 1) & 0x55));
         value = (byte)(((value & 0x33) << 2) | ((value >> 2) & 0x33));
         return (byte)((value << 4) | (value >> 4));
+    }
+
+
+    private void TraceSplit(string operation, byte value)
+    {
+        SplitTrace?.Invoke(new Rp2C02SplitTraceEvent(
+            Frame, Scanline, Dot, operation, value, _vramAddress, _temporaryAddress, _fineX, _writeToggle));
     }
 
     private void DriveVramBus()

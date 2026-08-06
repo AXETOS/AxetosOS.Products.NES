@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using AxetosOS.Audio.Windows;
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
+using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 using AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
 using AxetosOS.Rendering.Abstractions;
@@ -14,8 +15,15 @@ string? romArgument = null;
 var boardSelection = NesRegionSelection.NtscJapan;
 var palCic = PalCicVariant.PalA3195;
 var profileSimulation = false;
+var ppuSplitTrace = false;
 for (var index = 0; index < args.Length; index++)
 {
+    if (args[index].Equals("--ppu-split-trace", StringComparison.OrdinalIgnoreCase))
+    {
+        ppuSplitTrace = true;
+        continue;
+    }
+
     if (args[index].Equals("--profile", StringComparison.OrdinalIgnoreCase))
     {
         profileSimulation = true;
@@ -34,7 +42,7 @@ for (var index = 0; index < args.Length; index++)
 
     if (romArgument is not null)
     {
-        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile]");
+        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--ppu-split-trace]");
         return 2;
     }
 
@@ -105,6 +113,22 @@ var activeSimulator = host.Machine.ActiveMotherboard switch
     _ => throw new InvalidOperationException("No active motherboard simulator.")
 };
 if (profileSimulation) activeSimulator.SetProfilingEnabled(true);
+if (ppuSplitTrace)
+{
+    Rp2C02? tracedPpu = host.Machine.ActiveMotherboard switch
+    {
+        ActiveNesMotherboard.Famicom => host.Machine.Famicom.Ppu,
+        ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.Ppu,
+        _ => null
+    };
+    if (tracedPpu is not null)
+    {
+        tracedPpu.SplitTrace += trace => Console.WriteLine(
+            $"PPU SPLIT: frame={trace.Frame:N0}; scanline={trace.Scanline}; dot={trace.Dot}; " +
+            $"op={trace.Operation}; value=${trace.Value:X2}; v=${trace.VramAddress:X4}; " +
+            $"t=${trace.TemporaryAddress:X4}; x={trace.FineX}; w={(trace.WriteToggle ? 1 : 0)}");
+    }
+}
 var initial = host.Snapshot();
 Console.WriteLine("AxetosOS Products / NES — virtual hardware desktop host");
 Console.WriteLine($"ROM:        {romPath}");
@@ -120,6 +144,7 @@ Console.WriteLine($"Kernel:      {(activeSimulator.UsesStrictEventKernel ? "stri
 if (!activeSimulator.UsesStrictEventKernel)
     Console.WriteLine($"Legacy:      {string.Join(", ", activeSimulator.LegacyPollingComponents)}");
 if (profileSimulation) Console.WriteLine("Profiler:    enabled; component timing sampled 1/256; results every 5 seconds");
+if (ppuSplitTrace) Console.WriteLine("PPU trace:   sprite-zero and $2002/$2005/$2006 split-screen events enabled");
 
 const int MasterCyclesPerVideoBatch = 16_384;
 const int AudioTransferBufferSize = 4_096;
@@ -151,7 +176,7 @@ while (presenter.IsOpen)
 
     if (videoSink.CompletedFrame != lastPresentedFrame)
     {
-        videoSink.Pixels.AsSpan().CopyTo(surface.PixelSpan);
+        videoSink.CompletedPixels.Span.CopyTo(surface.PixelSpan);
         presenter.Present(surface, ScalingMode.IntegerNearest);
         lastPresentedFrame = videoSink.CompletedFrame;
     }
@@ -287,14 +312,31 @@ sealed class NativeFrameVideoSink : IVirtualNesVideoSink
     private const int Width = 256;
     private const int Height = 240;
     private static readonly uint[] Palette = BuildPalette();
-    public uint[] Pixels { get; } = new uint[Width * Height];
-    public ulong CompletedFrame { get; private set; }
+    private uint[] _renderPixels = new uint[Width * Height];
+    private uint[] _completedPixels = new uint[Width * Height];
+
+    /// <summary>
+    /// Immutable-for-the-current-frame presentation surface. The PPU always
+    /// writes into a separate render buffer, and the two buffers swap only
+    /// after pixel 255 of scanline 239 has been received.
+    /// </summary>
+    public ReadOnlyMemory<uint> CompletedPixels => _completedPixels;
+    public ulong CompletedFrame { get; private set; } = ulong.MaxValue;
 
     public void AcceptPixel(ulong frame, int x, int y, byte colorCode, byte emphasis)
     {
         if ((uint)x >= Width || (uint)y >= Height) return;
-        Pixels[(y * Width) + x] = ApplyEmphasis(Palette[colorCode & 0x3F], emphasis);
-        if (x == Width - 1 && y == Height - 1) CompletedFrame = frame;
+        _renderPixels[(y * Width) + x] = ApplyEmphasis(Palette[colorCode & 0x3F], emphasis);
+        if (x != Width - 1 || y != Height - 1 || frame == CompletedFrame) return;
+
+        // Publish a complete NES frame atomically. The frame guard also makes
+        // this robust against duplicate observations of the final PPU pixel.
+        // AdvanceMasterCycles runs in
+        // batches and can already be drawing the following frame when it
+        // returns to the host loop; without this swap, that partial next frame
+        // overwrote the image that was about to be presented.
+        (_renderPixels, _completedPixels) = (_completedPixels, _renderPixels);
+        CompletedFrame = frame;
     }
 
     private static uint[] BuildPalette()
@@ -327,7 +369,7 @@ sealed class NativeFrameVideoSink : IVirtualNesVideoSink
     }
 }
 
-sealed class NativePcmAudioSink(double masterClockHz, int sampleRate) : IVirtualNesScheduledAudioSink
+sealed class NativePcmAudioSink(double masterClockHz, int sampleRate) : IVirtualNesAudioSink
 {
     private readonly Queue<float> _samples = new();
     private readonly double _masterCyclesPerSample = masterClockHz / sampleRate;

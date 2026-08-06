@@ -72,8 +72,7 @@ public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirt
 
     public override void PowerOn()
     {
-        Array.Clear(_memory);
-        Array.Clear(_knownMasks);
+        InitializePowerUpState();
         _wasPowered = false;
         Data.Release();
     }
@@ -90,10 +89,12 @@ public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirt
 
         if (!_wasPowered)
         {
-            // SRAM data is not retained without package power. Keep a
-            // deterministic value array but mark every bit electrically unknown.
-            Array.Clear(_memory);
-            Array.Clear(_knownMasks);
+            // SRAM contents are unspecified after power is applied, but every
+            // cell settles to a concrete zero/one level. This virtual package
+            // chooses the valid all-zero cold-start state so software cannot
+            // accidentally inherit a warm-boot signature from an arbitrary
+            // pseudo-random pattern.
+            InitializePowerUpState();
             _wasPowered = true;
         }
 
@@ -153,6 +154,17 @@ public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirt
         ValidateAddress(address);
         value = _memory[address];
         return _knownMasks[address] == byte.MaxValue;
+    }
+
+
+    private void InitializePowerUpState()
+    {
+        // Real HM6116 power-up contents are unspecified. An all-zero array is
+        // one electrically valid settled state and provides deterministic cold
+        // boot behavior. In particular, it avoids random bytes accidentally
+        // matching software warm-reset signatures before RAM initialization.
+        Array.Clear(_memory);
+        Array.Fill(_knownMasks, byte.MaxValue);
     }
 
     private void CaptureWrite(int address)
