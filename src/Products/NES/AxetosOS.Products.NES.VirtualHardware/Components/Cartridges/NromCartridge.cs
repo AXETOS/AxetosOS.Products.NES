@@ -8,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 /// Standalone mapper-0 cartridge board. PRG and CHR devices react only to the
 /// normalized cartridge connector pins; no CPU, PPU, or motherboard calls are used.
 /// </summary>
-public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent
+public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent, IInputActivationContractProvider
 {
     private byte[] _prg = [];
     private byte[] _chr = [];
@@ -84,6 +84,23 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
     public byte LastCpuReadData { get; private set; }
     public ulong PpuReadCount { get; private set; }
     public ulong PpuWriteCount { get; private set; }
+
+    public PinActivationContract CompileInputActivation(DigitalPin pin)
+    {
+        ArgumentNullException.ThrowIfNull(pin);
+        if (pin.Direction == PinDirection.Input) return PinActivationContract.Always;
+        if (CpuData.Pins.Contains(pin)) return PinActivationContract.Never;
+        if (PpuAddressData.Pins.Contains(pin))
+        {
+            return PinActivationContract.When(() =>
+                PpuAle.SampledLevel == DigitalLevel.High ||
+                (_chrRam &&
+                 PpuAle.SampledLevel != DigitalLevel.High &&
+                 PpuWriteBar.SampledLevel == DigitalLevel.Low));
+        }
+
+        return PinActivationContract.Never;
+    }
 
     public bool ShouldWakeForSampledPin(DigitalPin pin)
     {

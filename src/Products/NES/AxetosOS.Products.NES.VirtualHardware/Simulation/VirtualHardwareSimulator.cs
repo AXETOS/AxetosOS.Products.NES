@@ -462,6 +462,7 @@ public sealed class VirtualHardwareSimulator
             var component = _components[componentIndex];
             _eventDrivenComponents[componentIndex] = component as IEventDrivenVirtualHardwareComponent;
             var clockEdgeOwner = component as IClockEdgeDrivenVirtualHardwareComponent;
+            var activationProvider = component as IInputActivationContractProvider;
             var selectiveInputOwner = component as ISelectiveInputDrivenVirtualHardwareComponent;
             var pins = component.Pins;
             for (var pinIndex = 0; pinIndex < pins.Count; pinIndex++)
@@ -470,10 +471,41 @@ public sealed class VirtualHardwareSimulator
                 pin.OwnerComponentIndex = componentIndex;
                 pin.Scheduler = this;
                 pin.ClockEdgeOwner = clockEdgeOwner;
-                pin.SelectiveInputOwner = selectiveInputOwner;
                 pin.WakeOwnerOnSampleChange = pin.Direction != PinDirection.Output;
+                pin.ActivationContract = CompilePinActivation(
+                    pin,
+                    activationProvider,
+                    selectiveInputOwner);
             }
         }
+    }
+
+
+    private static PinActivationContract CompilePinActivation(
+        DigitalPin pin,
+        IInputActivationContractProvider? activationProvider,
+        ISelectiveInputDrivenVirtualHardwareComponent? selectiveInputOwner)
+    {
+        if (pin.Direction == PinDirection.Output)
+        {
+            return PinActivationContract.Never;
+        }
+
+        if (activationProvider is not null)
+        {
+            return activationProvider.CompileInputActivation(pin);
+        }
+
+        if (selectiveInputOwner is not null)
+        {
+            // Compatibility path for packages not yet migrated to explicit
+            // topology-time activation contracts. The predicate is captured
+            // once during compilation rather than rediscovered at runtime.
+            return PinActivationContract.When(
+                () => selectiveInputOwner.ShouldWakeForSampledPin(pin));
+        }
+
+        return PinActivationContract.Always;
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]

@@ -99,3 +99,11 @@ The Famicom is the first demanding benchmark, not a special case inside the gene
 ## License
 
 MIT. See [LICENSE](LICENSE).
+## Power-on activation compilation
+
+At power-on or after a hardware/topology change, the motherboard builds an in-memory activation plan from the installed chip contracts and the actual wiring. A chip can declare that a pin transition always matters, never matters, or matters only while another control condition is active.
+
+The compiled plan lets the running motherboard route only meaningful electrical changes instead of repeatedly rediscovering pin roles and chip trigger conditions. Chips remain authoritative for their internal state and outputs; the motherboard only decides when the real chip package can possibly need evaluation.
+
+The plan is intentionally rebuilt in memory for each assembled machine rather than stored as a persistent cache. A small loading step is preferable to carrying topology-discovery checks through every simulated hardware cycle.
+

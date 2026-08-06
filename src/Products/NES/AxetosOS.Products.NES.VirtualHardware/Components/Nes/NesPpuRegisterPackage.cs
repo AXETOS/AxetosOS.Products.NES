@@ -136,6 +136,25 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
     public ReadOnlyMemory<byte> FrameBuffer => _frameBuffer;
     public bool HasPendingInternalWork => _renderFetchState != RenderFetchState.Idle;
 
+    public PinActivationContract CompileInputActivation(DigitalPin pin)
+    {
+        ArgumentNullException.ThrowIfNull(pin);
+        if (pin.Direction == PinDirection.Input) return PinActivationContract.Always;
+        if (Data.Pins.Contains(pin))
+        {
+            return PinActivationContract.When(() =>
+                ReadWrite.SampledLevel != DigitalLevel.High);
+        }
+
+        if (PpuData.Pins.Contains(pin))
+        {
+            return PinActivationContract.When(() =>
+                _renderReadIssued || PpuReadBar.DriveLevel == DigitalLevel.Low);
+        }
+
+        return PinActivationContract.Never;
+    }
+
     public bool ShouldWakeForSampledPin(DigitalPin pin)
     {
         ArgumentNullException.ThrowIfNull(pin);

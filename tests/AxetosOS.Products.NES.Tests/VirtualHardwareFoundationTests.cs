@@ -1,6 +1,8 @@
 using Xunit;
 using AxetosOS.Products.NES.VirtualHardware.Boards;
+using AxetosOS.Products.NES.VirtualHardware.Components;
 using AxetosOS.Products.NES.VirtualHardware.Components.Logic;
+using AxetosOS.Products.NES.VirtualHardware.Components.Instrumentation;
 using AxetosOS.Products.NES.VirtualHardware.Components.Clock;
 using AxetosOS.Products.NES.VirtualHardware.Components.Passives;
 using AxetosOS.Products.NES.VirtualHardware.Components.Power;
@@ -140,6 +142,61 @@ public sealed class VirtualHardwareFoundationTests
         Assert.Equal(before + 8, clockNet.ResolutionCount);
         Assert.Equal((ulong)8, clock.HalfCycleCount);
         Assert.Equal(DigitalLevel.Low, clockNet.Level);
+    }
+
+    [Fact]
+    public void Chip_activation_contract_is_compiled_once_and_gates_runtime_wakeup()
+    {
+        var board = new VirtualHardwareBoard("test.board.activation-contract");
+        var gate = board.Add(new DigitalSignalSource("test.gate", DigitalLevel.Low));
+        var data = board.Add(new DigitalSignalSource("test.data", DigitalLevel.Low));
+        var probe = board.Add(new GatedProbe("test.probe"));
+        board.Connect("GATE", gate.Output, probe.Gate);
+        board.Connect("DATA", data.Output, probe.Data);
+
+        var simulator = new VirtualHardwareSimulator(board);
+        board.PowerOn();
+        simulator.Settle();
+        var initialEvaluations = probe.EvaluationCount;
+
+        data.Set(DigitalLevel.High);
+        simulator.Settle();
+        Assert.Equal(initialEvaluations, probe.EvaluationCount);
+
+        gate.Set(DigitalLevel.High);
+        simulator.Settle();
+        Assert.Equal(initialEvaluations + 1, probe.EvaluationCount);
+
+        data.Set(DigitalLevel.Low);
+        simulator.Settle();
+        Assert.Equal(initialEvaluations + 2, probe.EvaluationCount);
+    }
+
+    private sealed class GatedProbe : VirtualHardwareComponent, IInputActivationContractProvider
+    {
+        public GatedProbe(string componentId) : base(componentId)
+        {
+            Gate = AddPin("GATE", PinDirection.Input);
+            Data = AddPin("DATA", PinDirection.Input);
+        }
+
+        public DigitalPin Gate { get; }
+        public DigitalPin Data { get; }
+        public int EvaluationCount { get; private set; }
+
+        public PinActivationContract CompileInputActivation(DigitalPin pin)
+        {
+            if (ReferenceEquals(pin, Gate)) return PinActivationContract.Always;
+            if (ReferenceEquals(pin, Data))
+            {
+                return PinActivationContract.When(() =>
+                    Gate.SampledLevel == DigitalLevel.High);
+            }
+
+            return PinActivationContract.Never;
+        }
+
+        public override void Evaluate() => EvaluationCount++;
     }
 
 }

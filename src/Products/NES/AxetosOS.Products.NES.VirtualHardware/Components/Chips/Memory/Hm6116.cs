@@ -6,7 +6,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Memory;
 /// Standalone HM6116-compatible 2K x 8 static RAM package.
 /// Memory access occurs only through address, data and control pins.
 /// </summary>
-public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent
+public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent, IInputActivationContractProvider
 {
     private readonly byte[] _memory = new byte[2048];
     private readonly byte[] _knownMasks = new byte[2048];
@@ -35,6 +35,20 @@ public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirt
     public DigitalPin WriteEnableBar { get; }
     public DigitalBus Address { get; }
     public DigitalBus Data { get; }
+
+    public PinActivationContract CompileInputActivation(DigitalPin pin)
+    {
+        ArgumentNullException.ThrowIfNull(pin);
+        if (pin.Direction == PinDirection.Input) return PinActivationContract.Always;
+        if (Data.Pins.Contains(pin))
+        {
+            return PinActivationContract.When(() =>
+                ChipSelectBar.SampledLevel == DigitalLevel.Low &&
+                WriteEnableBar.SampledLevel != DigitalLevel.High);
+        }
+
+        return PinActivationContract.Never;
+    }
 
     public bool ShouldWakeForSampledPin(DigitalPin pin)
     {
