@@ -199,4 +199,50 @@ public sealed class VirtualHardwareFoundationTests
         public override void Evaluate() => EvaluationCount++;
     }
 
+    [Fact]
+    public void Compiled_package_input_mask_combines_pin_changes_into_one_evaluation()
+    {
+        var board = new VirtualHardwareBoard("test.board.package-mask");
+        var first = board.Add(new DigitalSignalSource("test.first", DigitalLevel.Low));
+        var second = board.Add(new DigitalSignalSource("test.second", DigitalLevel.Low));
+        var probe = board.Add(new MaskProbe("test.mask-probe"));
+        board.Connect("FIRST", first.Output, probe.First);
+        board.Connect("SECOND", second.Output, probe.Second);
+
+        var simulator = new VirtualHardwareSimulator(board);
+        board.PowerOn();
+        simulator.Settle();
+        var initialEvaluations = probe.EvaluationCount;
+
+        first.Set(DigitalLevel.High);
+        second.Set(DigitalLevel.High);
+        simulator.Settle();
+
+        Assert.Equal(initialEvaluations + 1, probe.EvaluationCount);
+        Assert.Equal(0b11UL, probe.LastChangedInputMask & 0b11UL);
+    }
+
+    private sealed class MaskProbe : VirtualHardwareComponent, ICompiledInputDrivenVirtualHardwareComponent
+    {
+        public MaskProbe(string componentId) : base(componentId)
+        {
+            First = AddPin("FIRST", PinDirection.Input);
+            Second = AddPin("SECOND", PinDirection.Input);
+        }
+
+        public DigitalPin First { get; }
+        public DigitalPin Second { get; }
+        public int EvaluationCount { get; private set; }
+        public ulong LastChangedInputMask { get; private set; }
+
+        public override void Evaluate() => Evaluate(ulong.MaxValue);
+
+        public void Evaluate(ulong changedInputMask)
+        {
+            LastChangedInputMask = changedInputMask;
+            EvaluationCount++;
+        }
+    }
+
+
 }

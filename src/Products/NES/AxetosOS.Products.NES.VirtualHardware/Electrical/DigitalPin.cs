@@ -32,6 +32,7 @@ public sealed class DigitalPin
     internal VirtualHardwareSimulator? Scheduler { get; set; }
     internal IClockEdgeDrivenVirtualHardwareComponent? ClockEdgeOwner { get; set; }
     internal PinActivationContract ActivationContract { get; set; } = PinActivationContract.Never;
+    internal ulong OwnerInputChangeMask { get; set; }
     internal bool WakeOwnerOnSampleChange { get; set; }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -87,11 +88,9 @@ public sealed class DigitalPin
             return;
         }
 
-        if (!ActivationContract.IsActive())
-        {
-            return;
-        }
-
-        Scheduler?.NotifyComponentActive(OwnerComponentIndex);
+        Scheduler?.NotifySampledPinChanged(
+            OwnerComponentIndex,
+            OwnerInputChangeMask,
+            ActivationContract);
     }
 }

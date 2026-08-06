@@ -8,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 /// Standalone mapper-0 cartridge board. PRG and CHR devices react only to the
 /// normalized cartridge connector pins; no CPU, PPU, or motherboard calls are used.
 /// </summary>
-public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent, IInputActivationContractProvider
+public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent, IInputActivationContractProvider, ICompiledInputDrivenVirtualHardwareComponent
 {
     private byte[] _prg = [];
     private byte[] _chr = [];
@@ -125,6 +125,8 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
 
         return false;
     }
+
+    void ICompiledInputDrivenVirtualHardwareComponent.Evaluate(ulong changedInputMask) => Evaluate();
 
     public override void PowerOn() => Reset();
     public override void Reset()

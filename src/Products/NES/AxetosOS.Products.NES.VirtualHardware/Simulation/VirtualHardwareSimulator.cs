@@ -35,6 +35,8 @@ public sealed class VirtualHardwareSimulator
     private DigitalNet[] _nets;
     private IVirtualHardwareComponent[] _components;
     private IEventDrivenVirtualHardwareComponent?[] _eventDrivenComponents;
+    private ICompiledInputDrivenVirtualHardwareComponent?[] _compiledInputComponents;
+    private ulong[] _componentChangedInputMasks;
     private int _knownNetCount;
     private int _knownComponentCount;
     private ulong _knownTopologyRevision;
@@ -70,6 +72,8 @@ public sealed class VirtualHardwareSimulator
         _nets = Board.Nets.ToArray();
         _components = Board.Components.ToArray();
         _eventDrivenComponents = new IEventDrivenVirtualHardwareComponent?[_components.Length];
+        _compiledInputComponents = new ICompiledInputDrivenVirtualHardwareComponent?[_components.Length];
+        _componentChangedInputMasks = new ulong[_components.Length];
         _componentQueued = new bool[_components.Length];
         _componentQueue = new int[Math.Max(1, _components.Length)];
         _netQueued = new bool[_nets.Length];
@@ -325,28 +329,40 @@ public sealed class VirtualHardwareSimulator
         var index = DequeueComponent();
         _componentQueued[index] = false;
 
-        if (!profile)
-        {
-            _components[index].Evaluate();
-        }
-        else
-        {
-            var evaluation = ++_profileComponentEvaluations[index];
-            if ((evaluation - 1) % ProfileTimingSampleInterval == 0)
-            {
-                var started = Stopwatch.GetTimestamp();
-                _components[index].Evaluate();
-                _profileComponentTicks[index] += Stopwatch.GetTimestamp() - started;
-                _profileComponentTimedEvaluations[index]++;
-            }
-            else
-            {
-                _components[index].Evaluate();
-            }
-        }
+        EvaluateComponent(index, profile);
 
         var eventDriven = _eventDrivenComponents[index];
         if (eventDriven is not null && eventDriven.HasPendingInternalWork) QueueComponent(index);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private void EvaluateComponent(int index, bool profile)
+    {
+        var changedInputMask = _componentChangedInputMasks[index];
+        _componentChangedInputMasks[index] = 0;
+        var compiled = _compiledInputComponents[index];
+
+        if (!profile)
+        {
+            if (compiled is not null) compiled.Evaluate(changedInputMask);
+            else _components[index].Evaluate();
+            return;
+        }
+
+        var evaluation = ++_profileComponentEvaluations[index];
+        if ((evaluation - 1) % ProfileTimingSampleInterval == 0)
+        {
+            var started = Stopwatch.GetTimestamp();
+            if (compiled is not null) compiled.Evaluate(changedInputMask);
+            else _components[index].Evaluate();
+            _profileComponentTicks[index] += Stopwatch.GetTimestamp() - started;
+            _profileComponentTimedEvaluations[index]++;
+        }
+        else
+        {
+            if (compiled is not null) compiled.Evaluate(changedInputMask);
+            else _components[index].Evaluate();
+        }
     }
 
     private int SettleCompatibility(int maximumPasses)
@@ -403,25 +419,7 @@ public sealed class VirtualHardwareSimulator
             var index = DequeueComponent();
             _componentQueued[index] = false;
 
-            if (!profile)
-            {
-                _components[index].Evaluate();
-            }
-            else
-            {
-                var evaluation = ++_profileComponentEvaluations[index];
-                if ((evaluation - 1) % ProfileTimingSampleInterval == 0)
-                {
-                    var started = Stopwatch.GetTimestamp();
-                    _components[index].Evaluate();
-                    _profileComponentTicks[index] += Stopwatch.GetTimestamp() - started;
-                    _profileComponentTimedEvaluations[index]++;
-                }
-                else
-                {
-                    _components[index].Evaluate();
-                }
-            }
+            EvaluateComponent(index, profile);
 
             var eventDriven = _eventDrivenComponents[index];
             if (eventDriven is not null && eventDriven.HasPendingInternalWork) QueueComponent(index);
@@ -461,6 +459,7 @@ public sealed class VirtualHardwareSimulator
         {
             var component = _components[componentIndex];
             _eventDrivenComponents[componentIndex] = component as IEventDrivenVirtualHardwareComponent;
+            _compiledInputComponents[componentIndex] = component as ICompiledInputDrivenVirtualHardwareComponent;
             var clockEdgeOwner = component as IClockEdgeDrivenVirtualHardwareComponent;
             var activationProvider = component as IInputActivationContractProvider;
             var selectiveInputOwner = component as ISelectiveInputDrivenVirtualHardwareComponent;
@@ -469,6 +468,7 @@ public sealed class VirtualHardwareSimulator
             {
                 var pin = pins[pinIndex];
                 pin.OwnerComponentIndex = componentIndex;
+                pin.OwnerInputChangeMask = pinIndex < 64 ? 1UL << pinIndex : ulong.MaxValue;
                 pin.Scheduler = this;
                 pin.ClockEdgeOwner = clockEdgeOwner;
                 pin.WakeOwnerOnSampleChange = pin.Direction != PinDirection.Output;
@@ -509,6 +509,28 @@ public sealed class VirtualHardwareSimulator
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal void NotifySampledPinChanged(
+        int componentIndex,
+        ulong changedInputMask,
+        PinActivationContract activationContract)
+    {
+        if (componentIndex < 0) return;
+
+        // Once a package is already scheduled, further changed pins are folded
+        // into its pending package-level mask. There is no need to re-run gate
+        // predicates or queue logic for every additional pin transition.
+        if (_componentQueued[componentIndex])
+        {
+            _componentChangedInputMasks[componentIndex] |= changedInputMask;
+            return;
+        }
+
+        if (!activationContract.IsActive()) return;
+        _componentChangedInputMasks[componentIndex] |= changedInputMask;
+        QueueComponent(componentIndex);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal void NotifyComponentActive(int componentIndex)
     {
         if (componentIndex >= 0) QueueComponent(componentIndex);
@@ -516,7 +538,11 @@ public sealed class VirtualHardwareSimulator
 
     private void QueueAllComponents()
     {
-        for (var index = 0; index < _components.Length; index++) QueueComponent(index);
+        for (var index = 0; index < _components.Length; index++)
+        {
+            _componentChangedInputMasks[index] = ulong.MaxValue;
+            QueueComponent(index);
+        }
     }
 
     private void QueueContinuouslyPolledComponents()
@@ -589,6 +615,8 @@ public sealed class VirtualHardwareSimulator
         _knownTopologyRevision = Board.TopologyRevision;
 
         _eventDrivenComponents = new IEventDrivenVirtualHardwareComponent?[_components.Length];
+        _compiledInputComponents = new ICompiledInputDrivenVirtualHardwareComponent?[_components.Length];
+        _componentChangedInputMasks = new ulong[_components.Length];
         _componentQueued = new bool[_components.Length];
         _componentQueue = new int[Math.Max(1, _components.Length)];
         _componentQueueHead = 0;

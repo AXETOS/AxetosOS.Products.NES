@@ -9,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 /// background/sprite pixel pipelines are modelled here without using the
 /// playable emulator PPU.
 /// </summary>
-public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDrivenVirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent
+public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDrivenVirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent, ICompiledInputDrivenVirtualHardwareComponent
 {
     private readonly byte[] _vram = new byte[0x4000];
     private readonly byte[] _oam = new byte[256];
@@ -210,6 +210,8 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
             _vram[(address + index) & 0x3FFF] = data[index];
         }
     }
+
+    void ICompiledInputDrivenVirtualHardwareComponent.Evaluate(ulong changedInputMask) => Evaluate();
 
     public override void PowerOn()
     {

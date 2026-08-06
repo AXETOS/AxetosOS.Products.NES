@@ -4,7 +4,7 @@ A modular AxetosOS hardware product that builds NES-family machines from reusabl
 
 ## Current status
 
-**VirtualHardware version: v0.82.0**
+**VirtualHardware version: v0.84.0**
 
 The Famicom composition boots and runs real NROM software through the virtual RP2A03, RP2C02, RAM, address latch, controller hardware, cartridge board, pins, nets and clocks. Video comes from the RP2C02 output and audio comes from the RP2A03 DAC output.
 
@@ -20,7 +20,7 @@ AxetosOS products are assembled from reusable modules. In this product:
 - **the simulator** provides generic electrical resolution, scheduling and topology compilation;
 - **the running NES** emerges from the assembled motherboard, chips and cartridge.
 
-The shared engine does not contain direct CPU-memory, PPU-tile, mapper, renderer or APU shortcuts. Motherboard-specific execution plans may reuse known static board flow, but they must still execute the installed chip modules and resolve the real virtual wiring.
+The shared engine does not contain direct CPU-memory, PPU-tile, mapper, renderer or APU shortcuts. Motherboard-specific execution plans may use known static board flow, but they must still execute the installed chip modules and resolve the real virtual wiring.
 
 ## Included motherboard compositions
 
@@ -30,17 +30,32 @@ The shared engine does not contain direct CPU-memory, PPU-tile, mapper, renderer
 
 A different or enhanced motherboard can reuse the same chip modules, replace chips, add memory or peripherals, and compile a different execution plan from its own topology.
 
-## v0.82.0 — motherboard phase-root execution routes
+## Power-on motherboard compilation
 
-- Extends the motherboard-owned clock plan with a compiled route to the actual clock net.
-- The motherboard validates and caches the phase root from its assembled wiring.
-- Each clock transition still drives the real oscillator pin and resolves the real electrical net.
-- The known phase-root net is settled directly before the generic causal event queue continues with affected chips and downstream nets.
-- Rewiring or replacing hardware invalidates the cached route through the board topology revision.
-- The route is generic infrastructure: any motherboard can compile a known source transition from its own wiring.
-- Keeps the generic simulator as a safe fallback whenever a source route cannot be applied.
+At power-on, ROM load or after a topology change, the motherboard builds an in-memory execution plan from the installed chips, their pin/activation contracts and the actual wiring.
 
-This is the first execution-plan step that uses motherboard knowledge to avoid rediscovering a static signal route at runtime while preserving all dynamic chip behavior.
+The plan records:
+
+- pin roles and package ownership;
+- chip activation and gating conditions;
+- direct electrical routes;
+- package-level changed-input masks;
+- clock and sequential boundaries;
+- the components that can actually react to each signal path.
+
+This startup work is intentionally performed once. A visible loading pause is preferable to repeating topology and activation checks during millions of simulated hardware cycles.
+
+The chips remain authoritative for their internal state and outputs. The motherboard only routes signals and decides when a real chip package can possibly need evaluation.
+
+## v0.84.0 — package-level compiled input masks
+
+- Combines multiple changed package pins into one pending 64-bit input mask.
+- Avoids repeating activation-predicate and queue checks after a package is already scheduled.
+- Lets compiled chip packages receive one input-change event for all changes accumulated since their previous evaluation.
+- Keeps every individual pin level and revision observable.
+- Keeps clock-edge handling, electrical resolution, contention and chip behavior unchanged.
+- Uses the existing generic `Evaluate()` path for modules that have not adopted the optional compiled-input contract.
+- Rebuilds all package pin masks automatically when the topology changes.
 
 ## Repository layout
 
@@ -87,10 +102,12 @@ The desktop title reports current, minimum, maximum and average FPS. Moving or r
 
 The target is native real-time operation while preserving the hardware model. Work is focused on:
 
-- motherboard-owned phase plans;
+- motherboard-owned signal routing;
+- chip-published activation contracts;
+- package-level changed-input and output masks;
 - topology-derived dependency routes;
 - dense pin/net/component indexes;
-- packed buses and changed masks;
+- packed buses;
 - explicit sequential boundaries;
 - validation between generic and compiled execution.
 
@@ -99,11 +116,3 @@ The Famicom is the first demanding benchmark, not a special case inside the gene
 ## License
 
 MIT. See [LICENSE](LICENSE).
-## Power-on activation compilation
-
-At power-on or after a hardware/topology change, the motherboard builds an in-memory activation plan from the installed chip contracts and the actual wiring. A chip can declare that a pin transition always matters, never matters, or matters only while another control condition is active.
-
-The compiled plan lets the running motherboard route only meaningful electrical changes instead of repeatedly rediscovering pin roles and chip trigger conditions. Chips remain authoritative for their internal state and outputs; the motherboard only decides when the real chip package can possibly need evaluation.
-
-The plan is intentionally rebuilt in memory for each assembled machine rather than stored as a persistent cache. A small loading step is preferable to carrying topology-discovery checks through every simulated hardware cycle.
-
