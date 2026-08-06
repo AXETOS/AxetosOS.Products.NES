@@ -176,7 +176,82 @@ public sealed class VirtualHardwareSimulator
             : SettleCompatibility(maximumPropagationPasses);
     }
 
+    /// <summary>
+    /// Settles a transition whose first dirty net is already known by a
+    /// motherboard execution plan. The net still performs its normal
+    /// electrical resolution and pin callbacks; this only avoids routing the
+    /// known phase root through the generic dirty-net queue.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal int SettleCompiledFromSource(
+        DigitalNet sourceNet,
+        int maximumPropagationPasses = 64)
+    {
+        ArgumentNullException.ThrowIfNull(sourceNet);
+
+        if (!_strictEventDrivenTopology ||
+            !ReferenceEquals(sourceNet.Scheduler, this) ||
+            sourceNet.SchedulerIndex < 0)
+        {
+            return SettleCompiled(maximumPropagationPasses);
+        }
+
+        return _profilingEnabled
+            ? SettleStrictFromSourceProfiled(sourceNet, maximumPropagationPasses)
+            : SettleStrictFromSource(sourceNet, maximumPropagationPasses);
+    }
+
     internal void EnsureCompiledTopologyCurrent() => RefreshTopologyIfNeeded();
+
+    private int SettleStrictFromSource(DigitalNet sourceNet, int maximumEvents)
+    {
+        var events = ResolveCompiledSource(sourceNet) ? 1 : 0;
+        events += DrainStrictEventQueue(maximumEvents, false);
+        SettleCount++;
+        return events == 0 ? 1 : events;
+    }
+
+    private int SettleStrictFromSourceProfiled(DigitalNet sourceNet, int maximumEvents)
+    {
+        var started = Stopwatch.GetTimestamp();
+        _profileSettleCalls++;
+        try
+        {
+            var netStarted = Stopwatch.GetTimestamp();
+            var events = ResolveCompiledSource(sourceNet) ? 1 : 0;
+            _profileNetResolutionTicks += Stopwatch.GetTimestamp() - netStarted;
+            events += DrainStrictEventQueue(maximumEvents, true);
+            SettleCount++;
+            var reported = events == 0 ? 1 : events;
+            _profilePropagationPasses += (ulong)reported;
+            if (reported > _profileMaximumPasses) _profileMaximumPasses = reported;
+            return reported;
+        }
+        finally
+        {
+            _profileSettleTicks += Stopwatch.GetTimestamp() - started;
+        }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private bool ResolveCompiledSource(DigitalNet sourceNet)
+    {
+        var sourceIndex = sourceNet.SchedulerIndex;
+        if (_netQueueCount == 0 || _netQueue[_netQueueHead] != sourceIndex)
+        {
+            return false;
+        }
+
+        DequeueNet();
+        _netQueued[sourceIndex] = false;
+        if (!sourceNet.IsDirty)
+        {
+            return false;
+        }
+
+        sourceNet.Resolve();
+        return true;
+    }
 
     private int SettleStrict(int maximumEvents)
     {

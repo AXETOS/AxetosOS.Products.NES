@@ -4,11 +4,11 @@ A modular AxetosOS hardware product that builds NES-family machines from reusabl
 
 ## Current status
 
-**VirtualHardware version: v0.81.0**
+**VirtualHardware version: v0.82.0**
 
 The Famicom composition boots and runs real NROM software through the virtual RP2A03, RP2C02, RAM, address latch, controller hardware, cartridge board, pins, nets and clocks. Video comes from the RP2C02 output and audio comes from the RP2A03 DAC output.
 
-The current performance benchmark is Donkey Kong on the Famicom board. v0.79.0 sustained approximately 12.8 FPS on the development machine. v0.80.0 was measured as a regression, so its grouped net fan-out implementation has been removed from the active baseline. v0.81.0 starts the motherboard-owned compiled execution-plan architecture.
+I am actively improving performance with the goal of reaching full real-time execution without compromising the modular, pin-driven hardware design. Donkey Kong on the Famicom board is currently used as the main performance and correctness benchmark.
 
 ## Architecture
 
@@ -30,16 +30,17 @@ The shared engine does not contain direct CPU-memory, PPU-tile, mapper, renderer
 
 A different or enhanced motherboard can reuse the same chip modules, replace chips, add memory or peripherals, and compile a different execution plan from its own topology.
 
-## v0.81.0 — motherboard-owned compiled clock execution
+## v0.82.0 — motherboard phase-root execution routes
 
-- Adds a reusable `CompiledClockExecutionPlan` for oscillator-driven motherboards.
-- Famicom, NTSC NES and PAL NES now own and invoke their compiled master-clock plans.
-- PAL also owns an independent compiled CIC-clock plan.
-- Validates topology once per requested cycle batch instead of rediscovering it for every half-cycle.
-- Detects chip additions and wiring changes through an explicit board topology revision.
-- Continues to toggle the real oscillator, resolve real nets and execute real chip contracts after every half-cycle.
-- Removes the v0.80.0 grouped fan-out regression and restores the faster v0.79.0 pin-dispatch behavior.
-- Establishes the execution-plan boundary needed for larger motherboard-specific phase plans.
+- Extends the motherboard-owned clock plan with a compiled route to the actual clock net.
+- The motherboard validates and caches the phase root from its assembled wiring.
+- Each clock transition still drives the real oscillator pin and resolves the real electrical net.
+- The known phase-root net is settled directly before the generic causal event queue continues with affected chips and downstream nets.
+- Rewiring or replacing hardware invalidates the cached route through the board topology revision.
+- The route is generic infrastructure: any motherboard can compile a known source transition from its own wiring.
+- Keeps the generic simulator as a safe fallback whenever a source route cannot be applied.
+
+This is the first execution-plan step that uses motherboard knowledge to avoid rediscovering a static signal route at runtime while preserving all dynamic chip behavior.
 
 ## Repository layout
 

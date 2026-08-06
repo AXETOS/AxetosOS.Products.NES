@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using AxetosOS.Products.NES.VirtualHardware.Components.Clock;
+using AxetosOS.Products.NES.VirtualHardware.Electrical;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Simulation;
 
@@ -14,6 +15,8 @@ public sealed class CompiledClockExecutionPlan
     private readonly DigitalOscillator _clock;
     private readonly VirtualHardwareSimulator _simulator;
     private readonly int _maximumPropagationPasses;
+    private DigitalNet? _compiledClockNet;
+    private ulong _compiledTopologyRevision = ulong.MaxValue;
 
     public CompiledClockExecutionPlan(
         DigitalOscillator clock,
@@ -32,7 +35,7 @@ public sealed class CompiledClockExecutionPlan
 
     public void AdvanceHalfCycle()
     {
-        _simulator.EnsureCompiledTopologyCurrent();
+        EnsureRouteCurrent();
         AdvanceHalfCycleUnchecked();
     }
 
@@ -46,7 +49,7 @@ public sealed class CompiledClockExecutionPlan
         // Cartridge insertion, chip replacement, or rewiring is checked once
         // for the complete host batch. The static motherboard flow is then
         // reused for every phase in that batch.
-        _simulator.EnsureCompiledTopologyCurrent();
+        EnsureRouteCurrent();
         if (afterCycle is null)
         {
             for (var cycle = 0; cycle < cycles; cycle++)
@@ -65,10 +68,25 @@ public sealed class CompiledClockExecutionPlan
         }
     }
 
+    private void EnsureRouteCurrent()
+    {
+        _simulator.EnsureCompiledTopologyCurrent();
+        var revision = _simulator.Board.TopologyRevision;
+        if (_compiledTopologyRevision == revision && _compiledClockNet is not null)
+        {
+            return;
+        }
+
+        _compiledClockNet = _clock.Output.Net
+            ?? throw new InvalidOperationException(
+                $"Clock '{_clock.ComponentId}' is not connected to a motherboard net.");
+        _compiledTopologyRevision = revision;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AdvanceHalfCycleUnchecked()
     {
         _clock.AdvanceHalfCycle();
-        _simulator.SettleCompiled(_maximumPropagationPasses);
+        _simulator.SettleCompiledFromSource(_compiledClockNet!, _maximumPropagationPasses);
     }
 }

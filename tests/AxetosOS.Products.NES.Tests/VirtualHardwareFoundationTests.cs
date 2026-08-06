@@ -120,4 +120,26 @@ public sealed class VirtualHardwareFoundationTests
         Assert.Equal(DigitalLevel.Low, secondOutput.Level);
     }
 
+    [Fact]
+    public void Compiled_clock_plan_resolves_the_known_clock_net_for_each_phase()
+    {
+        var board = new VirtualHardwareBoard("test.board.compiled-phase-root");
+        var clock = board.Add(new DigitalOscillator("test.clock", 1_000_000));
+        var inverter = board.Add(new NotGate("test.inverter"));
+        var clockNet = board.Connect("CLOCK", clock.Output, inverter.Input);
+        board.Connect("OUTPUT", inverter.Output);
+
+        var simulator = new VirtualHardwareSimulator(board);
+        board.PowerOn();
+        simulator.Settle();
+        var plan = new CompiledClockExecutionPlan(clock, simulator);
+        var before = clockNet.ResolutionCount;
+
+        plan.AdvanceCycles(4);
+
+        Assert.Equal(before + 8, clockNet.ResolutionCount);
+        Assert.Equal((ulong)8, clock.HalfCycleCount);
+        Assert.Equal(DigitalLevel.Low, clockNet.Level);
+    }
+
 }
