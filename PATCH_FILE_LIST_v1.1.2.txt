@@ -1,0 +1,8 @@
+Directory.Build.props
+README.md
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalPin.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalNet.cs
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareChipBoundaryTests.cs
+PATCH_NOTES_v1.1.2.txt
+Apply-v1.1.2.ps1
+PATCH_FILE_LIST_v1.1.2.txt

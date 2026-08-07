@@ -1,0 +1,15 @@
+Apply-v1.2.0.ps1
+Directory.Build.props
+PATCH_FILE_LIST_v1.2.0.txt
+PATCH_NOTES_v1.2.0.txt
+README.md
+src/Products/NES/AxetosOS.Products.NES.DesktopHost/Program.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A03.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A07.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C02.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C07.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/VirtualHardwareComponent.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalBus.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalNet.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalPin.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/VirtualHardwareSimulator.cs

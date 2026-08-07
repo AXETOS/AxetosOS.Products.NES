@@ -1,18 +1,22 @@
 using System.Runtime.CompilerServices;
 using AxetosOS.Products.NES.VirtualHardware.Components;
-using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Electrical;
 
 /// <summary>
-/// A physical digital pin. Components drive output-capable pins and sample the
-/// resolved level produced by the net attached to the pin.
+/// A physical package pin. Output-capable pins drive the motherboard connection
+/// immediately when their state changes. Input-capable pins retain only the
+/// resolved digital level presented to the package and notify their owning chip
+/// directly when that input changes.
 /// </summary>
 public sealed class DigitalPin
 {
     private DigitalLevel _driveLevel = DigitalLevel.HighImpedance;
     private DigitalDriveStrength _driveStrength = DigitalDriveStrength.Strong;
     private DigitalLevel _sampledLevel = DigitalLevel.Unknown;
+    private DigitalLevel _lastAcceptedInputLevel = DigitalLevel.Unknown;
+    private int _inputActivationPhase;
+    private ulong _inputActivationEdgeCount;
 
     public DigitalPin(string name, PinDirection direction)
     {
@@ -27,20 +31,22 @@ public sealed class DigitalPin
     public DigitalLevel DriveLevel => _driveLevel;
     public DigitalDriveStrength DriveStrength => _driveStrength;
     public DigitalLevel SampledLevel => _sampledLevel;
-    internal ulong Revision { get; private set; }
+    public bool IsInputCapable => Direction is PinDirection.Input or PinDirection.Bidirectional;
+    public bool IsOutputCapable => Direction is not PinDirection.Input;
+
+    internal VirtualHardwareComponent? OwnerComponent { get; set; }
     internal int OwnerComponentIndex { get; set; } = -1;
-    internal VirtualHardwareSimulator? Scheduler { get; set; }
-    internal IClockEdgeDrivenVirtualHardwareComponent? ClockEdgeOwner { get; set; }
-    internal PinActivationContract ActivationContract { get; set; } = PinActivationContract.Never;
-    internal ulong OwnerInputChangeMask { get; set; }
-    internal bool WakeOwnerOnSampleChange { get; set; }
+    internal ulong InputChangeMask { get; init; }
+    internal DigitalInputActivation InputActivation { get; set; } = DigitalInputActivation.AnyChange;
+    internal int InputActivationPeriod { get; set; } = 1;
+    internal ulong InputActivationEdgeCount => _inputActivationEdgeCount;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Drive(
         DigitalLevel level,
         DigitalDriveStrength strength = DigitalDriveStrength.Strong)
     {
-        if (Direction == PinDirection.Input)
+        if (!IsOutputCapable)
         {
             throw new InvalidOperationException($"Input pin '{Name}' cannot drive a net.");
         }
@@ -50,47 +56,134 @@ public sealed class DigitalPin
             throw new ArgumentOutOfRangeException(nameof(level), "Contention is a resolved net state, not a drive state.");
         }
 
-        if (_driveLevel == level && _driveStrength == strength)
-        {
-            return;
-        }
+        if (_driveLevel == level && _driveStrength == strength) return;
 
         _driveLevel = level;
         _driveStrength = strength;
-        Revision++;
-        Net?.MarkDirty();
+
+        var net = Net;
+        if (net is null) return;
+        if (OwnerComponent?.TryStageOutputChange(net) == true) return;
+        net.PropagateDriverChange();
     }
+
+    /// <summary>
+    /// Fast path used by a DigitalBus that validated all member pins as
+    /// output-capable at construction. Only binary strong-drive states enter
+    /// here, so per-bit direction/contention validation is unnecessary.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void DriveBinaryStrong(DigitalLevel level)
+    {
+        if (_driveLevel == level && _driveStrength == DigitalDriveStrength.Strong) return;
+        _driveLevel = level;
+        _driveStrength = DigitalDriveStrength.Strong;
+
+        var net = Net;
+        if (net is null) return;
+        if (OwnerComponent?.TryStageOutputChange(net) == true) return;
+        net.PropagateDriverChange();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void ReleaseValidatedOutput()
+    {
+        if (_driveLevel == DigitalLevel.HighImpedance && _driveStrength == DigitalDriveStrength.Strong) return;
+        _driveLevel = DigitalLevel.HighImpedance;
+        _driveStrength = DigitalDriveStrength.Strong;
+
+        var net = Net;
+        if (net is null) return;
+        if (OwnerComponent?.TryStageOutputChange(net) == true) return;
+        net.PropagateDriverChange();
+    }
+
+    /// <summary>
+    /// Updates the drive state of a topology-validated single-driver source.
+    /// The compiled motherboard trace performs the immediate propagation.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void DriveCompiledSource(DigitalLevel level) => _driveLevel = level;
 
     public void Release() => Drive(DigitalLevel.HighImpedance);
 
-    internal void SetSampledLevel(DigitalLevel level)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void SetObservedLevel(DigitalLevel level)
     {
-        if (_sampledLevel == level)
-        {
-            return;
-        }
-
         _sampledLevel = level;
-        Revision++;
+        if (IsInputCapable) _lastAcceptedInputLevel = level;
+    }
 
-        // The topology compiler binds each physical pin directly to the
-        // applicable package contracts. This keeps the pin-driven model while
-        // removing component-array lookup and repeated interface discovery
-        // from every resolved electrical transition.
-        if (!WakeOwnerOnSampleChange)
+    /// <summary>
+    /// Hot path for a topology-validated rising-edge-only clock input. The
+    /// motherboard must still present both electrical levels, but a falling
+    /// edge does nothing beyond recording Low at the package pin. Rising edges
+    /// update the chip-owned divider counter and return true only when the
+    /// package actually needs to wake.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryAcceptCompiledRisingEdgeClockLevel(DigitalLevel level)
+    {
+        var previous = _lastAcceptedInputLevel;
+        _sampledLevel = level;
+        if (previous == level) return false;
+        _lastAcceptedInputLevel = level;
+
+        // High -> Low is electrically visible at the pin but never enters the
+        // owning chip's logic and never touches the activation/divider counter.
+        if (level != DigitalLevel.High) return false;
+
+        _inputActivationEdgeCount++;
+        if (InputActivationPeriod == 1) return true;
+
+        _inputActivationPhase++;
+        if (_inputActivationPhase < InputActivationPeriod) return false;
+        _inputActivationPhase = 0;
+        return true;
+    }
+
+    /// <summary>
+    /// Presents a resolved motherboard level to this package pin. A
+    /// bidirectional pin accepts an incoming transition only while its own
+    /// output driver is released, so a chip cannot react to its own drive.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryAcceptInputLevel(DigitalLevel level)
+    {
+        // SampledLevel is the physical level at the package pin even while a
+        // bidirectional output is driving. Incoming-transition history is kept
+        // separately so releasing a bus does not invent a chip input edge.
+        _sampledLevel = level;
+
+        if (Direction == PinDirection.Bidirectional && _driveLevel != DigitalLevel.HighImpedance)
         {
-            return;
+            return false;
         }
 
-        var clockEdgeOwner = ClockEdgeOwner;
-        if (clockEdgeOwner is not null && clockEdgeOwner.TryHandleClockSample(this, level))
-        {
-            return;
-        }
+        var previous = _lastAcceptedInputLevel;
+        if (previous == level) return false;
+        _lastAcceptedInputLevel = level;
 
-        Scheduler?.NotifySampledPinChanged(
-            OwnerComponentIndex,
-            OwnerInputChangeMask,
-            ActivationContract);
+        var activatingEdge = InputActivation switch
+        {
+            DigitalInputActivation.RisingEdge => level == DigitalLevel.High && previous != DigitalLevel.High,
+            DigitalInputActivation.FallingEdge => level == DigitalLevel.Low && previous != DigitalLevel.Low,
+            _ => true
+        };
+        if (!activatingEdge) return false;
+
+        _inputActivationEdgeCount++;
+        if (InputActivationPeriod == 1) return true;
+
+        _inputActivationPhase++;
+        if (_inputActivationPhase < InputActivationPeriod) return false;
+        _inputActivationPhase = 0;
+        return true;
+    }
+
+    internal void ResetInputActivationCounter()
+    {
+        _inputActivationPhase = 0;
+        _inputActivationEdgeCount = 0;
     }
 }

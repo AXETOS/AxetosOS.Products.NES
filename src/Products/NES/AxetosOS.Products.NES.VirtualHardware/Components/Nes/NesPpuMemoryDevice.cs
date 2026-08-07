@@ -11,6 +11,9 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 /// </summary>
 public sealed class NesPpuMemoryDevice : VirtualHardwareComponent
 {
+    private readonly ulong _addressInputMask;
+    private readonly ulong _dataInputMask;
+    private readonly ulong _controlInputMask;
     private readonly byte[] _characterMemory = new byte[8 * 1024];
     private readonly byte[] _ciram;
     private readonly byte[] _palette = new byte[32];
@@ -44,6 +47,11 @@ public sealed class NesPpuMemoryDevice : VirtualHardwareComponent
 
         ReadBar = AddPin("/RD", PinDirection.Input);
         WriteBar = AddPin("/WR", PinDirection.Input);
+        _addressInputMask = Address.InputChangeMask;
+        _dataInputMask = Data.InputChangeMask;
+        _controlInputMask = ReadBar.InputChangeMask | WriteBar.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalBus Address { get; }
@@ -55,7 +63,7 @@ public sealed class NesPpuMemoryDevice : VirtualHardwareComponent
     public ulong ReadDriveCount { get; private set; }
     public ulong WriteCount { get; private set; }
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         if (IsCharacterRam) Array.Clear(_characterMemory);
         Array.Clear(_ciram);
@@ -66,14 +74,29 @@ public sealed class NesPpuMemoryDevice : VirtualHardwareComponent
         Data.Release();
     }
 
-    public override void Reset()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        _writeActive = false;
-        Data.Release();
-    }
+        var controlChanged = (changedInputMask & _controlInputMask) != 0;
+        var addressChanged = (changedInputMask & _addressInputMask) != 0;
+        var dataChanged = (changedInputMask & _dataInputMask) != 0;
+        if (!controlChanged && !addressChanged && !dataChanged) return;
 
-    public override void Evaluate()
-    {
+        var reading = ReadBar.SampledLevel == DigitalLevel.Low && WriteBar.SampledLevel != DigitalLevel.Low;
+        var writing = WriteBar.SampledLevel == DigitalLevel.Low && ReadBar.SampledLevel != DigitalLevel.Low;
+        if (!reading && !writing)
+        {
+            if (controlChanged)
+            {
+                EndWrite();
+                Data.Release();
+            }
+            return;
+        }
+
+        // During a read, incoming D changes are bus echoes. During inactivity,
+        // address/data pins can toggle without entering the memory array.
+        if (reading && dataChanged && !addressChanged && !controlChanged) return;
+
         if (!Address.TrySample(out var rawAddress))
         {
             EndWrite();
@@ -82,9 +105,6 @@ public sealed class NesPpuMemoryDevice : VirtualHardwareComponent
         }
 
         var address = NormalizeAddress((ushort)rawAddress);
-        var reading = ReadBar.SampledLevel == DigitalLevel.Low && WriteBar.SampledLevel != DigitalLevel.Low;
-        var writing = WriteBar.SampledLevel == DigitalLevel.Low && ReadBar.SampledLevel != DigitalLevel.Low;
-
         if (reading)
         {
             EndWrite();
@@ -94,7 +114,7 @@ public sealed class NesPpuMemoryDevice : VirtualHardwareComponent
         }
 
         Data.Release();
-        if (!writing || !Data.TrySample(out var rawValue))
+        if (!Data.TrySample(out var rawValue))
         {
             EndWrite();
             return;

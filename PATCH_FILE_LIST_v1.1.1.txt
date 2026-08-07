@@ -1,0 +1,5 @@
+Apply-v1.1.1.ps1
+Directory.Build.props
+PATCH_NOTES_v1.1.1.txt
+README.md
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareFoundationTests.cs

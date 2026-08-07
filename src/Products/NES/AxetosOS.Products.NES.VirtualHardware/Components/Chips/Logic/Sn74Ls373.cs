@@ -7,11 +7,19 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 /// three-state output enable. Storage and output behavior are determined only
 /// by package power and pin levels.
 /// </summary>
-public sealed class Sn74Ls373 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
+public sealed class Sn74Ls373 : VirtualHardwareComponent
 {
     private byte _latchedValue;
     private byte _latchedKnownMask;
     private bool _wasPowered;
+    private bool _outputStateValid;
+    private byte _outputValue;
+    private byte _outputKnownMask;
+    private DigitalLevel _outputEnableState = DigitalLevel.Unknown;
+    private readonly ulong _powerInputMask;
+    private readonly ulong _latchEnableInputMask;
+    private readonly ulong _outputEnableInputMask;
+    private readonly ulong _dataInputMask;
 
     public Sn74Ls373(string componentId) : base(componentId)
     {
@@ -26,6 +34,13 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent, IInputDrivenVirtualHar
         Q = new DigitalBus(
             $"{componentId}.Q",
             Enumerable.Range(0, 8).Select(bit => AddPin($"Q{bit}", PinDirection.Output)).ToArray());
+
+        _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
+        _latchEnableInputMask = LatchEnable.InputChangeMask;
+        _outputEnableInputMask = OutputEnableBar.InputChangeMask;
+        _dataInputMask = D.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalPin Vcc { get; }
@@ -38,21 +53,46 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent, IInputDrivenVirtualHar
     public byte LatchedKnownMask => _latchedKnownMask;
     public bool IsLatchedValueKnown => _latchedKnownMask == byte.MaxValue;
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         _latchedValue = 0;
         _latchedKnownMask = 0;
         _wasPowered = false;
+        _outputStateValid = false;
+        _outputEnableState = DigitalLevel.High;
         Q.Release();
     }
 
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask) => ProcessInputChanges(changedInputMask);
+
+    private void ProcessInputChanges(ulong changedInputMask)
     {
+        if (changedInputMask == 0) return;
+
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        if (!_wasPowered && !powerChanged) return;
+
+        var latchEnableChanged = (changedInputMask & _latchEnableInputMask) != 0;
+        var outputEnableChanged = (changedInputMask & _outputEnableInputMask) != 0;
+        var dataChanged = (changedInputMask & _dataInputMask) != 0;
+        if (!powerChanged && !latchEnableChanged && !outputEnableChanged && !dataChanged) return;
+
+        // The transparent input stage is disconnected from storage while LE is
+        // Low. D0-D7 still receive their electrical levels, but changes there
+        // cannot alter storage or Q until LE becomes High again.
+        if (!powerChanged && !latchEnableChanged && !outputEnableChanged
+            && dataChanged && LatchEnable.SampledLevel == DigitalLevel.Low)
+        {
+            return;
+        }
+
         var powered = IsPowered();
         if (!powered)
         {
             _wasPowered = false;
-            Q.Release();
+            if (_outputEnableState != DigitalLevel.High || _outputStateValid) Q.Release();
+            _outputEnableState = DigitalLevel.High;
+            _outputStateValid = false;
             return;
         }
 
@@ -80,16 +120,27 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent, IInputDrivenVirtualHar
                 DriveLatchedValue();
                 break;
             case DigitalLevel.High:
-                Q.Release();
+                if (_outputEnableState != DigitalLevel.High) Q.Release();
+                _outputEnableState = DigitalLevel.High;
+                _outputStateValid = false;
                 break;
             default:
-                DriveUnknownOutputs();
+                if (_outputEnableState != DigitalLevel.Unknown || _outputStateValid) DriveUnknownOutputs();
+                _outputEnableState = DigitalLevel.Unknown;
+                _outputStateValid = false;
                 break;
         }
     }
 
     private void CaptureInputs()
     {
+        if (D.TrySample(out var raw))
+        {
+            _latchedValue = (byte)raw;
+            _latchedKnownMask = byte.MaxValue;
+            return;
+        }
+
         for (var bit = 0; bit < D.Width; bit++)
         {
             var mask = (byte)(1 << bit);
@@ -112,18 +163,34 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent, IInputDrivenVirtualHar
 
     private void DriveLatchedValue()
     {
-        for (var bit = 0; bit < Q.Width; bit++)
+        if (_outputStateValid
+            && _outputEnableState == DigitalLevel.Low
+            && _outputValue == _latchedValue
+            && _outputKnownMask == _latchedKnownMask)
         {
-            var mask = 1 << bit;
-            if ((_latchedKnownMask & mask) == 0)
+            return;
+        }
+
+        if (_latchedKnownMask == byte.MaxValue)
+        {
+            Q.Drive(_latchedValue);
+        }
+        else
+        {
+            for (var bit = 0; bit < Q.Width; bit++)
             {
-                Q.Pins[bit].Drive(DigitalLevel.Unknown);
-            }
-            else
-            {
-                Q.Pins[bit].Drive((_latchedValue & mask) == 0 ? DigitalLevel.Low : DigitalLevel.High);
+                var mask = 1 << bit;
+                if ((_latchedKnownMask & mask) == 0)
+                    Q.Pins[bit].Drive(DigitalLevel.Unknown);
+                else
+                    Q.Pins[bit].Drive((_latchedValue & mask) == 0 ? DigitalLevel.Low : DigitalLevel.High);
             }
         }
+
+        _outputStateValid = true;
+        _outputEnableState = DigitalLevel.Low;
+        _outputValue = _latchedValue;
+        _outputKnownMask = _latchedKnownMask;
     }
 
     private void DriveUnknownOutputs()

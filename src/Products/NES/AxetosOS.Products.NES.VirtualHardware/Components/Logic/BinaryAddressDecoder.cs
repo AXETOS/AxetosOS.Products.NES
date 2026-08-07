@@ -5,6 +5,9 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Logic;
 /// <summary>Pin-driven one-of-N binary address decoder with active-low enable.</summary>
 public sealed class BinaryAddressDecoder : VirtualHardwareComponent
 {
+    private readonly ulong _addressInputMask;
+    private readonly ulong _enableInputMask;
+    private bool _outputsInitialized;
     public BinaryAddressDecoder(string componentId, int addressWidth)
         : base(componentId)
     {
@@ -28,26 +31,39 @@ public sealed class BinaryAddressDecoder : VirtualHardwareComponent
         Address = new DigitalBus($"{componentId}.A", addressPins);
         Outputs = outputs;
         EnableBar = AddPin("/E", PinDirection.Input);
+        _addressInputMask = Address.InputChangeMask;
+        _enableInputMask = EnableBar.InputChangeMask;
     }
 
     public DigitalBus Address { get; }
     public IReadOnlyList<DigitalPin> Outputs { get; }
     public DigitalPin EnableBar { get; }
 
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
+        var enableChanged = (changedInputMask & _enableInputMask) != 0;
+        var addressChanged = (changedInputMask & _addressInputMask) != 0;
+        if (!enableChanged && !addressChanged) return;
+
+        if (EnableBar.SampledLevel == DigitalLevel.High)
+        {
+            // Address pins still toggle electrically while disabled, but the
+            // decoder matrix is disconnected from the active-low outputs.
+            if (_outputsInitialized && !enableChanged) return;
+            for (var index = 0; index < Outputs.Count; index++) Outputs[index].Drive(DigitalLevel.High);
+            _outputsInitialized = true;
+            return;
+        }
+
         if (EnableBar.SampledLevel != DigitalLevel.Low || !Address.TrySample(out var selected))
         {
-            foreach (var output in Outputs)
-            {
-                output.Drive(DigitalLevel.High);
-            }
+            for (var index = 0; index < Outputs.Count; index++) Outputs[index].Drive(DigitalLevel.High);
+            _outputsInitialized = true;
             return;
         }
 
         for (var index = 0; index < Outputs.Count; index++)
-        {
             Outputs[index].Drive(index == (int)selected ? DigitalLevel.Low : DigitalLevel.High);
-        }
+        _outputsInitialized = true;
     }
 }

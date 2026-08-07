@@ -89,27 +89,24 @@ public sealed class FamicomMotherboard
     public void PowerOn()
     {
         Board.PowerOn();
-        Simulator.Settle();
     }
 
     public void ReleaseReset()
     {
         ResetSource.Set(DigitalLevel.High);
-        Simulator.Settle();
     }
 
     public void AssertReset()
     {
         ResetSource.Set(DigitalLevel.Low);
-        Simulator.Settle();
     }
 
     public void AdvanceMasterHalfCycle() => _executionPlan.AdvanceHalfCycle();
 
     public void AdvanceMasterCycles(int cycles) => _executionPlan.AdvanceCycles(cycles);
 
-    public void AdvanceMasterCycles(int cycles, Action afterCycle) =>
-        _executionPlan.AdvanceCycles(cycles, afterCycle);
+    internal void RecompileTopology() => _executionPlan.RecompileTopology();
+
 
     private void TiePackagePower()
     {

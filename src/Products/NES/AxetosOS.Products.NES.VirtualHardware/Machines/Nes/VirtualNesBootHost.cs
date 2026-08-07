@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
+using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 
@@ -28,8 +29,6 @@ public sealed record VirtualNesBootDiagnostics(
     ulong PpuFrames,
     ulong PpuVramReads,
     ulong NmiEdges,
-    ulong NonUniversalPixels,
-    ulong AudioSamples,
     bool ResetVectorObserved,
     bool FirstOpcodeObserved,
     bool FirstVblankObserved,
@@ -38,11 +37,31 @@ public sealed record VirtualNesBootDiagnostics(
 public interface IVirtualNesVideoSink
 {
     void AcceptPixel(ulong frame, int x, int y, byte colorCode, byte emphasis);
+
+    void AcceptPixels(ReadOnlySpan<RicohVideoPixelSample> samples)
+    {
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var sample = samples[index];
+            AcceptPixel(sample.Frame, sample.X, sample.Y, sample.ColorCode, sample.Emphasis);
+        }
+    }
 }
 
 public interface IVirtualNesAudioSink
 {
-    void AcceptSample(ulong masterCycle, byte dacLevel);
+    void AcceptLevelChange(ulong masterCycle, byte dacLevel);
+
+    void AcceptLevelChanges(ReadOnlySpan<RicohAudioDacSample> samples)
+    {
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var sample = samples[index];
+            AcceptLevelChange(sample.MasterClock, sample.DacLevel);
+        }
+    }
+
+    void CompleteThrough(ulong masterCycle, byte dacLevel);
 }
 
 public sealed class VirtualNesFrameBuffer : IVirtualNesVideoSink
@@ -64,13 +83,41 @@ public sealed class VirtualNesFrameBuffer : IVirtualNesVideoSink
         CompletedFrame = frame;
         WrittenPixelCount++;
     }
+
+    public void AcceptPixels(ReadOnlySpan<RicohVideoPixelSample> samples)
+    {
+        for (var sampleIndex = 0; sampleIndex < samples.Length; sampleIndex++)
+        {
+            var sample = samples[sampleIndex];
+            if ((uint)sample.X >= 256 || (uint)sample.Y >= 240) continue;
+            var pixelIndex = (sample.Y * 256) + sample.X;
+            _colors[pixelIndex] = sample.ColorCode;
+            _emphasis[pixelIndex] = sample.Emphasis;
+            CompletedFrame = sample.Frame;
+            WrittenPixelCount++;
+        }
+    }
 }
 
 public sealed class VirtualNesPcmBuffer : IVirtualNesAudioSink
 {
     private readonly List<byte> _samples = [];
+    private byte _currentLevel;
+
     public IReadOnlyList<byte> Samples => _samples;
-    public void AcceptSample(ulong masterCycle, byte dacLevel) => _samples.Add(dacLevel);
+
+    public void AcceptLevelChange(ulong masterCycle, byte dacLevel) => _currentLevel = dacLevel;
+
+    public void AcceptLevelChanges(ReadOnlySpan<RicohAudioDacSample> samples)
+    {
+        if (samples.Length != 0) _currentLevel = samples[^1].DacLevel;
+    }
+
+    public void CompleteThrough(ulong masterCycle, byte dacLevel)
+    {
+        _currentLevel = dacLevel;
+        _samples.Add(_currentLevel);
+    }
 }
 
 /// <summary>
@@ -83,20 +130,46 @@ public sealed class VirtualNesBootHost
 {
     private readonly RegionalNesVirtualMachine _machine = new();
     private ulong _masterCycles;
-    private ulong _nonUniversalPixels;
-    private ulong _audioSamples;
     private bool _resetVectorObserved;
     private bool _firstOpcodeObserved;
     private bool _firstVblankObserved;
     private bool _firstNmiObserved;
-    private ulong _lastCpuReadCount;
-    private ulong _lastVideoFrame = ulong.MaxValue;
-    private int _lastVideoScanline = int.MinValue;
-    private int _lastVideoDot = int.MinValue;
+    private bool _bootChecksComplete;
+    private Rp2A03? _observedCpu;
+    private Rp2C02? _observedPpu;
+    private IVirtualNesVideoSink? _videoSink;
+    private IVirtualNesAudioSink? _audioSink;
+    private readonly RicohVideoPixelSample[] _videoTransfer = new RicohVideoPixelSample[4096];
+    private readonly RicohAudioDacSample[] _audioTransfer = new RicohAudioDacSample[1024];
 
     public RegionalNesVirtualMachine Machine => _machine;
-    public IVirtualNesVideoSink? VideoSink { get; set; }
-    public IVirtualNesAudioSink? AudioSink { get; set; }
+    public IVirtualNesVideoSink? VideoSink
+    {
+        get => _videoSink;
+        set
+        {
+            _videoSink = value;
+            _observedPpu?.VideoOutput.SetCaptureEnabled(value is not null);
+        }
+    }
+
+    public IVirtualNesAudioSink? AudioSink
+    {
+        get => _audioSink;
+        set
+        {
+            _audioSink = value;
+            if (_observedCpu is null) return;
+
+            _observedCpu.AudioDacOutput.SetCaptureEnabled(value is not null);
+            if (value is not null)
+            {
+                value.AcceptLevelChange(
+                    _masterCycles,
+                    _observedCpu.AudioDacOutput.CurrentValue.DacLevel);
+            }
+        }
+    }
 
     public VirtualHardwareNesRomImage LoadRom(
         string path,
@@ -116,6 +189,7 @@ public sealed class VirtualNesBootHost
     {
         ResetDiagnostics();
         _machine.InsertRom(image, sourceName, regionSelection, palCicVariant);
+        AttachOutputPins();
     }
 
     public void PowerAndReleaseReset(int resetMasterCycles = 32)
@@ -129,11 +203,26 @@ public sealed class VirtualNesBootHost
     public void AdvanceMasterCycles(int cycles)
     {
         if (cycles < 0) throw new ArgumentOutOfRangeException(nameof(cycles));
-        for (var index = 0; index < cycles; index++)
+        if (cycles == 0) return;
+
+        _machine.AdvanceMasterCycles(cycles);
+        _masterCycles += (ulong)cycles;
+
+        if (_videoSink is not null && _observedPpu is not null)
         {
-            _machine.AdvanceMasterCycles(1);
-            _masterCycles++;
-            ObserveSelectedHardware();
+            int drained;
+            while ((drained = _observedPpu.VideoOutput.Drain(_videoTransfer)) != 0)
+                _videoSink.AcceptPixels(_videoTransfer.AsSpan(0, drained));
+        }
+
+        if (_audioSink is not null && _observedCpu is not null)
+        {
+            int drained;
+            while ((drained = _observedCpu.AudioDacOutput.Drain(_audioTransfer)) != 0)
+                _audioSink.AcceptLevelChanges(_audioTransfer.AsSpan(0, drained));
+            _audioSink.CompleteThrough(
+                _masterCycles,
+                _observedCpu.AudioDacOutput.CurrentValue.DacLevel);
         }
     }
 
@@ -157,6 +246,19 @@ public sealed class VirtualNesBootHost
         var (cpu, ppu) = GetActiveProcessors();
         var cartridge = _machine.Slot.Cartridge;
         var dataBusKnown = cpu.TryInspectDataBus(out var dataBusValue);
+        if (!_bootChecksComplete)
+        {
+            if (!_resetVectorObserved) _resetVectorObserved = (cartridge?.CpuReadCount ?? 0) >= 2;
+            if (!_firstOpcodeObserved) _firstOpcodeObserved = cpu.CompletedInstructionCount > 0;
+            if (!_firstVblankObserved)
+                _firstVblankObserved = ppu.Vblank || ppu.Frame > 0 || ppu.NmiFallingEdgeCount > 0;
+            if (!_firstNmiObserved) _firstNmiObserved = ppu.NmiFallingEdgeCount > 0;
+            _bootChecksComplete =
+                _resetVectorObserved &&
+                _firstOpcodeObserved &&
+                _firstVblankObserved &&
+                _firstNmiObserved;
+        }
         return new VirtualNesBootDiagnostics(
             _machine.ActiveMotherboard,
             _machine.Slot.InsertedImage?.MapperNumber ?? -1,
@@ -181,46 +283,27 @@ public sealed class VirtualNesBootHost
             ppu.Frame,
             ppu.CompletedVramReadCount,
             ppu.NmiFallingEdgeCount,
-            _nonUniversalPixels,
-            _audioSamples,
             _resetVectorObserved,
             _firstOpcodeObserved,
             _firstVblankObserved,
             _firstNmiObserved);
     }
 
-    private void ObserveSelectedHardware()
+    private void AttachOutputPins()
     {
-        var (cpu, ppu) = GetActiveProcessors();
-        var cartridge = _machine.Slot.Cartridge;
-        var cpuReads = cartridge?.CpuReadCount ?? 0;
-        if (cpuReads > _lastCpuReadCount)
+        _observedCpu?.AudioDacOutput.SetCaptureEnabled(false);
+        _observedPpu?.VideoOutput.SetCaptureEnabled(false);
+
+        (_observedCpu, _observedPpu) = GetActiveProcessors();
+        _observedCpu.AudioDacOutput.SetCaptureEnabled(_audioSink is not null);
+        _observedPpu.VideoOutput.SetCaptureEnabled(_videoSink is not null);
+
+        if (_audioSink is not null)
         {
-            if (cpuReads >= 2) _resetVectorObserved = true;
-            _lastCpuReadCount = cpuReads;
+            _audioSink.AcceptLevelChange(
+                _masterCycles,
+                _observedCpu.AudioDacOutput.CurrentValue.DacLevel);
         }
-        if (cpu.CompletedInstructionCount > 0) _firstOpcodeObserved = true;
-        if (ppu.Vblank) _firstVblankObserved = true;
-        if (ppu.NmiFallingEdgeCount > 0) _firstNmiObserved = true;
-
-        if (ppu.Scanline is >= 0 and < 240 && ppu.Dot is >= 1 and <= 256 &&
-            (ppu.Frame != _lastVideoFrame || ppu.Scanline != _lastVideoScanline || ppu.Dot != _lastVideoDot))
-        {
-            // The RP2C02 raster now advances once per four console master clocks.
-            // ObserveSelectedHardware still runs every master clock, so suppress the
-            // three repeated observations of the same physical output pixel.
-            _lastVideoFrame = ppu.Frame;
-            _lastVideoScanline = ppu.Scanline;
-            _lastVideoDot = ppu.Dot;
-
-            var x = ppu.Dot - 1;
-            var color = ppu.OutputColorCode;
-            VideoSink?.AcceptPixel(ppu.Frame, x, ppu.Scanline, color, ppu.ColorEmphasis);
-            if (color != 0) _nonUniversalPixels++;
-        }
-
-        AudioSink?.AcceptSample(_masterCycles, cpu.AudioDacLevel);
-        _audioSamples++;
     }
 
     private (Rp2A03 Cpu, Rp2C02 Ppu) GetActiveProcessors()
@@ -237,15 +320,10 @@ public sealed class VirtualNesBootHost
     private void ResetDiagnostics()
     {
         _masterCycles = 0;
-        _nonUniversalPixels = 0;
-        _audioSamples = 0;
         _resetVectorObserved = false;
         _firstOpcodeObserved = false;
         _firstVblankObserved = false;
         _firstNmiObserved = false;
-        _lastCpuReadCount = 0;
-        _lastVideoFrame = ulong.MaxValue;
-        _lastVideoScanline = int.MinValue;
-        _lastVideoDot = int.MinValue;
+        _bootChecksComplete = false;
     }
 }

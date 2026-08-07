@@ -8,16 +8,23 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 /// Standalone mapper-0 cartridge board. PRG and CHR devices react only to the
 /// normalized cartridge connector pins; no CPU, PPU, or motherboard calls are used.
 /// </summary>
-public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent, IInputActivationContractProvider, ICompiledInputDrivenVirtualHardwareComponent
+public sealed class NromCartridge : VirtualHardwareComponent
 {
     private byte[] _prg = [];
     private byte[] _chr = [];
     private bool _chrRam;
     private VirtualHardwareNesMirroring _mirroring;
     private byte _ppuLowAddressLatch;
-    private bool _cpuReadActive;
+    private bool _cpuReadAddressSelected;
+    private ushort _cpuSelectedAddress;
+    private byte _cpuSelectedData;
     private bool _ppuReadActive;
     private bool _ppuWriteActive;
+    private readonly ulong _powerInputMask;
+    private readonly ulong _cpuAddressControlInputMask;
+    private readonly ulong _cpuM2InputMask;
+    private readonly ulong _ppuControlInputMask;
+    private readonly ulong _ppuAddressDataInputMask;
 
     public NromCartridge(string componentId) : base(componentId)
     {
@@ -25,9 +32,14 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
         Gnd = AddPin("GND", PinDirection.Input);
         CpuAddress = new DigitalBus($"{componentId}.CPU.A", Enumerable.Range(0, 16).Select(i => AddPin($"CPU.A{i}", PinDirection.Input)).ToArray());
         CpuData = new DigitalBus($"{componentId}.CPU.D", Enumerable.Range(0, 8).Select(i => AddPin($"CPU.D{i}", PinDirection.Bidirectional)).ToArray());
+        // CPU D0-D7 still arrive at the cartridge connector like every other
+        // motherboard signal. Mapper 0 simply ignores them internally because
+        // it has no CPU-write register.
         CpuReadWrite = AddPin("CPU.RW", PinDirection.Input);
-        CpuM2 = AddPin("CPU.M2", PinDirection.Input);
+        CpuM2 = AddPin("CPU.M2", PinDirection.Input, DigitalInputActivation.RisingEdge);
         PpuAddressData = new DigitalBus($"{componentId}.PPU.AD", Enumerable.Range(0, 8).Select(i => AddPin($"PPU.AD{i}", PinDirection.Bidirectional)).ToArray());
+        // PPU AD0-D7 are ordinary connector pins. Whether a transition matters
+        // is decided by ALE,/RD,/WR and the cartridge's own CHR circuitry.
         PpuHighAddress = new DigitalBus($"{componentId}.PPU.AH", Enumerable.Range(8, 6).Select(i => AddPin($"PPU.A{i}", PinDirection.Input)).ToArray());
         PpuAle = AddPin("PPU.ALE", PinDirection.Input);
         PpuReadBar = AddPin("PPU.RD_BAR", PinDirection.Input);
@@ -35,6 +47,18 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
         CiramChipEnableBar = AddPin("CIRAM.CE_BAR", PinDirection.Output);
         CiramA10 = AddPin("CIRAM.A10", PinDirection.Output);
         IrqBar = AddPin("IRQ_BAR", PinDirection.Output);
+
+        _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
+        _cpuAddressControlInputMask = CpuAddress.InputChangeMask
+            | CpuReadWrite.InputChangeMask;
+        _cpuM2InputMask = CpuM2.InputChangeMask;
+        _ppuControlInputMask = PpuHighAddress.InputChangeMask
+            | PpuAle.InputChangeMask
+            | PpuReadBar.InputChangeMask
+            | PpuWriteBar.InputChangeMask;
+        _ppuAddressDataInputMask = PpuAddressData.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public void LoadImage(VirtualHardwareNesRomImage image)
@@ -49,7 +73,7 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
         if (_chr.Length != 8 * 1024) throw new ArgumentException("NROM CHR must be 8 KiB or absent for CHR RAM.", nameof(image));
         _mirroring = image.Mirroring;
         IsInserted = true;
-        Reset();
+        ApplyResetState();
     }
 
     public void Eject()
@@ -57,7 +81,9 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
         IsInserted = false;
         _prg = [];
         _chr = [];
-        _cpuReadActive = false;
+        _cpuReadAddressSelected = false;
+        _cpuSelectedAddress = 0;
+        _cpuSelectedData = 0;
         _ppuReadActive = false;
         _ppuWriteActive = false;
         ReleaseOutputs();
@@ -85,72 +111,72 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
     public ulong PpuReadCount { get; private set; }
     public ulong PpuWriteCount { get; private set; }
 
-    public PinActivationContract CompileInputActivation(DigitalPin pin)
-    {
-        ArgumentNullException.ThrowIfNull(pin);
-        if (pin.Direction == PinDirection.Input) return PinActivationContract.Always;
-        if (CpuData.Pins.Contains(pin)) return PinActivationContract.Never;
-        if (PpuAddressData.Pins.Contains(pin))
-        {
-            return PinActivationContract.When(() =>
-                PpuAle.SampledLevel == DigitalLevel.High ||
-                (_chrRam &&
-                 PpuAle.SampledLevel != DigitalLevel.High &&
-                 PpuWriteBar.SampledLevel == DigitalLevel.Low));
-        }
-
-        return PinActivationContract.Never;
-    }
-
-    public bool ShouldWakeForSampledPin(DigitalPin pin)
-    {
-        ArgumentNullException.ThrowIfNull(pin);
-
-        if (pin.Direction == PinDirection.Input) return true;
-
-        // PRG ROM never consumes CPU data. During a selected read this bus is
-        // cartridge output; at every other time it is electrically irrelevant.
-        if (CpuData.Pins.Contains(pin)) return false;
-
-        if (PpuAddressData.Pins.Contains(pin))
-        {
-            // AD0-AD7 are inputs only while ALE exposes the low address byte,
-            // or while CHR RAM is accepting write data. During CHR reads the
-            // resolved level is merely the echo of the cartridge's own output.
-            return PpuAle.SampledLevel == DigitalLevel.High ||
-                (_chrRam &&
-                 PpuAle.SampledLevel != DigitalLevel.High &&
-                 PpuWriteBar.SampledLevel == DigitalLevel.Low);
-        }
-
-        return false;
-    }
-
-    void ICompiledInputDrivenVirtualHardwareComponent.Evaluate(ulong changedInputMask) => Evaluate();
-
-    public override void PowerOn() => Reset();
-    public override void Reset()
+    private void InitializePackageState() => ApplyResetState();
+    private void ApplyResetState()
     {
         _ppuLowAddressLatch = 0;
-        _cpuReadActive = false;
+        _cpuReadAddressSelected = false;
+        _cpuSelectedAddress = 0;
+        _cpuSelectedData = 0;
         _ppuReadActive = false;
         _ppuWriteActive = false;
         ReleaseOutputs();
     }
 
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
+        if (changedInputMask == 0) return;
+
+        // All connector pins have already received their physical levels.  The
+        // cartridge itself decides whether a transition can affect mapper-0.
+        // CPU D0-D7 never feed an NROM register.  PPU AD0-D7 only feed the
+        // low-address latch while ALE is high or CHR RAM during an active write.
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        var cpuAddressOrControlChanged = (changedInputMask & _cpuAddressControlInputMask) != 0;
+        var cpuM2Changed = (changedInputMask & _cpuM2InputMask) != 0;
+        var ppuControlChanged = (changedInputMask & _ppuControlInputMask) != 0;
+        var ppuDataChanged = (changedInputMask & _ppuAddressDataInputMask) != 0;
+
+        if (!powerChanged
+            && !cpuAddressOrControlChanged
+            && !cpuM2Changed
+            && !ppuControlChanged
+            && !ppuDataChanged)
+        {
+            // This is normally mapper-0 CPU data traffic.  The pins are current;
+            // there is simply no internal circuit connected to them.
+            return;
+        }
+
         if (!IsInserted || Vcc.SampledLevel != DigitalLevel.High || Gnd.SampledLevel != DigitalLevel.Low)
         {
-            _cpuReadActive = false;
+            // Ordinary bus traffic while already inactive costs only the checks
+            // above.  Power/insertion transitions still release every output.
+            if (!powerChanged && !IsInserted) return;
+            _cpuReadAddressSelected = false;
+            _cpuSelectedAddress = 0;
+            _cpuSelectedData = 0;
             _ppuReadActive = false;
             _ppuWriteActive = false;
             ReleaseOutputs();
             return;
         }
 
-        IrqBar.Release(); // NROM has no IRQ source.
+        var ppuDataCanMatter = ppuDataChanged
+            && (PpuAle.SampledLevel == DigitalLevel.High
+                || (_chrRam && PpuWriteBar.SampledLevel == DigitalLevel.Low));
+        if (powerChanged || ppuControlChanged || ppuDataCanMatter)
+            ProcessPpuPort();
 
+        if (powerChanged || cpuAddressOrControlChanged)
+            UpdateCpuPrgOutput();
+
+        if (!powerChanged && cpuM2Changed)
+            CountCpuReadTransaction();
+    }
+
+    private void ProcessPpuPort()
+    {
         if (PpuAle.SampledLevel == DigitalLevel.High)
         {
             // During ALE the cartridge must not own AD0-AD7; the PPU is placing
@@ -159,9 +185,7 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
             _ppuReadActive = false;
             _ppuWriteActive = false;
             if (PpuAddressData.TrySample(out var low))
-            {
                 _ppuLowAddressLatch = (byte)low;
-            }
         }
 
         var ppuAddressKnown = PpuHighAddress.TrySample(out var high);
@@ -189,10 +213,7 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
                 if (ppuReadSelected)
                 {
                     PpuAddressData.Drive(_chr[ppuAddress & 0x1FFF]);
-                    if (!_ppuReadActive)
-                    {
-                        PpuReadCount++;
-                    }
+                    if (!_ppuReadActive) PpuReadCount++;
                 }
                 else
                 {
@@ -213,49 +234,42 @@ public sealed class NromCartridge : VirtualHardwareComponent, ISelectiveInputDri
         {
             CiramChipEnableBar.Drive(DigitalLevel.High);
             CiramA10.Drive(DigitalLevel.Unknown);
-            if (PpuAle.SampledLevel != DigitalLevel.High)
-            {
-                PpuAddressData.Release();
-            }
+            if (PpuAle.SampledLevel != DigitalLevel.High) PpuAddressData.Release();
         }
 
         _ppuReadActive = ppuReadSelected;
         _ppuWriteActive = ppuWriteSelected;
+    }
 
-        // PRG output remains valid for the complete selected CPU read cycle.
-        // M2 qualifies a new cartridge transaction, but it must not make the
-        // ROM release D0-D7 between the address phase and the RP2A03 sample
-        // phase. Holding the data while A15 and R/W remain selected also makes
-        // component evaluation order irrelevant during electrical settling.
+    private void UpdateCpuPrgOutput()
+    {
         var cpuAddressKnown = CpuAddress.TrySample(out var cpuAddress);
-        var cpuReadAddressSelected = cpuAddressKnown && cpuAddress >= 0x8000 &&
-            CpuReadWrite.SampledLevel == DigitalLevel.High;
-        var cpuReadTransactionSelected = cpuReadAddressSelected &&
-            CpuM2.SampledLevel == DigitalLevel.High;
+        _cpuReadAddressSelected = cpuAddressKnown
+            && cpuAddress >= 0x8000
+            && CpuReadWrite.SampledLevel == DigitalLevel.High;
 
-        if (cpuReadAddressSelected)
-        {
-            var index = _prg.Length == 16 * 1024
-                ? (int)(cpuAddress & 0x3FFF)
-                : (int)(cpuAddress & 0x7FFF);
-            CpuData.Drive(_prg[index]);
-        }
-        else
+        if (!_cpuReadAddressSelected)
         {
             CpuData.Release();
+            return;
         }
 
-        if (cpuReadTransactionSelected && !_cpuReadActive)
-        {
-            CpuReadCount++;
-            LastCpuReadAddress = (ushort)cpuAddress;
-            var index = _prg.Length == 16 * 1024
-                ? (int)(cpuAddress & 0x3FFF)
-                : (int)(cpuAddress & 0x7FFF);
-            LastCpuReadData = _prg[index];
-        }
+        _cpuSelectedAddress = (ushort)cpuAddress;
+        var index = _prg.Length == 16 * 1024
+            ? (int)(cpuAddress & 0x3FFF)
+            : (int)(cpuAddress & 0x7FFF);
+        _cpuSelectedData = _prg[index];
+        CpuData.Drive(_cpuSelectedData);
+    }
 
-        _cpuReadActive = cpuReadTransactionSelected;
+    private void CountCpuReadTransaction()
+    {
+        // Mapper 0 has no M2-falling-edge work. The pin still receives Low,
+        // but only a real Low->High edge qualifies a CPU cartridge read.
+        if (!_cpuReadAddressSelected || CpuM2.SampledLevel != DigitalLevel.High) return;
+        CpuReadCount++;
+        LastCpuReadAddress = _cpuSelectedAddress;
+        LastCpuReadData = _cpuSelectedData;
     }
 
     private void ReleaseOutputs()

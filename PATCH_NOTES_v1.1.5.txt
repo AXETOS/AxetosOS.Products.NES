@@ -1,0 +1,25 @@
+AxetosOS Products / NES v1.1.5
+
+Purpose
+-------
+Repair the v1.1.4 bidirectional-pin regression without rolling back the fixes that removed the three v1.1.3 failures.
+
+Changes
+-------
+- DigitalPin now separates the physical resolved pin level from the last level accepted while the pin is acting as an input.
+- SampledLevel continues to reflect the actual electrical net while a bidirectional pin drives, preserving CPU/PPU/data-bus output visibility.
+- Active bidirectional output changes cannot re-enter the owning chip because they do not advance the accepted-input state.
+- Releasing a pin onto an unchanged external level therefore does not manufacture an input transition.
+- Retains the v1.1.4 Mos6502BusAnalyzer late-read settling behavior.
+- Retains the v1.1.4 NesPpuRegisterPackage internal PPU-bus ownership behavior.
+- Extends the boundary regression test to assert that the physical SampledLevel still follows a self-driven bidirectional output while activation count remains unchanged.
+
+Architecture
+------------
+- Chips execute only from incoming transitions on input-capable package pins.
+- Chips drive only their own output-capable pins.
+- No polling, general chip scheduler, lifecycle callback, peer-chip reference, or direct board shortcut is restored.
+
+Validation
+----------
+Patch generated from the exact v1.1.4 reconstructed tree. Static source and overlay validation performed. The packaging environment has no .NET SDK, so dotnet test must be run on the target machine.

@@ -1,0 +1,41 @@
+AxetosOS Products / NES v1.1.0
+
+Purpose
+- Rebuild the VirtualHardware chip boundary around physical input and output pins.
+- Remove the lifecycle, polling, callback, and scheduler side channels that remained after v1.0.2.
+
+Runtime contract
+- The simulator may call a package only when one or more input-capable pins changed.
+- A package may inspect only its own retained pin levels and internal state.
+- A package may affect the circuit only by driving or releasing its own output-capable pins.
+- Output-only pins never activate their owner.
+- A bidirectional pin does not activate its owner from its own drive or release.
+- Boards establish only external rail, oscillator, reset, switch, and host-input source drives.
+
+Structural changes
+- Removes Evaluate, PowerOn, and Reset from IVirtualHardwareComponent and VirtualHardwareComponent.
+- Removes the simulator's artificial startup evaluation of every package.
+- Assigns activation masks only to input-capable pins.
+- Resolves nets into input routes and passive output observers.
+- Moves power/reset behavior into each package's own pin-input handling.
+- Adds a reset input to the standalone PPU timing package and wires it on the NES motherboard.
+- Replaces RP2C02/RP2C07 pixel callbacks, RP2A03/RP2A07 audio callbacks, and split-trace callbacks with buffered output-sample pins.
+- Adds architecture regression tests for package isolation and pin-only activation.
+
+Configuration and diagnostics
+- Cartridge image loading is a pre-runtime cartridge-programming/insertion operation.
+- Read-only inspection and explicit diagnostic-memory loading remain test/diagnostic surfaces.
+- These surfaces do not connect runtime packages directly or bypass bus execution.
+
+Validation performed in this environment
+- Compared the patch against the reconstructed v1.0.2 source baseline.
+- Checked all C# files for balanced delimiters, strings, character literals, and comments.
+- Checked that VirtualHardware component source contains no motherboard or simulator references.
+- Checked that the component contract contains no Evaluate, PowerOn, or Reset member.
+- Checked that no VirtualHardware component exposes public events.
+- Checked that every concrete package declaring an input-capable pin has an OnInputChanges handler.
+- Checked that references to the removed scheduler contracts remain only in tests asserting their absence.
+
+Not validated here
+- The .NET SDK is unavailable in this environment. This patch has not been compiled or executed here.
+- Run dotnet test locally. Treat that result as the functional validation of this release.

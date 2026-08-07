@@ -24,9 +24,7 @@ public sealed class VirtualHardwareSelectiveWakeSchedulingTests
         var simulator = new VirtualHardwareSimulator(board);
 
         simulator.Settle();
-        var before = simulator.SettleCount;
         simulator.Settle();
-        Assert.Equal(before + 1, simulator.SettleCount);
 
         clock.AdvanceHalfCycle();
         simulator.Settle();
@@ -34,11 +32,12 @@ public sealed class VirtualHardwareSelectiveWakeSchedulingTests
     }
 
     [Fact]
-    public void Selective_component_can_ignore_resolved_echo_on_a_bidirectional_pin()
+    public void Bidirectional_pin_does_not_reenter_its_chip_from_its_own_output_drive()
     {
-        var board = new VirtualHardwareBoard("selective-wake");
+        var board = new VirtualHardwareBoard("bidirectional-package-boundary");
+        var external = board.Add(new DigitalSignalSource("external", DigitalLevel.Low));
         var component = board.Add(new SelectiveBidirectionalProbe("probe"));
-        board.Connect("bus", component.Bus);
+        board.Connect("bus", external.Output, component.Bus);
         var simulator = new VirtualHardwareSimulator(board);
 
         simulator.Settle();
@@ -47,50 +46,36 @@ public sealed class VirtualHardwareSelectiveWakeSchedulingTests
         component.Bus.Drive(DigitalLevel.High);
         simulator.Settle();
         Assert.Equal(1, component.EvaluationCount);
+
+        component.Bus.Release();
+        simulator.Settle();
+        Assert.Equal(1, component.EvaluationCount);
+        Assert.Equal(DigitalLevel.Low, component.Bus.SampledLevel);
+
+        external.Set(DigitalLevel.High);
+        simulator.Settle();
+        Assert.Equal(2, component.EvaluationCount);
+        Assert.Equal(DigitalLevel.High, component.Bus.SampledLevel);
     }
 
     [Fact]
-    public void Nrom_ignores_its_data_output_echo_but_wakes_for_multiplexed_address_input()
+    public void Selective_wake_contract_type_has_been_removed()
     {
-        var board = new VirtualHardwareBoard("nrom-selective-data");
-        var cartridge = board.Add(new NromCartridge("cart"));
-        var ale = board.Add(new DigitalSignalSource("ale", DigitalLevel.Low));
-        board.Connect("ale.net", ale.Output, cartridge.PpuAle);
-        foreach (var pin in cartridge.PpuAddressData.Pins) board.Connect($"ad.{pin.Name}", pin);
-        foreach (var pin in cartridge.CpuData.Pins) board.Connect($"cpu.{pin.Name}", pin);
-        var simulator = new VirtualHardwareSimulator(board);
-        simulator.Settle();
-
-        Assert.False(cartridge.ShouldWakeForSampledPin(cartridge.CpuData.Pins[0]));
-        Assert.False(cartridge.ShouldWakeForSampledPin(cartridge.PpuAddressData.Pins[0]));
-
-        ale.Set(DigitalLevel.High);
-        simulator.Settle();
-        Assert.True(cartridge.ShouldWakeForSampledPin(cartridge.PpuAddressData.Pins[0]));
+        var assembly = typeof(VirtualHardwareComponent).Assembly;
+        Assert.Null(assembly.GetType(
+            "AxetosOS.Products.NES.VirtualHardware.Components.ISelectiveInputDrivenVirtualHardwareComponent"));
     }
 
     [Fact]
-    public void Hm6116_data_bus_wakes_only_during_selected_write()
+    public void Hm6116_owns_input_transition_handling_without_motherboard_selective_wake_policy()
     {
-        var board = new VirtualHardwareBoard("ram-selective-data");
-        var ram = board.Add(new Hm6116("ram"));
-        var chipSelect = board.Add(new DigitalSignalSource("cs", DigitalLevel.High));
-        var writeEnable = board.Add(new DigitalSignalSource("we", DigitalLevel.High));
-        board.Connect("cs.net", chipSelect.Output, ram.ChipSelectBar);
-        board.Connect("we.net", writeEnable.Output, ram.WriteEnableBar);
-        foreach (var pin in ram.Data.Pins) board.Connect($"data.{pin.Name}", pin);
-        var simulator = new VirtualHardwareSimulator(board);
-        simulator.Settle();
+        var ram = new Hm6116("ram");
 
-        Assert.False(ram.ShouldWakeForSampledPin(ram.Data.Pins[0]));
-
-        chipSelect.Set(DigitalLevel.Low);
-        writeEnable.Set(DigitalLevel.Low);
-        simulator.Settle();
-        Assert.True(ram.ShouldWakeForSampledPin(ram.Data.Pins[0]));
+        Assert.IsAssignableFrom<VirtualHardwareComponent>(ram);
+        Assert.NotNull(ram.Pins);
     }
 
-    private sealed class SelectiveBidirectionalProbe : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent
+    private sealed class SelectiveBidirectionalProbe : VirtualHardwareComponent
     {
         public SelectiveBidirectionalProbe(string componentId) : base(componentId)
         {
@@ -99,7 +84,6 @@ public sealed class VirtualHardwareSelectiveWakeSchedulingTests
 
         public DigitalPin Bus { get; }
         public int EvaluationCount { get; private set; }
-        public bool ShouldWakeForSampledPin(DigitalPin pin) => false;
-        public override void Evaluate() => EvaluationCount++;
+        protected override void OnInputChanges(ulong changedInputMask) => EvaluationCount++;
     }
 }

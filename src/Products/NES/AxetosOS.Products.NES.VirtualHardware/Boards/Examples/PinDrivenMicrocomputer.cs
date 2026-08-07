@@ -51,19 +51,16 @@ public sealed class PinDrivenMicrocomputer
     public void PowerOn()
     {
         Board.PowerOn();
-        Simulator.Settle();
     }
 
     public void ReleaseReset()
     {
         ResetCircuit.Release();
-        Simulator.Settle();
     }
 
     public void AdvanceHalfCycle()
     {
         Oscillator.AdvanceHalfCycle();
-        Simulator.Settle();
     }
 
     public void AdvanceCycle()

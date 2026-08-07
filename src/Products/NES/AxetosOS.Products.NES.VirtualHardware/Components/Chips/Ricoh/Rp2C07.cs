@@ -9,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 /// External PPU memory is accessed exclusively through AD0-AD7, A8-A13, ALE,
 /// /RD and /WR.
 /// </summary>
-public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
+public sealed class Rp2C07 : VirtualHardwareComponent
 {
     private const int DotsPerScanline = 341;
     private const int ScanlinesPerFrame = 312;
@@ -18,7 +18,6 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
 
     private readonly byte[] _primaryOam = new byte[256];
     private readonly byte[] _paletteRam = new byte[32];
-    private DigitalLevel _previousClock;
     private bool _cpuSelectedLast;
     private bool _cpuReadLatchValid;
     private byte _cpuReadLatch;
@@ -37,6 +36,13 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     private VramTransaction _transaction;
     private int _transactionPhase;
     private VramTransactionPurpose _transactionPurpose;
+    private bool _presentedAdDriven;
+    private byte _presentedAdValue;
+    private bool _presentedHighAddressDriven;
+    private byte _presentedHighAddressValue;
+    private DigitalLevel _presentedAle = DigitalLevel.Unknown;
+    private DigitalLevel _presentedReadBar = DigitalLevel.Unknown;
+    private DigitalLevel _presentedWriteBar = DigitalLevel.Unknown;
     private byte _nextTileId;
     private byte _nextTileAttribute;
     private byte _nextTileLow;
@@ -57,12 +63,20 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     private bool _suppressVblankSet;
     private byte _oamDataBusLatch;
     private int _spriteOverflowByteOffset;
+    private bool _packagePowered;
+    private bool _resetAsserted;
+    private readonly ulong _powerInputMask;
+    private readonly ulong _clockInputMask;
+    private readonly ulong _resetInputMask;
+    private readonly ulong _cpuPortInputMask;
+    private readonly ulong _cpuOrdinaryInputMask;
+    private readonly ulong _cpuChipSelectInputMask;
 
     public Rp2C07(string componentId) : base(componentId)
     {
         Vcc = AddPin("VCC", PinDirection.Input);
         Gnd = AddPin("GND", PinDirection.Input);
-        Clock = AddPin("CLK", PinDirection.Input);
+        Clock = AddPin("CLK", PinDirection.Input, DigitalInputActivation.RisingEdge, 1);
         ResetBar = AddPin("/RES", PinDirection.Input);
         NmiBar = AddPin("/NMI", PinDirection.Output);
 
@@ -71,12 +85,30 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         CpuReadWrite = AddPin("R/W", PinDirection.Input);
         ChipSelectBar = AddPin("/CS", PinDirection.Input);
 
+        // Every CPU-facing package pin remains a normal electrically delivered
+        // input. /CS gates the register circuit inside this chip; the motherboard
+        // never suppresses RS/RW/D changes on the chip's behalf.
+
         MultiplexedAddressData = CreateBus("AD", 8, PinDirection.Bidirectional);
         HighAddress = CreateBus("A", 6, PinDirection.Output, firstBitNumber: 8);
         AddressLatchEnable = AddPin("ALE", PinDirection.Output);
         VramReadBar = AddPin("/RD", PinDirection.Output);
         VramWriteBar = AddPin("/WR", PinDirection.Output);
         Extension = CreateBus("EXT", 4, PinDirection.Bidirectional);
+        VideoOutput = new BufferedOutputPin<RicohVideoPixelSample>(
+            $"{componentId}.VIDEO",
+            new RicohVideoPixelSample(0, 0, 0, 0, 0));
+    
+        _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
+        _clockInputMask = Clock.InputChangeMask;
+        _resetInputMask = ResetBar.InputChangeMask;
+        _cpuOrdinaryInputMask = RegisterSelect.InputChangeMask
+            | CpuData.InputChangeMask
+            | CpuReadWrite.InputChangeMask;
+        _cpuChipSelectInputMask = ChipSelectBar.InputChangeMask;
+        _cpuPortInputMask = _cpuOrdinaryInputMask | _cpuChipSelectInputMask;
+
+        InitializePackageState();
     }
 
     public DigitalPin Vcc { get; }
@@ -94,11 +126,12 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     public DigitalPin VramReadBar { get; }
     public DigitalPin VramWriteBar { get; }
     public DigitalBus Extension { get; }
+    public BufferedOutputPin<RicohVideoPixelSample> VideoOutput { get; }
 
     public int Dot { get; private set; }
     public int Scanline { get; private set; }
     public ulong Frame { get; private set; }
-    public ulong MasterClockRisingEdgeCount { get; private set; }
+    public ulong MasterClockRisingEdgeCount => Clock.InputActivationEdgeCount;
     public ulong CompletedVramReadCount { get; private set; }
     public ulong CompletedVramWriteCount { get; private set; }
     public bool Vblank => _vblank;
@@ -154,12 +187,12 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     public byte InspectOam(byte address) => _primaryOam[address];
     public byte InspectPalette(ushort address) => ReadPalette(address);
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         Dot = 0;
         Scanline = 0;
         Frame = 0;
-        MasterClockRisingEdgeCount = 0;
+        Clock.ResetInputActivationCounter();
         CompletedVramReadCount = 0;
         CompletedVramWriteCount = 0;
         BackgroundNametableFetchCount = 0;
@@ -188,7 +221,6 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         Array.Clear(_secondaryOam);
         Array.Clear(_activeSprites);
         Array.Clear(_nextSprites);
-        _previousClock = DigitalLevel.Low;
         _cpuSelectedLast = false;
         _cpuReadLatchValid = false;
         _cpuReadLatch = 0;
@@ -221,7 +253,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         ReleasePackageOutputs();
     }
 
-    public override void Reset()
+    private void ApplyResetState()
     {
         Dot = 0;
         Scanline = 0;
@@ -253,35 +285,91 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         ReleasePackageOutputs();
     }
 
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        if (!Powered)
+        // Every package pin has already accepted its new electrical level before
+        // this method is entered.  Keep the chip smart: if power is absent, or
+        // if ordinary CPU-register pins move while /CS is definitely inactive,
+        // stop here before touching any PPU state.  /CS itself always wakes the
+        // register interface so selection/deselection is handled immediately.
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        if (!_packagePowered && !powerChanged) return;
+
+        var clockChanged = (changedInputMask & _clockInputMask) != 0;
+        var resetChanged = (changedInputMask & _resetInputMask) != 0;
+        var chipSelectChanged = (changedInputMask & _cpuChipSelectInputMask) != 0;
+        var ordinaryCpuPortChanged = (changedInputMask & _cpuOrdinaryInputMask) != 0;
+        if (!powerChanged && !clockChanged && !resetChanged && !chipSelectChanged)
         {
-            ReleasePackageOutputs();
-            _previousClock = Clock.SampledLevel;
-            _cpuSelectedLast = false;
+            if (!ordinaryCpuPortChanged) return;
+            if (ChipSelectBar.SampledLevel == DigitalLevel.High) return;
+        }
+
+        var newlyPowered = false;
+        if (!_packagePowered || (changedInputMask & _powerInputMask) != 0)
+        {
+            if (!Powered)
+            {
+                ReleasePackageOutputs();
+                _packagePowered = false;
+                _resetAsserted = false;
+                _cpuSelectedLast = false;
+                return;
+            }
+
+            if (!_packagePowered)
+            {
+                InitializePackageState();
+                _packagePowered = true;
+                newlyPowered = true;
+            }
+        }
+
+        if (_resetAsserted)
+        {
+            if (!resetChanged || ResetBar.SampledLevel == DigitalLevel.Low) return;
+            _resetAsserted = false;
+        }
+        else if ((newlyPowered || resetChanged) && ResetBar.SampledLevel == DigitalLevel.Low)
+        {
+            ApplyResetState();
+            _resetAsserted = true;
             return;
         }
 
-        if (ResetBar.SampledLevel == DigitalLevel.Low)
+        var outputsMayHaveChanged = false;
+        if ((changedInputMask & _cpuPortInputMask) != 0
+            && (chipSelectChanged || ChipSelectBar.SampledLevel != DigitalLevel.High)
+            && (chipSelectChanged || !_cpuSelectedLast))
         {
-            Reset();
-            _previousClock = Clock.SampledLevel;
-            return;
+            // /CS owns the transaction boundary. Once the CPU port has latched
+            // this selected cycle, later RS/RW/D settling is electrically
+            // visible at the pins but cannot create another register access.
+            HandleCpuPort();
+            outputsMayHaveChanged = true;
         }
 
-        var clock = Clock.SampledLevel;
-        if (clock == DigitalLevel.High && _previousClock != DigitalLevel.High)
+        if (clockChanged && Clock.SampledLevel == DigitalLevel.High)
         {
-            MasterClockRisingEdgeCount++;
+            // CLK is package-owned rising-edge activated. The motherboard still
+            // presents the falling level to the pin without waking RP2C07 logic.
             AdvanceRaster();
             AdvanceVramTransaction();
             AdvanceBackgroundPipeline();
             AdvanceSpritePipeline();
+            if (Scanline < 240 && Dot is >= 1 and <= 256)
+            {
+                VideoOutput.Drive(new RicohVideoPixelSample(
+                    Frame,
+                    Dot - 1,
+                    Scanline,
+                    OutputColorCode,
+                    ColorEmphasis));
+            }
+            outputsMayHaveChanged = true;
         }
-        _previousClock = clock;
 
-        HandleCpuPort();
+        if (!outputsMayHaveChanged) return;
         DriveVramBus();
         DriveNmi();
     }
@@ -357,8 +445,11 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         {
             _cpuReadLatchValid = false;
             CpuData.Release();
-            if (!_cpuSelectedLast && CpuData.TrySample(out var rawValue))
+            if (!_cpuSelectedLast)
             {
+                // /CS may arrive before the write byte has settled. Do not mark
+                // the selected cycle consumed until a valid D0-D7 value exists.
+                if (!CpuData.TrySample(out var rawValue)) return;
                 var value = (byte)rawValue;
                 _openBus = value;
                 WriteCpuRegister(register, value);
@@ -934,49 +1025,102 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
 
     private void DriveVramBus()
     {
-        Extension.Release();
         if (_transaction == VramTransaction.None)
         {
-            MultiplexedAddressData.Release();
-            HighAddress.Release();
-            AddressLatchEnable.Drive(DigitalLevel.Low);
-            VramReadBar.Drive(DigitalLevel.High);
-            VramWriteBar.Drive(DigitalLevel.High);
+            PresentAdReleased();
+            PresentHighAddressReleased();
+            PresentAle(DigitalLevel.Low);
+            PresentReadBar(DigitalLevel.High);
+            PresentWriteBar(DigitalLevel.High);
             return;
         }
 
-        HighAddress.Drive((ulong)(_transactionAddress >> 8));
+        PresentHighAddress((byte)(_transactionAddress >> 8));
         if (_transactionPhase == 0)
         {
-            MultiplexedAddressData.Drive((byte)_transactionAddress);
-            AddressLatchEnable.Drive(DigitalLevel.High);
-            VramReadBar.Drive(DigitalLevel.High);
-            VramWriteBar.Drive(DigitalLevel.High);
+            PresentAd((byte)_transactionAddress);
+            PresentAle(DigitalLevel.High);
+            PresentReadBar(DigitalLevel.High);
+            PresentWriteBar(DigitalLevel.High);
             return;
         }
 
-        AddressLatchEnable.Drive(DigitalLevel.Low);
+        PresentAle(DigitalLevel.Low);
         if (_transaction == VramTransaction.Read)
         {
-            MultiplexedAddressData.Release();
-            VramReadBar.Drive(DigitalLevel.Low);
-            VramWriteBar.Drive(DigitalLevel.High);
+            PresentAdReleased();
+            PresentReadBar(DigitalLevel.Low);
+            PresentWriteBar(DigitalLevel.High);
         }
         else
         {
-            MultiplexedAddressData.Drive(_transactionWriteData);
-            VramReadBar.Drive(DigitalLevel.High);
-            VramWriteBar.Drive(DigitalLevel.Low);
+            PresentAd(_transactionWriteData);
+            PresentReadBar(DigitalLevel.High);
+            PresentWriteBar(DigitalLevel.Low);
         }
+    }
+
+    private void PresentAd(byte value)
+    {
+        if (_presentedAdDriven && _presentedAdValue == value) return;
+        MultiplexedAddressData.Drive(value);
+        _presentedAdDriven = true;
+        _presentedAdValue = value;
+    }
+
+    private void PresentAdReleased()
+    {
+        if (!_presentedAdDriven) return;
+        MultiplexedAddressData.Release();
+        _presentedAdDriven = false;
+    }
+
+    private void PresentHighAddress(byte value)
+    {
+        value &= 0x3F;
+        if (_presentedHighAddressDriven && _presentedHighAddressValue == value) return;
+        HighAddress.Drive(value);
+        _presentedHighAddressDriven = true;
+        _presentedHighAddressValue = value;
+    }
+
+    private void PresentHighAddressReleased()
+    {
+        if (!_presentedHighAddressDriven) return;
+        HighAddress.Release();
+        _presentedHighAddressDriven = false;
+    }
+
+    private void PresentAle(DigitalLevel level)
+    {
+        if (_presentedAle == level) return;
+        AddressLatchEnable.Drive(level);
+        _presentedAle = level;
+    }
+
+    private void PresentReadBar(DigitalLevel level)
+    {
+        if (_presentedReadBar == level) return;
+        VramReadBar.Drive(level);
+        _presentedReadBar = level;
+    }
+
+    private void PresentWriteBar(DigitalLevel level)
+    {
+        if (_presentedWriteBar == level) return;
+        VramWriteBar.Drive(level);
+        _presentedWriteBar = level;
     }
 
     private void DriveNmi()
     {
         var assert = _vblank && NmiEnabled;
+        if (assert == _nmiAsserted) return;
+
         if (assert)
         {
             NmiBar.Drive(DigitalLevel.Low);
-            if (!_nmiAsserted) NmiFallingEdgeCount++;
+            NmiFallingEdgeCount++;
         }
         else NmiBar.Release();
         _nmiAsserted = assert;
@@ -1021,6 +1165,12 @@ public sealed class Rp2C07 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         VramReadBar.Release();
         VramWriteBar.Release();
         NmiBar.Release();
+
+        _presentedAdDriven = false;
+        _presentedHighAddressDriven = false;
+        _presentedAle = DigitalLevel.HighImpedance;
+        _presentedReadBar = DigitalLevel.HighImpedance;
+        _presentedWriteBar = DigitalLevel.HighImpedance;
     }
 
     private DigitalBus CreateBus(string prefix, int width, PinDirection direction, int firstBitNumber = 0)

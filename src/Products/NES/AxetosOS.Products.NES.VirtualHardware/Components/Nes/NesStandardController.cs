@@ -5,15 +5,16 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 /// <summary>
 /// Pin-driven standard NES/Famicom controller shift-register package.
 /// Button order is A, B, Select, Start, Up, Down, Left, Right.
-/// The package reacts only to VCC/GND, STROBE, /CLOCK, button pins and its
-/// serial DATA output. A high strobe continuously presents A; a low strobe
-/// shifts one button after each completed active-low clock pulse.
 /// </summary>
-public sealed class NesStandardController : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
+public sealed class NesStandardController : VirtualHardwareComponent
 {
     private byte _shiftRegister;
-    private DigitalLevel _previousClockBar = DigitalLevel.High;
     private DigitalLevel _previousStrobe = DigitalLevel.Low;
+    private bool _packagePowered;
+    private readonly ulong _powerInputMask;
+    private readonly ulong _strobeInputMask;
+    private readonly ulong _clockInputMask;
+    private readonly ulong _buttonInputMask;
 
     public NesStandardController(string componentId)
         : base(componentId)
@@ -21,16 +22,22 @@ public sealed class NesStandardController : VirtualHardwareComponent, IInputDriv
         Vcc = AddPin("VCC", PinDirection.Input);
         Gnd = AddPin("GND", PinDirection.Input);
         Strobe = AddPin("STROBE", PinDirection.Input);
-        ClockBar = AddPin("/CLOCK", PinDirection.Input);
+        // The controller shifts after the active-low clock pulse completes.
+        // Low is still delivered to the pin, but only Low->High can wake logic.
+        ClockBar = AddPin("/CLOCK", PinDirection.Input, DigitalInputActivation.RisingEdge);
         Data = AddPin("DATA", PinDirection.Output);
 
         var buttons = new DigitalPin[8];
         for (var index = 0; index < buttons.Length; index++)
-        {
             buttons[index] = AddPin($"BUTTON{index}", PinDirection.Input);
-        }
-
         Buttons = new DigitalBus($"{componentId}.BUTTONS", buttons);
+
+        _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
+        _strobeInputMask = Strobe.InputChangeMask;
+        _clockInputMask = ClockBar.InputChangeMask;
+        _buttonInputMask = Buttons.InputChangeMask;
+
+        InitializePackageState();
     }
 
     public DigitalPin Vcc { get; }
@@ -44,58 +51,75 @@ public sealed class NesStandardController : VirtualHardwareComponent, IInputDriv
     public ulong LatchCount { get; private set; }
     public ulong ShiftCount { get; private set; }
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         _shiftRegister = 0;
-        _previousClockBar = DigitalLevel.High;
         _previousStrobe = DigitalLevel.Low;
+        _packagePowered = false;
         LatchCount = 0;
         ShiftCount = 0;
         Data.Release();
     }
 
-    public override void Reset()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        _shiftRegister = 0;
-        _previousClockBar = ClockBar.SampledLevel;
-        _previousStrobe = Strobe.SampledLevel;
-        DriveCurrentBit();
-    }
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        if (!_packagePowered && !powerChanged) return;
 
-    public override void Evaluate()
-    {
         if (!IsPowered())
         {
-            _shiftRegister = 0;
-            _previousClockBar = ClockBar.SampledLevel;
+            if (_packagePowered)
+            {
+                _shiftRegister = 0;
+                Data.Release();
+            }
+            _packagePowered = false;
             _previousStrobe = Strobe.SampledLevel;
-            Data.Release();
             return;
         }
 
+        var newlyPowered = !_packagePowered;
+        _packagePowered = true;
+
+        var strobeChanged = (changedInputMask & _strobeInputMask) != 0;
+        var clockRising = (changedInputMask & _clockInputMask) != 0;
+        var buttonsChanged = (changedInputMask & _buttonInputMask) != 0;
+        if (!newlyPowered && !strobeChanged && !clockRising && !buttonsChanged) return;
+
         var strobe = Strobe.SampledLevel;
-        var clockBar = ClockBar.SampledLevel;
+
+        // Button pins can toggle freely while STROBE is Low; the held shift
+        // register is disconnected from those inputs until the next latch.
+        if (buttonsChanged && !newlyPowered && !strobeChanged && !clockRising
+            && strobe != DigitalLevel.High)
+        {
+            return;
+        }
 
         if (strobe == DigitalLevel.High)
         {
             CaptureButtons(countLatch: _previousStrobe != DigitalLevel.High);
         }
-        else if (strobe == DigitalLevel.Low &&
-                 _previousClockBar == DigitalLevel.Low &&
-                 clockBar == DigitalLevel.High)
+        else if (strobe == DigitalLevel.Low)
         {
-            _shiftRegister = (byte)((_shiftRegister >> 1) | 0x80);
-            ShiftCount++;
+            if (_previousStrobe == DigitalLevel.High && strobeChanged)
+            {
+                // Falling STROBE freezes the last live button state.
+                CaptureButtons(countLatch: false);
+            }
+            else if (clockRising)
+            {
+                _shiftRegister = (byte)((_shiftRegister >> 1) | 0x80);
+                ShiftCount++;
+            }
         }
 
-        _previousClockBar = clockBar;
         _previousStrobe = strobe;
         DriveCurrentBit();
     }
 
     private bool IsPowered() =>
-        Vcc.SampledLevel == DigitalLevel.High &&
-        Gnd.SampledLevel == DigitalLevel.Low;
+        Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
 
     private void CaptureButtons(bool countLatch)
     {
@@ -103,24 +127,13 @@ public sealed class NesStandardController : VirtualHardwareComponent, IInputDriv
         for (var bit = 0; bit < Buttons.Width; bit++)
         {
             if (Buttons.Pins[bit].SampledLevel == DigitalLevel.High)
-            {
                 value |= (byte)(1 << bit);
-            }
         }
 
-        if (_shiftRegister != value)
-        {
-            _shiftRegister = value;
-        }
-
-        if (countLatch)
-        {
-            LatchCount++;
-        }
+        _shiftRegister = value;
+        if (countLatch) LatchCount++;
     }
 
-    private void DriveCurrentBit()
-    {
+    private void DriveCurrentBit() =>
         Data.Drive((_shiftRegister & 0x01) != 0 ? DigitalLevel.High : DigitalLevel.Low);
-    }
 }

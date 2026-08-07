@@ -6,8 +6,9 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Instrumentation;
 /// External digital stimulus used for switches, test fixtures and future host
 /// connectors. The source still affects the circuit only through its pin.
 /// </summary>
-public sealed class DigitalSignalSource : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
+public sealed class DigitalSignalSource : VirtualHardwareComponent, IExternalBoardSource
 {
+    private readonly DigitalLevel _powerOnLevel;
     private DigitalLevel _level;
 
     public DigitalSignalSource(string componentId, DigitalLevel initialLevel = DigitalLevel.Low)
@@ -18,6 +19,7 @@ public sealed class DigitalSignalSource : VirtualHardwareComponent, IInputDriven
             throw new ArgumentOutOfRangeException(nameof(initialLevel));
         }
 
+        _powerOnLevel = initialLevel;
         _level = initialLevel;
         Output = AddPin("OUT", PinDirection.Output);
         Output.Drive(initialLevel);
@@ -25,6 +27,8 @@ public sealed class DigitalSignalSource : VirtualHardwareComponent, IInputDriven
 
     public DigitalPin Output { get; }
     public DigitalLevel Level => _level;
+
+    public void ApplyPowerOnDrive() => Set(_powerOnLevel);
 
     public void Set(DigitalLevel level)
     {
@@ -44,5 +48,4 @@ public sealed class DigitalSignalSource : VirtualHardwareComponent, IInputDriven
         }
     }
 
-    public override void Evaluate() => Set(_level);
 }

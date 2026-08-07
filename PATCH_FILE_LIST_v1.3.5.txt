@@ -1,0 +1,17 @@
+Directory.Build.props
+README.md
+PATCH_NOTES_v1.3.5.txt
+PATCH_FILE_LIST_v1.3.5.txt
+Apply-v1.3.5.ps1
+src/Products/NES/AxetosOS.Products.NES.DesktopHost/Program.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalPin.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalNet.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/VirtualHardwareComponent.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Cartridges/NromCartridge.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Memory/Hm6116.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Logic/Sn74Ls373.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/RicohApuMixer.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A03.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A07.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C02.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C07.cs

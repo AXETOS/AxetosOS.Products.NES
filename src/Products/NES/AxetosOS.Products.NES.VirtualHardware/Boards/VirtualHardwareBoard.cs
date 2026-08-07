@@ -21,7 +21,6 @@ public sealed class VirtualHardwareBoard
     public string BoardId { get; }
     public IReadOnlyList<IVirtualHardwareComponent> Components => _components;
     public IReadOnlyList<DigitalNet> Nets => _nets;
-    public ulong TopologyRevision { get; private set; }
 
     public T Add<T>(T component) where T : IVirtualHardwareComponent
     {
@@ -32,7 +31,6 @@ public sealed class VirtualHardwareBoard
         }
 
         _components.Add(component);
-        TopologyRevision++;
         return component;
     }
 
@@ -45,7 +43,6 @@ public sealed class VirtualHardwareBoard
 
         var net = new DigitalNet(name);
         _nets.Add(net);
-        TopologyRevision++;
         return net;
     }
 
@@ -58,33 +55,24 @@ public sealed class VirtualHardwareBoard
         }
 
         var net = _nets.FirstOrDefault(existing => existing.Name == netName) ?? AddNet(netName);
-        var previousPinCount = net.Pins.Count;
         foreach (var pin in pins)
         {
             net.Connect(pin);
         }
-
-        if (net.Pins.Count != previousPinCount)
-        {
-            TopologyRevision++;
-        }
-
         return net;
     }
 
+    /// <summary>
+    /// Applies the board's external rail, clock and switch source drives. Chip
+    /// packages are never called; they can react only when the resulting net
+    /// levels reach their input pins through the simulator.
+    /// </summary>
     public void PowerOn()
     {
-        foreach (var component in _components)
+        foreach (var source in _components.OfType<IExternalBoardSource>())
         {
-            component.PowerOn();
+            source.ApplyPowerOnDrive();
         }
     }
 
-    public void Reset()
-    {
-        foreach (var component in _components)
-        {
-            component.Reset();
-        }
-    }
 }

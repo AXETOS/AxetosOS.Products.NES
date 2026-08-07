@@ -34,6 +34,41 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
     }
 
     [Fact]
+    public void Deselected_cpu_bus_pins_stay_electrically_current_without_activating_register_logic()
+    {
+        var fixture = new Fixture();
+
+        fixture.PrepareDeselectedRegisterWrite(1, 0x18);
+
+        Assert.Equal((byte)0x00, fixture.Chip.MaskRegister);
+        Assert.True(fixture.Chip.RegisterSelect.TrySample(out var register));
+        Assert.Equal(1UL, register);
+        Assert.True(fixture.Chip.CpuData.TrySample(out var data));
+        Assert.Equal(0x18UL, data);
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.CpuReadWrite.SampledLevel);
+        Assert.Equal(DigitalLevel.High, fixture.Chip.ChipSelectBar.SampledLevel);
+
+        fixture.SelectPreparedTransaction();
+
+        Assert.Equal((byte)0x18, fixture.Chip.MaskRegister);
+        fixture.EndSelectedTransaction();
+    }
+
+    [Fact]
+    public void Selected_write_waits_for_data_bus_to_settle_before_consuming_the_transaction()
+    {
+        var fixture = new Fixture();
+
+        fixture.BeginRegisterWriteWithFloatingData(1);
+        Assert.Equal((byte)0x00, fixture.Chip.MaskRegister);
+
+        fixture.DriveSelectedWriteData(0x18);
+
+        Assert.Equal((byte)0x18, fixture.Chip.MaskRegister);
+        fixture.EndSelectedTransaction();
+    }
+
+    [Fact]
     public void Cpu_registers_own_oam_and_scroll_address_latches_inside_the_chip()
     {
         var fixture = new Fixture();
@@ -371,11 +406,7 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
     public void Held_ppustatus_read_applies_side_effects_once_per_chip_select_transaction()
     {
         var fixture = new Fixture();
-        var statusReads = 0;
-        fixture.Chip.SplitTrace += trace =>
-        {
-            if (trace.Operation == "PPUSTATUS read") statusReads++;
-        };
+        fixture.Chip.SplitTraceOutput.SetCaptureEnabled(true);
 
         fixture.WriteRegister(5, 0x2D);
         Assert.True(fixture.Chip.WriteToggle);
@@ -384,7 +415,11 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         fixture.PulseClock(16);
 
         Assert.False(fixture.Chip.WriteToggle);
-        Assert.Equal(1, statusReads);
+        Assert.Equal(
+            1,
+            fixture.Chip.SplitTraceOutput
+                .Drain()
+                .Count(trace => trace.Operation == "PPUSTATUS read"));
 
         fixture.EndRegisterRead();
     }
@@ -511,6 +546,36 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
             Release(_externalAd);
             _sim.Settle();
             return addresses;
+        }
+
+        public void PrepareDeselectedRegisterWrite(byte register, byte value)
+        {
+            _cs.Set(DigitalLevel.High);
+            Set(_rs, register);
+            Set(_data, value);
+            _rw.Set(DigitalLevel.Low);
+            _sim.Settle();
+        }
+
+        public void SelectPreparedTransaction()
+        {
+            _cs.Set(DigitalLevel.Low);
+            _sim.Settle();
+        }
+
+        public void BeginRegisterWriteWithFloatingData(byte register)
+        {
+            Set(_rs, register);
+            Release(_data);
+            _rw.Set(DigitalLevel.Low);
+            _cs.Set(DigitalLevel.Low);
+            _sim.Settle();
+        }
+
+        public void DriveSelectedWriteData(byte value)
+        {
+            Set(_data, value);
+            _sim.Settle();
         }
 
         public void BeginRegisterWrite(byte register, byte value)

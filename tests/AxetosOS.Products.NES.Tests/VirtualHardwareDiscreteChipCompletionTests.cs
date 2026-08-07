@@ -100,8 +100,10 @@ public sealed class VirtualHardwareDiscreteChipCompletionTests
         vcc.Set(DigitalLevel.Low);
         simulator.Settle();
         Assert.All(outputs, net => Assert.Equal(DigitalLevel.Unknown, net.Level));
-        vcc.Set(DigitalLevel.High);
+        // With immediate propagation, LE must already be low when power returns
+        // if the test intends the unknown cold-start latch state to be held.
         le.Set(DigitalLevel.Low);
+        vcc.Set(DigitalLevel.High);
         simulator.Settle();
         Assert.False(chip.IsLatchedValueKnown);
         Assert.All(outputs, net => Assert.Equal(DigitalLevel.Unknown, net.Level));
@@ -230,10 +232,13 @@ public sealed class VirtualHardwareDiscreteChipCompletionTests
 
         fixture.Vcc.Set(DigitalLevel.Low);
         fixture.Simulator.Settle();
-        fixture.Vcc.Set(DigitalLevel.High);
+        // Do not repower SRAM while /WE is still asserted with stale data on
+        // D0-D7. Immediate propagation models that as a real write. Establish
+        // the inactive-write/read controls first, then restore VCC.
         fixture.WriteEnable.Set(DigitalLevel.High);
-        fixture.OutputEnable.Set(DigitalLevel.Low);
         DriveHighImpedance(fixture.Data);
+        fixture.OutputEnable.Set(DigitalLevel.Low);
+        fixture.Vcc.Set(DigitalLevel.High);
         fixture.Simulator.Settle();
 
         Assert.True(fixture.Chip.TryInspect(0x7FF, out var after));

@@ -16,6 +16,7 @@ public sealed class Rp2C02VramAddressRegisters : VirtualHardwareComponent
     private bool _incrementXLast;
     private bool _incrementYLast;
     private bool _resetToggleLast;
+    private readonly ulong _commandInputMask;
 
     public Rp2C02VramAddressRegisters(string componentId) : base(componentId)
     {
@@ -35,6 +36,15 @@ public sealed class Rp2C02VramAddressRegisters : VirtualHardwareComponent
         IncrementFineY = AddPin("INCREMENT_FINE_Y", PinDirection.Input);
         ResetWriteToggle = AddPin("RESET_WRITE_TOGGLE", PinDirection.Input);
         WriteToggleOutput = AddPin("WRITE_TOGGLE", PinDirection.Output);
+        _commandInputMask = WritePulse.InputChangeMask
+            | IncrementPulse.InputChangeMask
+            | CopyHorizontal.InputChangeMask
+            | CopyVertical.InputChangeMask
+            | IncrementCoarseX.InputChangeMask
+            | IncrementFineY.InputChangeMask
+            | ResetWriteToggle.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalBus CpuData { get; }
@@ -58,7 +68,7 @@ public sealed class Rp2C02VramAddressRegisters : VirtualHardwareComponent
     public byte FineX { get; private set; }
     public bool WriteToggle { get; private set; }
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         Current = 0;
         Temporary = 0;
@@ -69,14 +79,12 @@ public sealed class Rp2C02VramAddressRegisters : VirtualHardwareComponent
         DriveOutputs();
     }
 
-    public override void Reset()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        WriteToggle = false;
-        DriveOutputs();
-    }
+        // CPU data/register/config pins are sampled by command pulses. Their
+        // electrical transitions alone do not execute the address-register core.
+        if ((changedInputMask & _commandInputMask) == 0) return;
 
-    public override void Evaluate()
-    {
         var resetToggle = ResetWriteToggle.SampledLevel == DigitalLevel.High;
         if (resetToggle && !_resetToggleLast) WriteToggle = false;
         _resetToggleLast = resetToggle;

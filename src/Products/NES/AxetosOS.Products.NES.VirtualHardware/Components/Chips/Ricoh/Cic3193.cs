@@ -27,7 +27,6 @@ public sealed class Cic3193 : VirtualHardwareComponent
     private const int InitialAuthenticationRoundCount = 16;
     private const int RetryHoldClockCount = 8;
 
-    private bool _lastClockHigh;
     private bool _wasPowered;
     private bool _lastResetAsserted;
     private byte _serialInputShift;
@@ -44,6 +43,10 @@ public sealed class Cic3193 : VirtualHardwareComponent
     private bool _capturedSeedHigh;
     private bool _capturedNtscOnlyMode;
 
+    private readonly ulong _powerInputMask;
+    private readonly ulong _resetInputMask;
+    private readonly ulong _clockInputMask;
+
     public Cic3193(string componentId) : base(componentId)
     {
         DataOut = AddPin("DATA_OUT", PinDirection.Output);
@@ -51,7 +54,7 @@ public sealed class Cic3193 : VirtualHardwareComponent
         Seed = AddPin("SEED", PinDirection.Input);
         Config = AddPin("CONFIG", PinDirection.Input);
         Nc5 = AddPin("NC5", PinDirection.Input);
-        Clock = AddPin("CLK", PinDirection.Input);
+        Clock = AddPin("CLK", PinDirection.Input, DigitalInputActivation.RisingEdge);
         ResetBar = AddPin("RESET_BAR", PinDirection.Input);
         Gnd = AddPin("GND", PinDirection.Input);
         HostResetBar = AddPin("HOST_RESET_BAR", PinDirection.Output);
@@ -62,6 +65,12 @@ public sealed class Cic3193 : VirtualHardwareComponent
         Nc14 = AddPin("NC14", PinDirection.Input);
         Nc15 = AddPin("NC15", PinDirection.Input);
         Vcc = AddPin("VCC", PinDirection.Input);
+
+        _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
+        _resetInputMask = ResetBar.InputChangeMask;
+        _clockInputMask = Clock.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalPin DataOut { get; }
@@ -104,28 +113,29 @@ public sealed class Cic3193 : VirtualHardwareComponent
     public ulong IndeterminateInputSampleCount { get; private set; }
     public ulong ExternalResetCount { get; private set; }
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         ResetInternalState(clearLifetimeCounters: true);
     }
 
-    public override void Reset()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        ResetInternalState(clearLifetimeCounters: true);
-    }
+        // DATA/SEED/CONFIG/NC pins are continuously present electrically, but
+        // this CIC samples them only from its powered, reset-released clocked
+        // state machine.  They therefore never execute protocol logic by
+        // themselves.  CLK is declared rising-edge-only at the package pin.
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        if (!_wasPowered && !powerChanged) return;
 
-    public override void Evaluate()
-    {
+        var resetChanged = (changedInputMask & _resetInputMask) != 0;
+        var clockRising = (changedInputMask & _clockInputMask) != 0;
+        if (!powerChanged && !resetChanged && !clockRising) return;
+
         Powered = Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
         if (!Powered)
         {
-            if (_wasPowered)
-            {
-                ResetProtocolState();
-            }
-
+            if (_wasPowered) ResetProtocolState();
             ReleaseOutputs();
-            _lastClockHigh = false;
             _lastResetAsserted = false;
             _wasPowered = false;
             return;
@@ -136,8 +146,8 @@ public sealed class Cic3193 : VirtualHardwareComponent
             ResetProtocolState();
             Powered = true;
         }
-
         _wasPowered = true;
+
         ResetAsserted = ResetBar.SampledLevel != DigitalLevel.High;
         if (ResetAsserted)
         {
@@ -153,19 +163,15 @@ public sealed class Cic3193 : VirtualHardwareComponent
             SlaveResetBar.Drive(DigitalLevel.Low);
             DataOut.Drive(DigitalLevel.Low);
             _lastResetAsserted = true;
-            _lastClockHigh = Clock.SampledLevel == DigitalLevel.High;
             return;
         }
 
         _lastResetAsserted = false;
-        var clockHigh = Clock.SampledLevel == DigitalLevel.High;
-        if (clockHigh && !_lastClockHigh)
+        if (clockRising && Clock.SampledLevel == DigitalLevel.High)
         {
             ClockRisingEdgeCount++;
             AdvanceClockedState();
         }
-
-        _lastClockHigh = clockHigh;
 
         SlaveResetBar.Drive(_startupClockCount >= 2 ? DigitalLevel.High : DigitalLevel.Low);
         HostResetBar.Drive(StartupComplete && AuthenticationState != Cic3193AuthenticationState.RetryHold
@@ -370,7 +376,6 @@ public sealed class Cic3193 : VirtualHardwareComponent
 
     private void ResetProtocolState()
     {
-        _lastClockHigh = false;
         _serialInputShift = 0;
         _serialOutputShift = 0;
         _serialBitCount = 0;

@@ -6,10 +6,14 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Memory;
 /// Standalone HM6116-compatible 2K x 8 static RAM package.
 /// Memory access occurs only through address, data and control pins.
 /// </summary>
-public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent, IInputActivationContractProvider, ICompiledInputDrivenVirtualHardwareComponent
+public sealed class Hm6116 : VirtualHardwareComponent
 {
     private readonly byte[] _memory = new byte[2048];
     private readonly byte[] _knownMasks = new byte[2048];
+    private readonly ulong _powerInputMask;
+    private readonly ulong _controlInputMask;
+    private readonly ulong _addressInputMask;
+    private readonly ulong _dataInputMask;
     private bool _wasPowered;
 
     public Hm6116(string componentId) : base(componentId)
@@ -26,6 +30,15 @@ public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirt
         Data = new DigitalBus(
             $"{componentId}.D",
             Enumerable.Range(0, 8).Select(bit => AddPin($"D{bit}", PinDirection.Bidirectional)).ToArray());
+
+        _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
+        _controlInputMask = ChipSelectBar.InputChangeMask
+            | OutputEnableBar.InputChangeMask
+            | WriteEnableBar.InputChangeMask;
+        _addressInputMask = Address.InputChangeMask;
+        _dataInputMask = Data.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalPin Vcc { get; }
@@ -36,64 +49,59 @@ public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirt
     public DigitalBus Address { get; }
     public DigitalBus Data { get; }
 
-    public PinActivationContract CompileInputActivation(DigitalPin pin)
-    {
-        ArgumentNullException.ThrowIfNull(pin);
-        if (pin.Direction == PinDirection.Input) return PinActivationContract.Always;
-        if (Data.Pins.Contains(pin))
-        {
-            return PinActivationContract.When(() =>
-                ChipSelectBar.SampledLevel == DigitalLevel.Low &&
-                WriteEnableBar.SampledLevel != DigitalLevel.High);
-        }
+    protected override void OnInputChanges(ulong changedInputMask) => ProcessInputChanges(changedInputMask);
 
-        return PinActivationContract.Never;
-    }
-
-    public bool ShouldWakeForSampledPin(DigitalPin pin)
-    {
-        ArgumentNullException.ThrowIfNull(pin);
-
-        if (pin.Direction == PinDirection.Input) return true;
-
-        if (Data.Pins.Contains(pin))
-        {
-            // D0-D7 are inputs only during a selected write. During reads the
-            // resolved bus level is the RAM package's own output echo, and when
-            // deselected the bus cannot affect package state.
-            return ChipSelectBar.SampledLevel == DigitalLevel.Low &&
-                WriteEnableBar.SampledLevel != DigitalLevel.High;
-        }
-
-        return false;
-    }
-
-    void ICompiledInputDrivenVirtualHardwareComponent.Evaluate(ulong changedInputMask) => Evaluate();
-
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         InitializePowerUpState();
         _wasPowered = false;
         Data.Release();
     }
 
-    public override void Evaluate()
+    private void ProcessInputChanges(ulong changedInputMask)
     {
+        if (changedInputMask == 0) return;
+
+        // The motherboard has already delivered every changed level.  Decide
+        // inside the SRAM whether that pin can reach the storage/output stages.
+        // When power or /CS disconnects the part, address/data activity is just
+        // electrical activity at package pins and must not scan the 11-bit
+        // address bus or 8-bit data bus.
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        if (!_wasPowered && !powerChanged) return;
+
+        var controlChanged = (changedInputMask & _controlInputMask) != 0;
+        var addressChanged = (changedInputMask & _addressInputMask) != 0;
+        var dataChanged = (changedInputMask & _dataInputMask) != 0;
+
+        if (!powerChanged && !controlChanged)
+        {
+            if (!addressChanged && !dataChanged) return;
+            if (ChipSelectBar.SampledLevel == DigitalLevel.High) return;
+
+            if (ChipSelectBar.SampledLevel == DigitalLevel.Low
+                && WriteEnableBar.SampledLevel == DigitalLevel.High)
+            {
+                // Deselected output stage: address/data cannot affect RAM.
+                if (OutputEnableBar.SampledLevel == DigitalLevel.High) return;
+                // During a read the D pins are outputs/echoes, not storage input.
+                if (dataChanged && !addressChanged) return;
+            }
+        }
+
         var powered = IsPowered();
         if (!powered)
         {
+            if (_wasPowered) Data.Release();
             _wasPowered = false;
-            Data.Release();
             return;
         }
 
         if (!_wasPowered)
         {
             // SRAM contents are unspecified after power is applied, but every
-            // cell settles to a concrete zero/one level. This virtual package
-            // chooses the valid all-zero cold-start state so software cannot
-            // accidentally inherit a warm-boot signature from an arbitrary
-            // pseudo-random pattern.
+            // cell settles to a concrete zero/one level. This model chooses a
+            // deterministic all-zero cold-start state.
             InitializePowerUpState();
             _wasPowered = true;
         }
@@ -169,9 +177,15 @@ public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirt
 
     private void CaptureWrite(int address)
     {
+        if (Data.TrySample(out var raw))
+        {
+            _memory[address] = (byte)raw;
+            _knownMasks[address] = byte.MaxValue;
+            return;
+        }
+
         var value = _memory[address];
         var knownMask = _knownMasks[address];
-
         for (var bit = 0; bit < Data.Width; bit++)
         {
             var mask = (byte)(1 << bit);
@@ -215,17 +229,19 @@ public sealed class Hm6116 : VirtualHardwareComponent, ISelectiveInputDrivenVirt
     {
         var value = _memory[address];
         var knownMask = _knownMasks[address];
+        if (knownMask == byte.MaxValue)
+        {
+            Data.Drive(value);
+            return;
+        }
+
         for (var bit = 0; bit < Data.Width; bit++)
         {
             var mask = 1 << bit;
             if ((knownMask & mask) == 0)
-            {
                 Data.Pins[bit].Drive(DigitalLevel.Unknown);
-            }
             else
-            {
                 Data.Pins[bit].Drive((value & mask) == 0 ? DigitalLevel.Low : DigitalLevel.High);
-            }
         }
     }
 

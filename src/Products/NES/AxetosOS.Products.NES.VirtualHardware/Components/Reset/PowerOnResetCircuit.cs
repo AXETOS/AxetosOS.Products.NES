@@ -3,10 +3,11 @@ using AxetosOS.Products.NES.VirtualHardware.Electrical;
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Reset;
 
 /// <summary>
-/// A small active-low reset circuit. With power absent the output is unknown;
-/// with power present it drives /RESET according to the physical reset state.
+/// Active-low reset source. Power arrives only through VCC. The external press
+/// and release operations change the circuit's own mechanical state and drive
+/// its output immediately; no board polling is required.
 /// </summary>
-public sealed class PowerOnResetCircuit : VirtualHardwareComponent
+public sealed class PowerOnResetCircuit : VirtualHardwareComponent, IExternalBoardSource
 {
     private bool _released;
 
@@ -22,18 +23,23 @@ public sealed class PowerOnResetCircuit : VirtualHardwareComponent
     public DigitalPin ResetBar { get; }
     public bool IsReleased => _released;
 
-    public void Press() => _released = false;
-    public void Release() => _released = true;
-
-    public override void PowerOn()
+    public void Press()
     {
         _released = false;
-        ResetBar.Drive(DigitalLevel.Unknown);
+        DriveOutput();
     }
 
-    public override void Reset() => Press();
+    public void Release()
+    {
+        _released = true;
+        DriveOutput();
+    }
 
-    public override void Evaluate()
+    public void ApplyPowerOnDrive() => Press();
+
+    protected override void OnInputChanges(ulong changedInputMask) => DriveOutput();
+
+    private void DriveOutput()
     {
         if (Vcc.SampledLevel != DigitalLevel.High)
         {

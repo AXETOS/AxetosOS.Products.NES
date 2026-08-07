@@ -19,6 +19,8 @@ public sealed class NesOamDmaController : VirtualHardwareComponent
     private byte _index;
     private byte _latchedData;
     private bool _alignmentRisingSeen;
+    private readonly ulong _clockInputMask;
+    private readonly ulong _triggerInputMask;
 
     public NesOamDmaController(string componentId) : base(componentId)
     {
@@ -40,6 +42,10 @@ public sealed class NesOamDmaController : VirtualHardwareComponent
         CpuBusEnable = AddPin("CPU_BUS_ENABLE", PinDirection.Output);
         Ready = AddPin("RDY", PinDirection.Output);
         OamWrite = AddPin("OAM_WRITE", PinDirection.Output);
+        _clockInputMask = Clock.InputChangeMask;
+        _triggerInputMask = Address.InputChangeMask | Data.InputChangeMask | ReadWrite.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalBus Address { get; }
@@ -58,7 +64,7 @@ public sealed class NesOamDmaController : VirtualHardwareComponent
     public ulong CompletedDmaCount { get; private set; }
     public ulong CpuStallCycleCount { get; private set; }
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         _phase = DmaPhase.Idle;
         _previousClock = DigitalLevel.Low;
@@ -69,27 +75,28 @@ public sealed class NesOamDmaController : VirtualHardwareComponent
         ReleaseBus();
     }
 
-    public override void Reset()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        _phase = DmaPhase.Idle;
-        _triggerConsumed = false;
-        _alignmentRisingSeen = false;
-        ReleaseBus();
-    }
+        var clockChanged = (changedInputMask & _clockInputMask) != 0;
+        var triggerPinsChanged = (changedInputMask & _triggerInputMask) != 0;
 
-    public override void Evaluate()
-    {
+        if (_phase == DmaPhase.Idle)
+        {
+            // While idle, PHI2 activity by itself cannot start DMA.  Address,
+            // data and R/W still arrive at the pins and only those trigger-side
+            // changes need to inspect $4014.
+            if (clockChanged) _previousClock = Clock.SampledLevel;
+            if (triggerPinsChanged) DetectTrigger();
+            return;
+        }
+
+        // Once DMA owns the bus, its state machine changes only on PHI2 edges.
+        // External bus-data settling between edges is merely sampled later.
+        if (!clockChanged) return;
         var clock = Clock.SampledLevel;
         var rising = _previousClock == DigitalLevel.Low && clock == DigitalLevel.High;
         var falling = _previousClock == DigitalLevel.High && clock == DigitalLevel.Low;
         _previousClock = clock;
-
-        if (_phase == DmaPhase.Idle)
-        {
-            ReleaseBus();
-            DetectTrigger();
-            return;
-        }
 
         CpuBusEnable.Drive(DigitalLevel.Low);
         Ready.Drive(DigitalLevel.Low);

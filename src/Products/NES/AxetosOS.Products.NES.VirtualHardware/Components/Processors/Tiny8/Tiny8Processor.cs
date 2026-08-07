@@ -26,8 +26,10 @@ public sealed class Tiny8Processor : VirtualHardwareComponent
     public const byte HaltOpcode = 0xFF;
 
     private ExecutionPhase _phase;
-    private DigitalLevel _previousClock;
     private byte _operandAddress;
+    private readonly ulong _clockInputMask;
+    private readonly ulong _resetInputMask;
+    private bool _resetAsserted;
 
     public Tiny8Processor(string componentId, byte resetVector = 0x80)
         : base(componentId)
@@ -45,8 +47,12 @@ public sealed class Tiny8Processor : VirtualHardwareComponent
         Address = new DigitalBus($"{componentId}.A", addressPins);
         Data = new DigitalBus($"{componentId}.D", dataPins);
         ReadWrite = AddPin("R/W", PinDirection.Output);
-        Clock = AddPin("CLK", PinDirection.Input);
+        Clock = AddPin("CLK", PinDirection.Input, DigitalInputActivation.RisingEdge);
         ResetBar = AddPin("/RESET", PinDirection.Input);
+        _clockInputMask = Clock.InputChangeMask;
+        _resetInputMask = ResetBar.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public byte ResetVector { get; }
@@ -62,38 +68,33 @@ public sealed class Tiny8Processor : VirtualHardwareComponent
     public ulong RisingEdgeCount { get; private set; }
     public ulong InstructionCount { get; private set; }
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         ProgramCounter = ResetVector;
         Accumulator = 0;
         CurrentOpcode = 0;
         _operandAddress = 0;
         _phase = ExecutionPhase.FetchOpcode;
-        _previousClock = DigitalLevel.Low;
         RisingEdgeCount = 0;
         InstructionCount = 0;
         PrepareRead(ProgramCounter);
     }
 
-    public override void Reset() => PowerOn();
-
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
+        var resetChanged = (changedInputMask & _resetInputMask) != 0;
+        var clockRising = (changedInputMask & _clockInputMask) != 0;
+        if (!resetChanged && !clockRising) return;
+
         if (ResetBar.SampledLevel == DigitalLevel.Low)
         {
-            PowerOn();
-            _previousClock = Clock.SampledLevel;
+            if (!_resetAsserted) InitializePackageState();
+            _resetAsserted = true;
             return;
         }
 
-        var clock = Clock.SampledLevel;
-        var risingEdge = _previousClock == DigitalLevel.Low && clock == DigitalLevel.High;
-        _previousClock = clock;
-
-        if (!risingEdge || ResetBar.SampledLevel != DigitalLevel.High)
-        {
-            return;
-        }
+        _resetAsserted = false;
+        if (!clockRising || Clock.SampledLevel != DigitalLevel.High) return;
 
         RisingEdgeCount++;
         ExecuteRisingEdge();

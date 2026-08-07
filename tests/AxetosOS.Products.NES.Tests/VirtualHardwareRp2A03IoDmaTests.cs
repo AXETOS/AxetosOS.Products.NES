@@ -313,6 +313,8 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
             M2 = AddPin("M2", PinDirection.Input);
             ControllerRead1Bar = AddPin("/OE1", PinDirection.Input);
             ControllerRead2Bar = AddPin("/OE2", PinDirection.Input);
+        
+            InitializeState();
         }
 
         public DigitalBus Address { get; }
@@ -329,7 +331,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         public void Poke(int address, byte value) => _storage[address] = value;
         public byte Inspect(int address) => _storage[address];
 
-        public override void PowerOn()
+        private void InitializeState()
         {
             _previousM2 = DigitalLevel.Low;
             _writeCapturedDuringHighPhase = false;
@@ -339,7 +341,7 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
             Data.Release();
         }
 
-        public override void Evaluate()
+        protected override void OnInputChanges(ulong changedInputMask)
         {
             Controller1EnableHistory.Add(ControllerRead1Bar.SampledLevel);
             Controller2EnableHistory.Add(ControllerRead2Bar.SampledLevel);

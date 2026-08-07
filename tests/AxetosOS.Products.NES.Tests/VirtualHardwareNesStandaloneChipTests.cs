@@ -114,8 +114,11 @@ public sealed class VirtualHardwareNesStandaloneChipTests
         simulator.Settle();
         Assert.Equal(0x6D, chip.Inspect(0x321));
 
-        DriveHighImpedance(dataSources);
+        // Immediate hardware propagation means control edges happen when the
+        // source changes, not later at Settle(). End the write before removing
+        // its data, then enable the RAM output exactly as real bus timing would.
         we.Set(DigitalLevel.High);
+        DriveHighImpedance(dataSources);
         oe.Set(DigitalLevel.Low);
         simulator.Settle();
         Assert.Equal(0x6DUL, Sample(dataNets));

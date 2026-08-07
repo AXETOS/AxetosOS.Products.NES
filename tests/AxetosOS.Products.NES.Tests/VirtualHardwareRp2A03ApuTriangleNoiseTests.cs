@@ -163,6 +163,8 @@ public sealed class VirtualHardwareRp2A03ApuTriangleNoiseTests
             Data = new DigitalBus($"{id}.D", Enumerable.Range(0, 8).Select(bit => AddPin($"D{bit}", PinDirection.Bidirectional)).ToArray());
             ReadWrite = AddPin("R/W", PinDirection.Input);
             M2 = AddPin("M2", PinDirection.Input);
+        
+            InitializeState();
         }
 
         public DigitalBus Address { get; }
@@ -172,13 +174,13 @@ public sealed class VirtualHardwareRp2A03ApuTriangleNoiseTests
         public void Load(int address, ReadOnlySpan<byte> bytes) => bytes.CopyTo(_storage.AsSpan(address));
         public void Poke(int address, byte value) => _storage[address] = value;
 
-        public override void PowerOn()
+        private void InitializeState()
         {
             _writeCapturedDuringHighPhase = false;
             Data.Release();
         }
 
-        public override void Evaluate()
+        protected override void OnInputChanges(ulong changedInputMask)
         {
             if (ReadWrite.SampledLevel == DigitalLevel.High && Address.TrySample(out var readAddress))
                 Data.Drive(_storage[(ushort)readAddress]);

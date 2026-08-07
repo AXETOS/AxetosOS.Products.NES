@@ -17,6 +17,8 @@ public sealed class NesControllerIoPackage : VirtualHardwareComponent
     private bool _readActiveLast;
     private ushort _activeReadAddress;
     private byte _activeReadValue;
+    private readonly ulong _cpuBusInputMask;
+    private readonly ulong _buttonInputMask;
 
     public NesControllerIoPackage(string componentId)
         : base(componentId)
@@ -46,6 +48,10 @@ public sealed class NesControllerIoPackage : VirtualHardwareComponent
         Controller1 = new DigitalBus($"{componentId}.P1", controller1Pins);
         Controller2 = new DigitalBus($"{componentId}.P2", controller2Pins);
         ReadWrite = AddPin("R/W", PinDirection.Input);
+        _cpuBusInputMask = Address.InputChangeMask | Data.InputChangeMask | ReadWrite.InputChangeMask;
+        _buttonInputMask = Controller1.InputChangeMask | Controller2.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalBus Address { get; }
@@ -57,7 +63,7 @@ public sealed class NesControllerIoPackage : VirtualHardwareComponent
     public ulong ReadCount { get; private set; }
     public ulong LatchCount { get; private set; }
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         _latched1 = 0;
         _latched2 = 0;
@@ -72,14 +78,15 @@ public sealed class NesControllerIoPackage : VirtualHardwareComponent
         Data.Release();
     }
 
-    public override void Reset()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        _readActiveLast = false;
-        Data.Release();
-    }
+        var cpuBusChanged = (changedInputMask & _cpuBusInputMask) != 0;
+        var buttonsChanged = (changedInputMask & _buttonInputMask) != 0;
+        if (!cpuBusChanged && !buttonsChanged) return;
 
-    public override void Evaluate()
-    {
+        if (buttonsChanged && _strobe) CaptureControllers();
+        if (!cpuBusChanged) return;
+
         if (!Address.TrySample(out var rawAddress))
         {
             EndRead();

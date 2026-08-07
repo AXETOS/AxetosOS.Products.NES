@@ -10,9 +10,12 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 /// </summary>
 public sealed class NesPpuTimingCore : VirtualHardwareComponent
 {
-    private bool _clockWasHigh;
     private bool _dotTickHigh;
+    private readonly ulong _clockInputMask;
+    private readonly ulong _resetInputMask;
+    private readonly ulong _outputControlInputMask;
     private bool _vblank;
+    private bool _resetAsserted;
 
     public NesPpuTimingCore(
         string componentId,
@@ -30,7 +33,8 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
         ScanlinesPerFrame = scanlinesPerFrame;
         VblankStartScanline = vblankStartScanline;
         PreRenderScanline = preRenderScanline;
-        Clock = AddPin("CLK", PinDirection.Input);
+        Clock = AddPin("CLK", PinDirection.Input, DigitalInputActivation.RisingEdge);
+        ResetBar = AddPin("/RESET", PinDirection.Input);
         NmiEnable = AddPin("NMI_ENABLE", PinDirection.Input);
         ForceVblank = AddPin("FORCE_VBLANK", PinDirection.Input);
         Vblank = AddPin("VBLANK", PinDirection.Output);
@@ -45,6 +49,11 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
         }
         ScanlineBus = new DigitalBus($"{componentId}.SCANLINE", scanlinePins);
         DotBus = new DigitalBus($"{componentId}.DOT", dotPins);
+        _clockInputMask = Clock.InputChangeMask;
+        _resetInputMask = ResetBar.InputChangeMask;
+        _outputControlInputMask = NmiEnable.InputChangeMask | ForceVblank.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public int DotsPerScanline { get; }
@@ -53,6 +62,7 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
     public int PreRenderScanline { get; }
 
     public DigitalPin Clock { get; }
+    public DigitalPin ResetBar { get; }
     public DigitalPin NmiEnable { get; }
     public DigitalPin ForceVblank { get; }
     public DigitalPin Vblank { get; }
@@ -66,29 +76,33 @@ public sealed class NesPpuTimingCore : VirtualHardwareComponent
     public ulong Frame { get; private set; }
     public bool IsVblank => _vblank || ForceVblank.SampledLevel == DigitalLevel.High;
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         Scanline = 0;
         Dot = 0;
         Frame = 0;
         _vblank = false;
-        _clockWasHigh = false;
         _dotTickHigh = false;
         DotTick.Drive(DigitalLevel.Low);
         DriveOutputs();
     }
 
-    public override void Reset() => PowerOn();
-
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        var clockHigh = Clock.SampledLevel == DigitalLevel.High;
-        if (clockHigh && !_clockWasHigh)
+        var resetChanged = (changedInputMask & _resetInputMask) != 0;
+        var clockRising = (changedInputMask & _clockInputMask) != 0;
+        var outputControlChanged = (changedInputMask & _outputControlInputMask) != 0;
+        if (!resetChanged && !clockRising && !outputControlChanged) return;
+
+        if (ResetBar.SampledLevel == DigitalLevel.Low)
         {
-            AdvanceDot();
+            if (!_resetAsserted) InitializePackageState();
+            _resetAsserted = true;
+            return;
         }
 
-        _clockWasHigh = clockHigh;
+        _resetAsserted = false;
+        if (clockRising && Clock.SampledLevel == DigitalLevel.High) AdvanceDot();
         DriveOutputs();
     }
 

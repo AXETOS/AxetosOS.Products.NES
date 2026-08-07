@@ -1,0 +1,20 @@
+AxetosOS Products / NES v1.1.2
+
+Purpose
+-------
+Correct the physical bidirectional-bus hand-off rule introduced by the v1.1.0 chip-boundary rewrite.
+
+Behavior
+--------
+- A package does not react while its own bidirectional output driver is active.
+- When that package releases the pin, a changed resolved level supplied by another driver is an incoming signal and activates the package through that input-capable pin.
+- The net no longer tracks or filters a "dirty source pin". Self-feedback suppression belongs entirely to the physical pin state: an actively driven bidirectional pin cannot accept an input transition; a released one can.
+- No polling Evaluate(), package lifecycle callbacks, scheduler-owned chip work, or component shortcuts are restored.
+
+Regression coverage
+-------------------
+Adds a bus-hand-off test that drives a bidirectional pin against an external source, verifies that active self-drive does not activate the package, then releases the pin and verifies that the external level is delivered as an input transition.
+
+Validation
+----------
+Static source and patch-overlay validation performed in the packaging environment. The .NET SDK is not available there, so dotnet test must be run on the target machine.

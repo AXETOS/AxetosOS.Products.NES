@@ -136,6 +136,8 @@ public sealed class VirtualHardwareRp2A03ApuAccuracyTests
             Data = new DigitalBus($"{id}.D", Enumerable.Range(0, 8).Select(bit => AddPin($"D{bit}", PinDirection.Bidirectional)).ToArray());
             ReadWrite = AddPin("R/W", PinDirection.Input);
             M2 = AddPin("M2", PinDirection.Input);
+        
+            InitializeState();
         }
 
         public DigitalBus Address { get; }
@@ -146,9 +148,9 @@ public sealed class VirtualHardwareRp2A03ApuAccuracyTests
         public void Poke(int address, byte value) => _storage[address] = value;
         public byte Peek(int address) => _storage[address];
 
-        public override void PowerOn() { _writeCapturedDuringHighPhase = false; Data.Release(); }
+        private void InitializeState() { _writeCapturedDuringHighPhase = false; Data.Release(); }
 
-        public override void Evaluate()
+        protected override void OnInputChanges(ulong changedInputMask)
         {
             if (ReadWrite.SampledLevel == DigitalLevel.High && Address.TrySample(out var readAddress)) Data.Drive(_storage[(ushort)readAddress]);
             else Data.Release();

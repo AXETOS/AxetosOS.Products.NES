@@ -44,7 +44,6 @@ public sealed class Mos6502Processor : VirtualHardwareComponent
     private InterruptKind _activeInterrupt;
     private Operation _operation;
     private AddressingMode _addressingMode;
-    private DigitalLevel _previousClock;
     private DigitalLevel _previousNmi;
     private byte _lowByte;
     private byte _operand;
@@ -52,6 +51,11 @@ public sealed class Mos6502Processor : VirtualHardwareComponent
     private ushort _pointerAddress;
     private byte _readModifyValue;
     private bool _nmiPending;
+    private bool _resetAsserted;
+    private readonly ulong _clockInputMask;
+    private readonly ulong _resetInputMask;
+    private readonly ulong _nmiInputMask;
+    private readonly ulong _busEnableInputMask;
 
     public Mos6502Processor(string componentId) : base(componentId)
     {
@@ -63,12 +67,18 @@ public sealed class Mos6502Processor : VirtualHardwareComponent
         Data = new DigitalBus($"{componentId}.D", dataPins);
         ReadWrite = AddPin("R/W", PinDirection.Output);
         Sync = AddPin("SYNC", PinDirection.Output);
-        Clock = AddPin("PHI2", PinDirection.Input);
+        Clock = AddPin("PHI2", PinDirection.Input, DigitalInputActivation.RisingEdge);
         ResetBar = AddPin("/RESET", PinDirection.Input);
         IrqBar = AddPin("/IRQ", PinDirection.Input);
         NmiBar = AddPin("/NMI", PinDirection.Input);
         Ready = AddPin("RDY", PinDirection.Input);
         BusEnable = AddPin("BUS_ENABLE", PinDirection.Input);
+        _clockInputMask = Clock.InputChangeMask;
+        _resetInputMask = ResetBar.InputChangeMask;
+        _nmiInputMask = NmiBar.InputChangeMask;
+        _busEnableInputMask = BusEnable.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalBus Address { get; }
@@ -97,40 +107,57 @@ public sealed class Mos6502Processor : VirtualHardwareComponent
     public ulong CompletedInterruptCount { get; private set; }
     public ulong ReadyStallCount { get; private set; }
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         ProgramCounter = 0; StackPointer = 0; Status = InterruptDisableFlag | UnusedFlag;
         Accumulator = X = Y = CurrentOpcode = 0; _lowByte = _operand = 0; _effectiveAddress = 0;
         _activeInterrupt = InterruptKind.None; _operation = Operation.None; _addressingMode = AddressingMode.None; _nmiPending = false;
         RisingEdgeCount = CompletedInstructionCount = CompletedInterruptCount = ReadyStallCount = 0;
-        _previousClock = DigitalLevel.Low; _previousNmi = DigitalLevel.High;
+        _previousNmi = DigitalLevel.High;
         BeginResetSequence();
     }
 
-    public override void Reset() => BeginResetSequence();
-
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        SampleNmiEdge();
+        // The data bus, IRQ and RDY pins remain electrically current, but the
+        // 6502 samples them at a PHI2 boundary. Only asynchronous NMI, RESET,
+        // bus grant, or an actual rising clock edge can activate package logic.
+        var nmiChanged = (changedInputMask & _nmiInputMask) != 0;
+        var resetChanged = (changedInputMask & _resetInputMask) != 0;
+        var busEnableChanged = (changedInputMask & _busEnableInputMask) != 0;
+        var clockRising = (changedInputMask & _clockInputMask) != 0;
+        if (!nmiChanged && !resetChanged && !busEnableChanged && !clockRising) return;
+
+        if (nmiChanged) SampleNmiEdge();
+
         if (BusEnable.SampledLevel == DigitalLevel.Low)
         {
-            Address.Release();
-            Data.Release();
-            ReadWrite.Release();
-            Sync.Release();
-            _previousClock = Clock.SampledLevel;
+            if (busEnableChanged)
+            {
+                Address.Release();
+                Data.Release();
+                ReadWrite.Release();
+                Sync.Release();
+            }
             return;
         }
+
         if (ResetBar.SampledLevel == DigitalLevel.Low)
         {
-            BeginResetSequence(); _previousClock = Clock.SampledLevel; return;
+            if (!_resetAsserted) BeginResetSequence();
+            _resetAsserted = true;
+            return;
         }
-        var clock = Clock.SampledLevel;
-        var rising = _previousClock == DigitalLevel.Low && clock == DigitalLevel.High;
-        _previousClock = clock;
-        if (!rising || ResetBar.SampledLevel != DigitalLevel.High) return;
+
+        _resetAsserted = false;
+        if (!clockRising || Clock.SampledLevel != DigitalLevel.High) return;
+
         RisingEdgeCount++;
-        if (IsReadCycle() && Ready.SampledLevel == DigitalLevel.Low) { ReadyStallCount++; return; }
+        if (IsReadCycle() && Ready.SampledLevel == DigitalLevel.Low)
+        {
+            ReadyStallCount++;
+            return;
+        }
         ExecuteBusCycle();
     }
 

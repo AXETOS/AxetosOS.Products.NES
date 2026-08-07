@@ -74,7 +74,7 @@ public sealed class VirtualHardwareRp2C02ChipTests
         board.Connect("CS", low.Output, ram.ChipSelectBar);
         board.Connect("OE", bus.ReadBar, ram.OutputEnableBar);
         var sim = new VirtualHardwareSimulator(board); board.PowerOn(); sim.Settle();
-        Set(cpuAddress, 0x1234); Pulse(request, sim, settlePasses: 32);
+        Set(cpuAddress, 0x1234); Pulse(request, sim);
         Assert.Equal((byte)0x6D, (byte)Sample(bus.CpuReadData));
         Assert.Equal(1UL, bus.CompletedReadCount);
     }
@@ -91,7 +91,12 @@ public sealed class VirtualHardwareRp2C02ChipTests
     { for (var i = 0; i < bus.Width; i++) board.Connect($"{prefix}{i}", bus.Pins[i]); }
     private static void Set(DigitalSignalSource[] src, ulong value)
     { for (var i = 0; i < src.Length; i++) src[i].Set((value & (1UL << i)) != 0 ? DigitalLevel.High : DigitalLevel.Low); }
-    private static void Pulse(DigitalSignalSource src, VirtualHardwareSimulator sim, int settlePasses = 16)
-    { src.Set(DigitalLevel.High); sim.Settle(settlePasses); src.Set(DigitalLevel.Low); sim.Settle(settlePasses); }
+    private static void Pulse(DigitalSignalSource src, VirtualHardwareSimulator sim)
+    {
+        src.Set(DigitalLevel.High);
+        sim.Settle();
+        src.Set(DigitalLevel.Low);
+        sim.Settle();
+    }
     private static ulong Sample(DigitalBus bus) => bus.TrySample(out var value) ? value : throw new InvalidOperationException("Bus unresolved.");
 }

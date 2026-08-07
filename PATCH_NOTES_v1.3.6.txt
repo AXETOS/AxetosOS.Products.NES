@@ -1,0 +1,76 @@
+AxetosOS Products / NES v1.3.6
+Chip-owned activation sweep
+
+Purpose
+-------
+Keep the motherboard electrically simple while preventing inactive chips from
+turning harmless pin activity into expensive package execution.
+
+Architecture
+------------
+- Motherboard traces always deliver their resolved electrical level to connected
+  input-capable pins. The board does not know whether a CPU, PPU, RAM, ROM,
+  cartridge, controller or logic package is selected.
+- A package pin always retains the physical level that reached it.
+- Power/select/enable/reset/edge decisions belong to the receiving chip.
+- If a changed pin cannot reach an active internal circuit, the chip returns
+  before scanning address/data buses or running decoding/state logic.
+- There is no signal queue, component queue, runtime settle pass or semantic
+  motherboard shortcut.
+
+Correctness repair after v1.3.5
+-------------------------------
+- Removes passive motherboard-route suppression. InputChangeMask is fixed when a
+  package pin is created and cannot be changed later to hide an electrical input.
+- RP2C02/RP2C07 receive RS, R/W and D0-D7 normally while /CS is inactive and
+  perform the deselection check inside the package.
+- A selected PPU write is not consumed until D0-D7 is actually valid. This lets
+  /CS settle before the write byte without losing the transaction and directly
+  targets the graphics corruption observed after v1.3.5.
+- Mapper-0 PPU AD0-D7 is again a normal electrically routed input. ALE and CHR-RAM
+  write conditions decide inside NROM whether an AD transition can matter.
+
+Whole-package activation review
+-------------------------------
+Reviewed/optimized: RP2A03, RP2A07, RP2C02, RP2C07, NROM, HM6116,
+SN74LS139A, SN74LS368A, SN74LS373, CIC3193/3195/3197, standard controller,
+controller I/O, OAM DMA, PPU memory/timing/register helpers, RP2C02 bus helpers,
+program ROM, static RAM, tri-state buffer, binary decoder/counter, generic MOS6502,
+Tiny8 and the passive bus analyzer.
+
+Examples of chip-owned fast rejection:
+- deselected RAM/ROM does not scan address/data buses;
+- disabled LS139/LS368 sections ignore their data/select inputs until enable;
+- LS373 ignores D0-D7 changes while LE is Low;
+- controller button changes do not rebuild the shift register while STROBE is Low;
+- CIC data/config pins do not run protocol logic between active clock edges;
+- mapper-0 CPU data traffic is physically delivered but has no internal mapper
+  register to execute;
+- PPU CPU-register traffic returns immediately when /CS is inactive;
+- CPU/APU ordinary bus traffic is sampled at the appropriate chip-owned clock
+  boundary instead of executing the core on every pin transition.
+
+Clock semantics
+---------------
+- Rising-edge-only pins still receive both High and Low electrically.
+- High-to-Low updates the package pin and stops there when the chip has no falling
+  edge work.
+- Low-to-High activates only the chip-owned divider/edge logic that applies.
+- The v1.3.4 harmonic clock-cycle skipping path is removed: physical clock pulses
+  are no longer suppressed by the clock/motherboard path.
+
+Other hot-path work
+-------------------
+- Mos6502BusAnalyzer history is a fixed 4,096-entry ring. Once full, recording a
+  cycle is O(1) instead of List.RemoveAt(0) shifting the entire history.
+- Ricoh APU mixer startup state is reduced from a 1,015,808-entry combined table
+  to 31 pulse entries plus 32,768 TND entries. Runtime mixing remains event-driven.
+- Continuously active simple devices (NOT gate, pull resistor, power-on-reset)
+  remain intentionally simple; no fake enable condition was added.
+
+Validation status
+-----------------
+Static overlay/architecture verification is performed when the patch is packaged.
+The .NET SDK is not available in the patch-generation environment, so the full
+`dotnet test` suite must be run on the target development machine before this
+release is considered validated.

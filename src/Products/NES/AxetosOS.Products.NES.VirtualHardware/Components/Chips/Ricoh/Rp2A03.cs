@@ -8,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 /// the integrated 6502-derived execution section. It has no motherboard, RAM,
 /// cartridge, PPU, or other component references.
 /// </summary>
-public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent, IClockEdgeDrivenVirtualHardwareComponent
+public sealed class Rp2A03 : VirtualHardwareComponent
 {
     private const byte CarryFlag = 1 << 0;
     private const byte ZeroFlag = 1 << 1;
@@ -47,9 +47,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     private InterruptKind _activeInterrupt;
     private Operation _operation;
     private AddressingMode _addressingMode;
-    private DigitalLevel _previousClock;
     private DigitalLevel _m2Level;
-    private int _masterClockRisingEdges;
     private bool _sync;
     private DigitalLevel _previousNmi;
     private byte _lowByte;
@@ -90,6 +88,11 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     private int _frameCounterWriteDelay;
     private bool _apuTimerPhase;
     private byte _audioDacLevel;
+    private byte _lastMixedPulse1;
+    private byte _lastMixedPulse2;
+    private byte _lastMixedTriangle;
+    private byte _lastMixedNoise;
+    private byte _lastMixedDmc;
     private bool _dmcFetchActive;
     private bool _dmcFetchDuringOamDma;
     private int _dmcFetchDelayCycles;
@@ -98,12 +101,20 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     private byte _dmcSavedBusWriteValue;
     private bool _dmcSavedBusRead;
     private bool _dmcSavedSync;
+    private bool _packagePowered;
+    private bool _resetAsserted;
+    private readonly ulong _powerInputMask;
+    private readonly ulong _masterClockInputMask;
+    private readonly ulong _nmiInputMask;
+    private readonly ulong _controller1InputMask;
+    private readonly ulong _controller2InputMask;
+    private readonly ulong _controllerInputMask;
 
     public Rp2A03(string componentId) : base(componentId)
     {
         Vcc = AddPin("VCC", PinDirection.Input);
         Gnd = AddPin("GND", PinDirection.Input);
-        MasterClock = AddPin("CLK", PinDirection.Input);
+        MasterClock = AddPin("CLK", PinDirection.Input, DigitalInputActivation.RisingEdge, 6);
         M2 = AddPin("M2", PinDirection.Output);
         ResetBar = AddPin("/RES", PinDirection.Input);
         IrqBar = AddPin("/IRQ", PinDirection.Input);
@@ -116,6 +127,9 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         ControllerData1 = AddPin("IN0", PinDirection.Input);
         ControllerData2 = AddPin("IN1", PinDirection.Input);
         AudioOut = AddPin("AUDIO", PinDirection.Output);
+        AudioDacOutput = new BufferedOutputPin<RicohAudioDacSample>(
+            $"{componentId}.AUDIO_DAC",
+            new RicohAudioDacSample(0, 0));
 
         var addressPins = new DigitalPin[16];
         var dataPins = new DigitalPin[8];
@@ -124,6 +138,15 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         Address = new DigitalBus($"{componentId}.A", addressPins);
         Data = new DigitalBus($"{componentId}.D", dataPins);
         ReadWrite = AddPin("R/W", PinDirection.Output);
+
+        _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
+        _masterClockInputMask = MasterClock.InputChangeMask;
+        _nmiInputMask = NmiBar.InputChangeMask;
+        _controller1InputMask = ControllerData1.InputChangeMask;
+        _controller2InputMask = ControllerData2.InputChangeMask;
+        _controllerInputMask = _controller1InputMask | _controller2InputMask;
+
+        InitializePackageState();
     }
 
     public DigitalPin Vcc { get; }
@@ -144,6 +167,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     public DigitalPin ControllerData1 { get; }
     public DigitalPin ControllerData2 { get; }
     public DigitalPin AudioOut { get; }
+    public BufferedOutputPin<RicohAudioDacSample> AudioDacOutput { get; }
     public ushort ProgramCounter { get; private set; }
     public byte StackPointer { get; private set; }
     public byte Status { get; private set; }
@@ -170,7 +194,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     public bool InterruptDisable => IsFlagSet(InterruptDisableFlag);
     public bool NmiPending => _nmiPending;
     public bool SyncState => _sync;
-    public ulong MasterClockRisingEdgeCount { get; private set; }
+    public ulong MasterClockRisingEdgeCount => MasterClock.InputActivationEdgeCount;
     public ulong RisingEdgeCount { get; private set; }
     public ulong CompletedInstructionCount { get; private set; }
     public ulong CompletedInterruptCount { get; private set; }
@@ -207,33 +231,14 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
     public ulong DmcCpuStallCount { get; private set; }
     public int LastDmcFetchStallCycles { get; private set; }
 
-    public bool TryHandleClockSample(DigitalPin pin, DigitalLevel level)
-    {
-        if (!ReferenceEquals(pin, MasterClock)) return false;
-
-        // Falling edges only arm the next rising edge. No package-wide
-        // evaluation is required because these models change functional state
-        // exclusively on the rising master-clock edge.
-        if (level == DigitalLevel.Low)
-        {
-            _previousClock = DigitalLevel.Low;
-            return true;
-        }
-
-        // A resolved rising edge must run the package exactly once. Returning
-        // false lets the simulator enqueue the normal Evaluate call.
-        return false;
-    }
-
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         ProgramCounter = 0; StackPointer = 0; Status = InterruptDisableFlag | UnusedFlag;
         Accumulator = X = Y = CurrentOpcode = 0; _lowByte = _operand = 0; _effectiveAddress = 0;
         _activeInterrupt = InterruptKind.None; _operation = Operation.None; _addressingMode = AddressingMode.None; _nmiPending = false;
         RisingEdgeCount = CompletedInstructionCount = CompletedInterruptCount = ReadyStallCount = 0;
         DmaTransferCount = 0;
-        MasterClockRisingEdgeCount = 0;
-        _masterClockRisingEdges = 0;
+        MasterClock.ResetInputActivationCounter();
         _m2Level = DigitalLevel.Low;
         _sync = false;
         _busAddress = 0; _busWriteValue = 0; _busRead = true;
@@ -256,6 +261,11 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         _frameCounterWriteDelay = 0;
         _apuTimerPhase = false;
         _audioDacLevel = 0;
+        _lastMixedPulse1 = 0;
+        _lastMixedPulse2 = 0;
+        _lastMixedTriangle = 0;
+        _lastMixedNoise = 0;
+        _lastMixedDmc = 0;
         _dmcFetchActive = false;
         _dmcFetchDuringOamDma = false;
         _dmcFetchDelayCycles = 0;
@@ -268,7 +278,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         DmcOamDmaInterleaveCount = 0;
         DmcCpuStallCount = 0;
         LastDmcFetchStallCycles = 0;
-        _previousClock = DigitalLevel.Low; _previousNmi = DigitalLevel.High;
+        _previousNmi = DigitalLevel.High;
         M2.Drive(DigitalLevel.Low);
         ControllerRead1Bar.Drive(DigitalLevel.High);
         ControllerRead2Bar.Drive(DigitalLevel.High);
@@ -276,43 +286,75 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
         ControllerOut1.Drive(DigitalLevel.Low);
         ControllerOut2.Drive(DigitalLevel.Low);
         AudioOut.Drive(DigitalLevel.Low);
+        AudioDacOutput.Drive(new RicohAudioDacSample(0, 0));
         BeginResetSequence();
     }
 
-    public override void Reset() => BeginResetSequence();
-
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        if (!IsPowered())
+        // Data/IRQ/reset package pins are always electrically current, but most
+        // of them are sampled only at an internal CPU clock boundary.  Avoid
+        // entering the CPU/APU core at all for pin traffic that cannot cause an
+        // asynchronous action.
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        if (!_packagePowered && !powerChanged) return;
+        var clockChanged = (changedInputMask & _masterClockInputMask) != 0;
+        var nmiChanged = (changedInputMask & _nmiInputMask) != 0;
+        var controllerChanged = (changedInputMask & _controllerInputMask) != 0;
+        if (!powerChanged && !clockChanged && !nmiChanged && !controllerChanged) return;
+
+        if (!_packagePowered || powerChanged)
         {
-            ReleasePackageOutputs();
-            _previousClock = MasterClock.SampledLevel;
-            return;
+            if (!IsPowered())
+            {
+                ReleasePackageOutputs();
+                _packagePowered = false;
+                _resetAsserted = false;
+                return;
+            }
+
+            if (!_packagePowered)
+            {
+                InitializePackageState();
+                _packagePowered = true;
+            }
         }
 
-        SampleControllerInputs();
-        SampleNmiEdge();
-        var clock = MasterClock.SampledLevel;
-        var masterRising = _previousClock == DigitalLevel.Low && clock == DigitalLevel.High;
-        _previousClock = clock;
-        if (!masterRising) return;
+        if (nmiChanged) SampleNmiEdge();
+        if (controllerChanged)
+        {
+            var selectedControllerChanged =
+                ((changedInputMask & _controller1InputMask) != 0 && ControllerRead1Bar.DriveLevel == DigitalLevel.Low)
+                || ((changedInputMask & _controller2InputMask) != 0 && ControllerRead2Bar.DriveLevel == DigitalLevel.Low);
+            if (selectedControllerChanged) SampleControllerInputs();
+        }
+        if (!clockChanged) return;
 
-        MasterClockRisingEdgeCount++;
-        _masterClockRisingEdges++;
-        if (_masterClockRisingEdges < 6) return;
-        _masterClockRisingEdges = 0;
+        // The physical CLK pin still receives both Low and High levels, but
+        // this package declares rising-edge activation for that input. Reaching
+        // this point therefore already means a real Low -> High clock edge.
+        if (MasterClock.SampledLevel != DigitalLevel.High) return;
 
+        // The chip-owned CLK input counts every physical master-clock rising
+        // edge but wakes the full package only at the internal M2 divider
+        // boundary. Reaching this point is therefore one M2 half-cycle.
         _m2Level = _m2Level == DigitalLevel.High ? DigitalLevel.Low : DigitalLevel.High;
         M2.Drive(_m2Level);
         if (_m2Level != DigitalLevel.High) return;
 
         if (ResetBar.SampledLevel == DigitalLevel.Low)
         {
-            BeginResetSequence();
+            if (!_resetAsserted) BeginResetSequence();
+            _resetAsserted = true;
             return;
         }
 
+        _resetAsserted = false;
         RisingEdgeCount++;
+        // Controller data can legitimately remain at the same electrical level
+        // for consecutive reads, so sample once at the CPU cycle boundary as
+        // well as on actual IN0/IN1 transitions.
+        SampleControllerInputs();
         ClockApuCpuCycle();
         ExecuteBusCycle();
     }
@@ -1216,13 +1258,41 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
             }
         }
 
-        _audioDacLevel = MixApuChannels(
-            _pulse1.Output,
-            _pulse2.Output,
-            _triangle.Output,
-            _noise.Output,
-            _dmc.Output);
-        AudioOut.Drive(_audioDacLevel == 0 ? DigitalLevel.Low : DigitalLevel.High);
+        var pulse1Output = _pulse1.Output;
+        var pulse2Output = _pulse2.Output;
+        var triangleOutput = _triangle.Output;
+        var noiseOutput = _noise.Output;
+        var dmcOutput = _dmc.Output;
+        if (pulse1Output != _lastMixedPulse1
+            || pulse2Output != _lastMixedPulse2
+            || triangleOutput != _lastMixedTriangle
+            || noiseOutput != _lastMixedNoise
+            || dmcOutput != _lastMixedDmc)
+        {
+            _lastMixedPulse1 = pulse1Output;
+            _lastMixedPulse2 = pulse2Output;
+            _lastMixedTriangle = triangleOutput;
+            _lastMixedNoise = noiseOutput;
+            _lastMixedDmc = dmcOutput;
+
+            var mixedDacLevel = RicohApuMixer.Mix(
+                pulse1Output,
+                pulse2Output,
+                triangleOutput,
+                noiseOutput,
+                dmcOutput);
+            if (_audioDacLevel != mixedDacLevel)
+            {
+                var previousDigitalLevel = _audioDacLevel == 0 ? DigitalLevel.Low : DigitalLevel.High;
+                _audioDacLevel = mixedDacLevel;
+                AudioDacOutput.Drive(new RicohAudioDacSample(
+                    MasterClockRisingEdgeCount,
+                    mixedDacLevel));
+
+                var digitalLevel = mixedDacLevel == 0 ? DigitalLevel.Low : DigitalLevel.High;
+                if (digitalLevel != previousDigitalLevel) AudioOut.Drive(digitalLevel);
+            }
+        }
     }
 
     private void ApplyPendingFrameCounterWrite()
@@ -1241,21 +1311,6 @@ public sealed class Rp2A03 : VirtualHardwareComponent, IInputDrivenVirtualHardwa
             ClockQuarterFrame();
             ClockHalfFrame();
         }
-    }
-
-    private static byte MixApuChannels(byte pulse1, byte pulse2, byte triangle, byte noise, byte dmc)
-    {
-        var pulseSum = pulse1 + pulse2;
-        var pulseOut = pulseSum == 0
-            ? 0.0
-            : 95.88 / ((8128.0 / pulseSum) + 100.0);
-
-        var tndInput = triangle / 8227.0 + noise / 12241.0 + dmc / 22638.0;
-        var tndOut = tndInput == 0.0
-            ? 0.0
-            : 159.79 / ((1.0 / tndInput) + 100.0);
-
-        return (byte)Math.Clamp((int)Math.Round((pulseOut + tndOut) * 255.0), 0, 255);
     }
 
     private void ClockQuarterFrame()

@@ -14,6 +14,10 @@ public sealed class Rp2C02BusSequencer : VirtualHardwareComponent
     private bool _cpuRequestLast;
     private bool _renderRequestLast;
     private bool _completionPending;
+    private readonly ulong _requestInputMask;
+    private readonly ulong _cpuInputMask;
+    private readonly ulong _renderInputMask;
+    private readonly ulong _externalDataInputMask;
 
     public Rp2C02BusSequencer(string componentId) : base(componentId)
     {
@@ -34,6 +38,13 @@ public sealed class Rp2C02BusSequencer : VirtualHardwareComponent
         ReadBar = AddPin("/RD", PinDirection.Output);
         WriteBar = AddPin("/WR", PinDirection.Output);
         Busy = AddPin("BUSY", PinDirection.Output);
+
+        _requestInputMask = CpuRequest.InputChangeMask | RenderRequest.InputChangeMask;
+        _cpuInputMask = CpuAddress.InputChangeMask | CpuWriteData.InputChangeMask | CpuWrite.InputChangeMask;
+        _renderInputMask = RenderAddress.InputChangeMask;
+        _externalDataInputMask = ExternalData.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalBus CpuAddress { get; }
@@ -54,7 +65,7 @@ public sealed class Rp2C02BusSequencer : VirtualHardwareComponent
     public ulong CompletedReadCount { get; private set; }
     public ulong CompletedWriteCount { get; private set; }
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         _owner = Owner.None;
         _cpuRequestLast = _renderRequestLast = false;
@@ -63,9 +74,7 @@ public sealed class Rp2C02BusSequencer : VirtualHardwareComponent
         ReleaseBus();
     }
 
-    public override void Reset() { _owner = Owner.None; _completionPending = false; ReleaseBus(); }
-
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
         CpuComplete.Drive(DigitalLevel.Low);
         RenderComplete.Drive(DigitalLevel.Low);
@@ -80,27 +89,42 @@ public sealed class Rp2C02BusSequencer : VirtualHardwareComponent
             return;
         }
 
-        var cpuRequest = CpuRequest.SampledLevel == DigitalLevel.High;
-        var renderRequest = RenderRequest.SampledLevel == DigitalLevel.High;
-        if (_owner == Owner.None)
+        var requestChanged = (changedInputMask & _requestInputMask) != 0;
+        if (_owner == Owner.None && !requestChanged) return;
+
+        if (requestChanged)
         {
-            if (cpuRequest && !_cpuRequestLast) _owner = Owner.Cpu;
-            else if (renderRequest && !_renderRequestLast) _owner = Owner.Render;
+            var cpuRequest = CpuRequest.SampledLevel == DigitalLevel.High;
+            var renderRequest = RenderRequest.SampledLevel == DigitalLevel.High;
+            if (_owner == Owner.None)
+            {
+                if (cpuRequest && !_cpuRequestLast) _owner = Owner.Cpu;
+                else if (renderRequest && !_renderRequestLast) _owner = Owner.Render;
+            }
+            _cpuRequestLast = cpuRequest;
+            _renderRequestLast = renderRequest;
         }
-        _cpuRequestLast = cpuRequest;
-        _renderRequestLast = renderRequest;
 
         switch (_owner)
         {
             case Owner.None:
-                ReleaseBus();
-                break;
+                return;
             case Owner.Cpu:
-                DriveCpuTransaction();
+            {
+                var cpuRelevant = requestChanged
+                    || (changedInputMask & _cpuInputMask) != 0
+                    || (changedInputMask & _externalDataInputMask) != 0;
+                if (cpuRelevant) DriveCpuTransaction();
                 break;
+            }
             case Owner.Render:
-                DriveRenderTransaction();
+            {
+                var renderRelevant = requestChanged
+                    || (changedInputMask & _renderInputMask) != 0
+                    || (changedInputMask & _externalDataInputMask) != 0;
+                if (renderRelevant) DriveRenderTransaction();
                 break;
+            }
         }
     }
 

@@ -6,8 +6,17 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 /// Standalone SN74LS139A dual 2-to-4 decoder/demultiplexer package.
 /// Each section has an independent active-low enable and four active-low outputs.
 /// </summary>
-public sealed class Sn74Ls139A : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
+public sealed class Sn74Ls139A : VirtualHardwareComponent
 {
+    private readonly DigitalPin[] _section1Outputs;
+    private readonly DigitalPin[] _section2Outputs;
+    private readonly ulong _powerInputMask;
+    private readonly ulong _section1EnableMask;
+    private readonly ulong _section1DataMask;
+    private readonly ulong _section2EnableMask;
+    private readonly ulong _section2DataMask;
+    private bool _packagePowered;
+
     public Sn74Ls139A(string componentId) : base(componentId)
     {
         Vcc = AddPin("VCC", PinDirection.Input);
@@ -28,6 +37,14 @@ public sealed class Sn74Ls139A : VirtualHardwareComponent, IInputDrivenVirtualHa
         Y21Bar = AddPin("2Y1_BAR", PinDirection.Output);
         Y22Bar = AddPin("2Y2_BAR", PinDirection.Output);
         Y23Bar = AddPin("2Y3_BAR", PinDirection.Output);
+
+        _section1Outputs = [Y10Bar, Y11Bar, Y12Bar, Y13Bar];
+        _section2Outputs = [Y20Bar, Y21Bar, Y22Bar, Y23Bar];
+        _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
+        _section1EnableMask = Enable1Bar.InputChangeMask;
+        _section1DataMask = A1.InputChangeMask | B1.InputChangeMask;
+        _section2EnableMask = Enable2Bar.InputChangeMask;
+        _section2DataMask = A2.InputChangeMask | B2.InputChangeMask;
     }
 
     public DigitalPin Vcc { get; }
@@ -49,16 +66,42 @@ public sealed class Sn74Ls139A : VirtualHardwareComponent, IInputDrivenVirtualHa
     public DigitalPin Y22Bar { get; }
     public DigitalPin Y23Bar { get; }
 
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        if (!_packagePowered && !powerChanged) return;
+
         if (!IsPowered())
         {
-            ReleaseOutputs();
+            if (_packagePowered) ReleaseOutputs();
+            _packagePowered = false;
             return;
         }
 
-        EvaluateSection(Enable1Bar, A1, B1, [Y10Bar, Y11Bar, Y12Bar, Y13Bar]);
-        EvaluateSection(Enable2Bar, A2, B2, [Y20Bar, Y21Bar, Y22Bar, Y23Bar]);
+        if (!_packagePowered)
+        {
+            _packagePowered = true;
+            powerChanged = true;
+        }
+
+        // Each half is its own decoder.  A/B pins may toggle continuously while
+        // /G is High; the package pins still receive those levels, but that half
+        // has no internal/output work until its enable becomes active again.
+        var section1EnableChanged = (changedInputMask & _section1EnableMask) != 0;
+        var section1DataChanged = (changedInputMask & _section1DataMask) != 0;
+        if (powerChanged || section1EnableChanged ||
+            (section1DataChanged && Enable1Bar.SampledLevel != DigitalLevel.High))
+        {
+            EvaluateSection(Enable1Bar, A1, B1, _section1Outputs);
+        }
+
+        var section2EnableChanged = (changedInputMask & _section2EnableMask) != 0;
+        var section2DataChanged = (changedInputMask & _section2DataMask) != 0;
+        if (powerChanged || section2EnableChanged ||
+            (section2DataChanged && Enable2Bar.SampledLevel != DigitalLevel.High))
+        {
+            EvaluateSection(Enable2Bar, A2, B2, _section2Outputs);
+        }
     }
 
     private bool IsPowered() =>
@@ -68,15 +111,14 @@ public sealed class Sn74Ls139A : VirtualHardwareComponent, IInputDrivenVirtualHa
         DigitalPin enableBar,
         DigitalPin a,
         DigitalPin b,
-        IReadOnlyList<DigitalPin> outputs)
+        DigitalPin[] outputs)
     {
         if (enableBar.SampledLevel == DigitalLevel.High)
         {
-            foreach (var output in outputs)
-            {
-                output.Drive(DigitalLevel.High);
-            }
-
+            outputs[0].Drive(DigitalLevel.High);
+            outputs[1].Drive(DigitalLevel.High);
+            outputs[2].Drive(DigitalLevel.High);
+            outputs[3].Drive(DigitalLevel.High);
             return;
         }
 
@@ -84,19 +126,18 @@ public sealed class Sn74Ls139A : VirtualHardwareComponent, IInputDrivenVirtualHa
             !TryBit(a.SampledLevel, out var aValue) ||
             !TryBit(b.SampledLevel, out var bValue))
         {
-            foreach (var output in outputs)
-            {
-                output.Drive(DigitalLevel.Unknown);
-            }
-
+            outputs[0].Drive(DigitalLevel.Unknown);
+            outputs[1].Drive(DigitalLevel.Unknown);
+            outputs[2].Drive(DigitalLevel.Unknown);
+            outputs[3].Drive(DigitalLevel.Unknown);
             return;
         }
 
         var selected = aValue | (bValue << 1);
-        for (var index = 0; index < outputs.Count; index++)
-        {
-            outputs[index].Drive(index == selected ? DigitalLevel.Low : DigitalLevel.High);
-        }
+        outputs[0].Drive(selected == 0 ? DigitalLevel.Low : DigitalLevel.High);
+        outputs[1].Drive(selected == 1 ? DigitalLevel.Low : DigitalLevel.High);
+        outputs[2].Drive(selected == 2 ? DigitalLevel.Low : DigitalLevel.High);
+        outputs[3].Drive(selected == 3 ? DigitalLevel.Low : DigitalLevel.High);
     }
 
     private static bool TryBit(DigitalLevel level, out int value)

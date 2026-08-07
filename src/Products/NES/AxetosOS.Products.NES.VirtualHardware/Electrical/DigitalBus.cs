@@ -10,6 +10,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Electrical;
 public sealed class DigitalBus
 {
     private readonly DigitalPin[] _pins;
+    private readonly bool _allOutputCapable;
 
     public DigitalBus(string name, IReadOnlyList<DigitalPin> pins)
     {
@@ -20,11 +21,21 @@ public sealed class DigitalBus
 
         Name = name;
         _pins = pins as DigitalPin[] ?? pins.ToArray();
+        ulong inputChangeMask = 0;
+        var allOutputCapable = true;
+        for (var index = 0; index < _pins.Length; index++)
+        {
+            inputChangeMask |= _pins[index].InputChangeMask;
+            allOutputCapable &= _pins[index].IsOutputCapable;
+        }
+        InputChangeMask = inputChangeMask;
+        _allOutputCapable = allOutputCapable;
     }
 
     public string Name { get; }
     public int Width => _pins.Length;
     public IReadOnlyList<DigitalPin> Pins => _pins;
+    internal ulong InputChangeMask { get; }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TrySample(out ulong value)
@@ -90,7 +101,21 @@ public sealed class DigitalBus
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Drive(ulong value, DigitalDriveStrength strength = DigitalDriveStrength.Strong)
     {
+        if (!_allOutputCapable)
+            throw new InvalidOperationException($"Bus '{Name}' contains input-only pins and cannot drive.");
+
         var pins = _pins;
+        if (strength == DigitalDriveStrength.Strong)
+        {
+            var remaining = value;
+            for (var bit = 0; bit < pins.Length; bit++)
+            {
+                pins[bit].DriveBinaryStrong((remaining & 1UL) == 0 ? DigitalLevel.Low : DigitalLevel.High);
+                remaining >>= 1;
+            }
+            return;
+        }
+
         for (var bit = 0; bit < pins.Length; bit++)
             pins[bit].Drive((value & (1UL << bit)) == 0 ? DigitalLevel.Low : DigitalLevel.High, strength);
     }
@@ -98,7 +123,10 @@ public sealed class DigitalBus
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Release()
     {
+        if (!_allOutputCapable)
+            throw new InvalidOperationException($"Bus '{Name}' contains input-only pins and cannot drive.");
+
         var pins = _pins;
-        for (var index = 0; index < pins.Length; index++) pins[index].Release();
+        for (var index = 0; index < pins.Length; index++) pins[index].ReleaseValidatedOutput();
     }
 }

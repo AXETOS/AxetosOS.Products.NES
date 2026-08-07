@@ -1,0 +1,29 @@
+AxetosOS Products / NES v1.3.5
+
+Goal
+----
+Move the performance work away from master-clock dispatch and remove unnecessary package execution on the real CPU/PPU memory paths, while preserving the simple queue-free motherboard model.
+
+Runtime changes
+---------------
+- Add passive package-pin presentation: selected pins retain the real resolved motherboard level without waking their owning package when a separate hardware enable/select pin gates the internal circuit.
+- RP2C02/RP2C07 CPU-facing RS0-RS2, R/W and D0-D7 pins are passive; /CS is the CPU-register transaction gate. Ordinary CPU bus activity no longer executes PPU register logic while deselected.
+- NROM separates CPU and PPU connector circuits. Mapper-0 CPU D0-D7 is passive, PPU AD0-D7 is sampled under ALE or /WR, and M2 transaction qualification is rising-edge-only.
+- RP2C02/RP2C07 retain their last presented AD, A8-A13, ALE, /RD and /WR output states and touch those package pins only when the physical state actually changes.
+- HM6116 uses determinate-byte read/write fast paths and skips address/data-only processing when CS/OE/WE disconnect the SRAM core.
+- SN74LS373 uses determinate-byte capture/output fast paths, retains Q presentation state, and immediately ignores D-only changes while LE is Low.
+- RP2A03/RP2A07 APU mixing is event-driven by actual channel-output changes. The nonlinear mixer is a shared precomputed byte lookup generated from the same transfer function instead of floating-point division/rounding every CPU cycle.
+- Package changed-net storage and direct fan-out frames are reused by active count rather than clearing reference arrays on every reaction.
+
+Architecture
+------------
+- Every electrical trace still presents its resolved level to every connected package pin.
+- Passive pins still retain the physical 0/1/unknown/contention state; only internal package activation is gated.
+- No signal queue, component scheduler, motherboard semantic emulation, polling loop, or runtime Settle pass is added.
+- Normal propagation remains: chip output change-set -> physical traces -> destination pin levels -> physically enabled chip reaction.
+
+Validation
+----------
+- Exact overlay/source checks performed in the packaging environment.
+- Static scan confirms no legacy central propagation queue symbols and no runtime .Settle() calls under src.
+- .NET SDK is unavailable in this environment, so dotnet test and FPS are not claimed. Run the full suite before benchmarking.

@@ -9,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 /// background/sprite pixel pipelines are modelled here without using the
 /// playable emulator PPU.
 /// </summary>
-public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDrivenVirtualHardwareComponent, ISelectiveInputDrivenVirtualHardwareComponent, ICompiledInputDrivenVirtualHardwareComponent
+public sealed class NesPpuRegisterPackage : VirtualHardwareComponent
 {
     private readonly byte[] _vram = new byte[0x4000];
     private readonly byte[] _oam = new byte[256];
@@ -48,6 +48,12 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
     private byte _renderSpriteHigh;
     private bool _renderReadIssued;
     private ushort _renderReadAddress;
+    private PpuBusOwner _ppuBusOwner;
+    private readonly ulong _cpuPortInputMask;
+    private readonly ulong _vblankInputMask;
+    private readonly ulong _timingInputMask;
+    private readonly ulong _ppuDataInputMask;
+    private readonly ulong _dmaInputMask;
 
     public NesPpuRegisterPackage(string componentId) : base(componentId)
     {
@@ -91,6 +97,16 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
         for (var bit = 0; bit < 8; bit++) dmaDataPins[bit] = AddPin($"DMA_D{bit}", PinDirection.Input);
         DmaData = new DigitalBus($"{componentId}.DMA_D", dmaDataPins);
         DmaWrite = AddPin("DMA_WRITE", PinDirection.Input);
+
+        _cpuPortInputMask = Address.InputChangeMask | Data.InputChangeMask | ReadWrite.InputChangeMask;
+        _vblankInputMask = Vblank.InputChangeMask;
+        // SCANLINE/DOT are sampled only when DOT_TICK changes. They remain
+        // electrically current without waking this package on their own.
+        _timingInputMask = DotTick.InputChangeMask;
+        _ppuDataInputMask = PpuData.InputChangeMask;
+        _dmaInputMask = DmaData.InputChangeMask | DmaWrite.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalBus Address { get; }
@@ -134,52 +150,6 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
     public bool SpriteOverflow => _spriteOverflow;
     public int SecondarySpriteCount => _secondarySpriteCount;
     public ReadOnlyMemory<byte> FrameBuffer => _frameBuffer;
-    public bool HasPendingInternalWork => _renderFetchState != RenderFetchState.Idle;
-
-    public PinActivationContract CompileInputActivation(DigitalPin pin)
-    {
-        ArgumentNullException.ThrowIfNull(pin);
-        if (pin.Direction == PinDirection.Input) return PinActivationContract.Always;
-        if (Data.Pins.Contains(pin))
-        {
-            return PinActivationContract.When(() =>
-                ReadWrite.SampledLevel != DigitalLevel.High);
-        }
-
-        if (PpuData.Pins.Contains(pin))
-        {
-            return PinActivationContract.When(() =>
-                _renderReadIssued || PpuReadBar.DriveLevel == DigitalLevel.Low);
-        }
-
-        return PinActivationContract.Never;
-    }
-
-    public bool ShouldWakeForSampledPin(DigitalPin pin)
-    {
-        ArgumentNullException.ThrowIfNull(pin);
-
-        // Input pins always represent external electrical information.
-        if (pin.Direction == PinDirection.Input) return true;
-
-        // CPU data is an input only while the CPU is writing. During a CPU
-        // read the RP2C02 owns the bus and must not wake on its own resolved
-        // output echo.
-        if (Data.Pins.Contains(pin))
-        {
-            return ReadWrite.SampledLevel != DigitalLevel.High;
-        }
-
-        // The external PPU data bus is sampled only while a read phase is
-        // outstanding. During writes, releases, and idle time its resolved
-        // echo is not an input dependency.
-        if (PpuData.Pins.Contains(pin))
-        {
-            return _renderReadIssued || PpuReadBar.DriveLevel == DigitalLevel.Low;
-        }
-
-        return false;
-    }
 
     public byte InspectVram(ushort address) => _vram[address & 0x3FFF];
     public byte InspectOam(byte address) => _oam[address];
@@ -211,9 +181,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
         }
     }
 
-    void ICompiledInputDrivenVirtualHardwareComponent.Evaluate(ulong changedInputMask) => Evaluate();
-
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         Array.Clear(_vram);
         Array.Clear(_oam);
@@ -244,6 +212,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
         RenderBusReadCount = 0;
         _renderFetchState = RenderFetchState.Idle;
         _renderReadIssued = false;
+        _ppuBusOwner = PpuBusOwner.None;
         _secondarySpriteCount = 0;
         _spriteZeroHit = false;
         _spriteOverflow = false;
@@ -257,24 +226,40 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
         EndExternalPpuTransaction();
     }
 
-    public override void Reset()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        _transactionActive = false;
-        _writeToggle = false;
-        Data.Release();
-        _renderFetchState = RenderFetchState.Idle;
-        _renderReadIssued = false;
-        EndExternalPpuTransaction();
-    }
+        if (changedInputMask == 0) return;
 
-    public override void Evaluate()
-    {
-        EvaluateOamDmaWrite();
-        AdvanceRenderFetch();
-        EvaluateBackgroundPixel();
-        var vblankPinHigh = Vblank.SampledLevel == DigitalLevel.High;
-        if (vblankPinHigh && !_vblankPinLast) _vblank = true;
-        _vblankPinLast = vblankPinHigh;
+        // This older split PPU package is still used by conformance tests. Keep
+        // the same chip-owned activation rule as the standalone RP2C02: every
+        // pin is physically updated first, then only the internal circuit that
+        // can be affected by that changed pin is entered.
+        var dmaChanged = (changedInputMask & _dmaInputMask) != 0;
+        var timingChanged = (changedInputMask & _timingInputMask) != 0;
+        var ppuDataChanged = (changedInputMask & _ppuDataInputMask) != 0;
+        var vblankChanged = (changedInputMask & _vblankInputMask) != 0;
+        var cpuPortChanged = (changedInputMask & _cpuPortInputMask) != 0;
+        if (!dmaChanged && !timingChanged && !ppuDataChanged && !vblankChanged && !cpuPortChanged) return;
+
+        if (dmaChanged) EvaluateOamDmaWrite();
+
+        if (timingChanged)
+        {
+            // A new PPU dot can create the first external fetch. Run dot logic
+            // before the fetch state machine so the resulting address and /RD
+            // outputs are published in the same package reaction.
+            EvaluateBackgroundPixel();
+        }
+        if (timingChanged || ppuDataChanged) AdvanceRenderFetch();
+
+        if (vblankChanged)
+        {
+            var vblankPinHigh = Vblank.SampledLevel == DigitalLevel.High;
+            if (vblankPinHigh && !_vblankPinLast) _vblank = true;
+            _vblankPinLast = vblankPinHigh;
+        }
+
+        if (!cpuPortChanged) return;
 
         if (!Address.TrySample(out var rawAddress) || rawAddress is < 0x2000 or > 0x3FFF)
         {
@@ -308,10 +293,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
                 // until a valid byte is actually present on D0-D7; otherwise
                 // the later settled evaluation would be suppressed.
                 Data.Release();
-                if (!Data.TrySample(out var rawData))
-                {
-                    return;
-                }
+                if (!Data.TrySample(out var rawData)) return;
 
                 _transactionActive = true;
                 _transactionAddress = address;
@@ -369,7 +351,19 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
         }
 
         if (_renderFetchState != RenderFetchState.Idle)
+        {
+            // CPU PPUDATA accesses share the physical external PPU bus. While
+            // the CPU side owns that bus, preserve the in-flight render state
+            // and wait for a later incoming dot/data transition instead of
+            // allowing the two internal PPU clients to drive the pins together.
+            if (_ppuBusOwner == PpuBusOwner.Cpu)
+            {
+                PixelValid.Drive(DigitalLevel.Low);
+                return;
+            }
+
             throw new InvalidOperationException("RP2C02 rendering fetch did not complete before the next PPU dot.");
+        }
 
         _renderX = dot - 1;
         _renderY = scanline;
@@ -409,7 +403,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
 
     private void AdvanceRenderFetch()
     {
-        if (_renderFetchState == RenderFetchState.Idle) return;
+        if (_renderFetchState == RenderFetchState.Idle || _ppuBusOwner == PpuBusOwner.Cpu) return;
 
         if (!_renderReadIssued)
         {
@@ -418,17 +412,19 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
             PpuWriteBar.Drive(DigitalLevel.High);
             PpuReadBar.Drive(DigitalLevel.Low);
             _renderReadIssued = true;
+            _ppuBusOwner = PpuBusOwner.Render;
             ExternalPpuReadCount++;
             RenderBusReadCount++;
             return;
         }
 
-        if (!PpuData.TrySample(out var rawValue)) return;
+        if (_ppuBusOwner != PpuBusOwner.Render || !PpuData.TrySample(out var rawValue)) return;
         var value = (byte)rawValue;
         PpuReadBar.Drive(DigitalLevel.High);
         PpuAddress.Release();
         PpuData.Release();
         _renderReadIssued = false;
+        _ppuBusOwner = PpuBusOwner.None;
 
         switch (_renderFetchState)
         {
@@ -712,6 +708,7 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
 
     private void BeginExternalPpuRead(ushort address)
     {
+        TakeCpuPpuBus();
         PpuAddress.Drive((ulong)(address & 0x3FFF));
         PpuData.Release();
         PpuWriteBar.Drive(DigitalLevel.High);
@@ -721,11 +718,29 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
 
     private void BeginExternalPpuWrite(ushort address, byte value)
     {
+        TakeCpuPpuBus();
         PpuAddress.Drive((ulong)(address & 0x3FFF));
         PpuData.Drive(value);
         PpuReadBar.Drive(DigitalLevel.High);
         PpuWriteBar.Drive(DigitalLevel.Low);
         ExternalPpuWriteCount++;
+    }
+
+    private void TakeCpuPpuBus()
+    {
+        if (_ppuBusOwner == PpuBusOwner.Render)
+        {
+            // Preserve the renderer's logical fetch state, but withdraw its
+            // electrical request. It will re-issue the same fetch after the
+            // CPU-visible PPUDATA transaction releases the external bus.
+            PpuReadBar.Drive(DigitalLevel.High);
+            PpuWriteBar.Drive(DigitalLevel.High);
+            PpuAddress.Release();
+            PpuData.Release();
+            _renderReadIssued = false;
+        }
+
+        _ppuBusOwner = PpuBusOwner.Cpu;
     }
 
     private void EndExternalPpuTransaction()
@@ -734,13 +749,29 @@ public sealed class NesPpuRegisterPackage : VirtualHardwareComponent, IEventDriv
         PpuWriteBar.Drive(DigitalLevel.High);
         PpuAddress.Release();
         PpuData.Release();
+        _ppuBusOwner = PpuBusOwner.None;
     }
 
     private void EndTransaction()
     {
         _transactionActive = false;
         Data.Release();
+
+        if (_ppuBusOwner == PpuBusOwner.Cpu)
+        {
+            EndExternalPpuTransaction();
+            if (_renderFetchState != RenderFetchState.Idle) AdvanceRenderFetch();
+            return;
+        }
+
         if (_renderFetchState == RenderFetchState.Idle) EndExternalPpuTransaction();
+    }
+
+    private enum PpuBusOwner : byte
+    {
+        None,
+        Cpu,
+        Render
     }
 
     private enum RenderFetchState

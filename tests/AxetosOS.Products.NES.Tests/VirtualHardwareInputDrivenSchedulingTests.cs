@@ -58,25 +58,15 @@ public sealed class VirtualHardwareInputDrivenSchedulingTests
     }
 
     [Fact]
-    public void Event_driven_component_continues_until_its_internal_work_is_complete()
+    public void Scheduler_owned_internal_work_contract_has_been_removed()
     {
-        var board = new VirtualHardwareBoard("event-driven-scheduling");
-        var component = board.Add(new CountingEventDrivenComponent("component", 3));
-        board.Connect("OUTPUT", component.Output);
-
-        var simulator = new VirtualHardwareSimulator(board);
-        board.PowerOn();
-        simulator.Settle();
-
-        Assert.Equal(3, component.EvaluationCount);
-        Assert.False(component.HasPendingInternalWork);
-
-        simulator.Settle();
-        Assert.Equal(3, component.EvaluationCount);
+        var assembly = typeof(VirtualHardwareComponent).Assembly;
+        Assert.Null(assembly.GetType(
+            "AxetosOS.Products.NES.VirtualHardware.Components.IEventDrivenVirtualHardwareComponent"));
     }
 
     [Fact]
-    public void Digital_signal_source_is_evaluated_only_once_after_topology_initialization()
+    public void Output_only_signal_source_is_never_invoked_as_an_input_driven_chip()
     {
         var board = new VirtualHardwareBoard("one-shot-source-scheduling");
         var source = board.Add(new DigitalSignalSource("source", DigitalLevel.High));
@@ -90,37 +80,10 @@ public sealed class VirtualHardwareInputDrivenSchedulingTests
 
         var profile = simulator.GetProfileSnapshot();
         var sourceProfile = Assert.Single(profile.Components, item => item.ComponentId == "source");
-        Assert.Equal(1UL, sourceProfile.EvaluationCount);
+        Assert.Equal(0UL, sourceProfile.EvaluationCount);
     }
 
-    private sealed class CountingEventDrivenComponent :
-        VirtualHardwareComponent,
-        IEventDrivenVirtualHardwareComponent
-    {
-        private int _remainingEvaluations;
-
-        public CountingEventDrivenComponent(string componentId, int evaluations) : base(componentId)
-        {
-            _remainingEvaluations = evaluations;
-            Output = AddPin("OUT", PinDirection.Output);
-        }
-
-        public DigitalPin Output { get; }
-        public int EvaluationCount { get; private set; }
-        public bool HasPendingInternalWork => _remainingEvaluations > 0;
-
-        public override void Evaluate()
-        {
-            if (_remainingEvaluations <= 0) return;
-            EvaluationCount++;
-            _remainingEvaluations--;
-            Output.Drive((EvaluationCount & 1) == 0 ? DigitalLevel.Low : DigitalLevel.High);
-        }
-    }
-
-    private sealed class CountingInputDrivenComponent :
-        VirtualHardwareComponent,
-        IInputDrivenVirtualHardwareComponent
+    private sealed class CountingInputDrivenComponent : VirtualHardwareComponent
     {
         public CountingInputDrivenComponent(string componentId) : base(componentId)
         {
@@ -132,7 +95,7 @@ public sealed class VirtualHardwareInputDrivenSchedulingTests
         public DigitalPin Output { get; }
         public int EvaluationCount { get; private set; }
 
-        public override void Evaluate()
+        protected override void OnInputChanges(ulong changedInputMask)
         {
             EvaluationCount++;
             Output.Drive(Input.SampledLevel switch

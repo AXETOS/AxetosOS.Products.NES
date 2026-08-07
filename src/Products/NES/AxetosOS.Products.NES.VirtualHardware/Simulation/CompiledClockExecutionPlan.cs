@@ -5,88 +5,89 @@ using AxetosOS.Products.NES.VirtualHardware.Electrical;
 namespace AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 /// <summary>
-/// A reusable motherboard execution primitive for a fixed oscillator-driven
-/// topology. The motherboard chooses the clock and phase count; the simulator
-/// still resolves the real nets and executes the real chip packages after each
-/// physical clock transition.
+/// Compiled direct path for the physical master oscillator. The clock is still
+/// only an output pin connected to a motherboard trace; this plan merely removes
+/// generic single-driver resolution work from every master-clock edge. No signal
+/// queue, scheduler, or settle phase is involved.
 /// </summary>
 public sealed class CompiledClockExecutionPlan
 {
     private readonly DigitalOscillator _clock;
     private readonly VirtualHardwareSimulator _simulator;
-    private readonly int _maximumPropagationPasses;
-    private DigitalNet? _compiledClockNet;
-    private ulong _compiledTopologyRevision = ulong.MaxValue;
+    private DigitalNet _compiledClockNet = null!;
 
     public CompiledClockExecutionPlan(
         DigitalOscillator clock,
-        VirtualHardwareSimulator simulator,
-        int maximumPropagationPasses = 64)
+        VirtualHardwareSimulator simulator)
     {
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _simulator = simulator ?? throw new ArgumentNullException(nameof(simulator));
-        if (maximumPropagationPasses <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maximumPropagationPasses));
-        }
-
-        _maximumPropagationPasses = maximumPropagationPasses;
+        CompileRoute();
     }
 
+    public void RecompileTopology()
+    {
+        _simulator.RecompileTopology();
+        CompileRoute();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AdvanceHalfCycle()
     {
-        EnsureRouteCurrent();
-        AdvanceHalfCycleUnchecked();
+        if (_simulator.ProfilingEnabled)
+        {
+            AdvanceHalfCycleProfiled();
+            return;
+        }
+
+        AdvanceHalfCycleFast();
     }
 
-    public void AdvanceCycles(int cycles) => AdvanceCycles(cycles, null);
-
-    public void AdvanceCycles(int cycles, Action? afterCycle)
+    public void AdvanceCycles(int cycles)
     {
         if (cycles < 0) throw new ArgumentOutOfRangeException(nameof(cycles));
         if (cycles == 0) return;
 
-        // Cartridge insertion, chip replacement, or rewiring is checked once
-        // for the complete host batch. The static motherboard flow is then
-        // reused for every phase in that batch.
-        EnsureRouteCurrent();
-        if (afterCycle is null)
+        if (_simulator.ProfilingEnabled)
         {
             for (var cycle = 0; cycle < cycles; cycle++)
             {
-                AdvanceHalfCycleUnchecked();
-                AdvanceHalfCycleUnchecked();
+                AdvanceHalfCycleProfiled();
+                AdvanceHalfCycleProfiled();
             }
             return;
         }
 
+        // Every physical High and Low level is presented to the connected
+        // package pins. Rising-edge/divider filtering belongs to those chip
+        // pins; the motherboard/clock path never suppresses a real signal.
         for (var cycle = 0; cycle < cycles; cycle++)
         {
-            AdvanceHalfCycleUnchecked();
-            AdvanceHalfCycleUnchecked();
-            afterCycle();
+            AdvanceHalfCycleFast();
+            AdvanceHalfCycleFast();
         }
     }
 
-    private void EnsureRouteCurrent()
+    private void CompileRoute()
     {
-        _simulator.EnsureCompiledTopologyCurrent();
-        var revision = _simulator.Board.TopologyRevision;
-        if (_compiledTopologyRevision == revision && _compiledClockNet is not null)
-        {
-            return;
-        }
-
         _compiledClockNet = _clock.Output.Net
             ?? throw new InvalidOperationException(
-                $"Clock '{_clock.ComponentId}' is not connected to a motherboard net.");
-        _compiledTopologyRevision = revision;
+                $"Clock '{_clock.ComponentId}' is not connected to a motherboard trace.");
+        _compiledClockNet.ValidateCompiledSingleDriverSource(_clock.Output);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void AdvanceHalfCycleUnchecked()
+    private void AdvanceHalfCycleFast()
     {
+        _clock.AdvanceHalfCycleCompiled();
+        _compiledClockNet.PropagateCompiledSingleDriverFast();
+    }
+
+    private void AdvanceHalfCycleProfiled()
+    {
+        // Profiling intentionally uses the generic immediate path so diagnostics
+        // still count net resolutions and receiver deliveries accurately.
         _clock.AdvanceHalfCycle();
-        _simulator.SettleCompiledFromSource(_compiledClockNet!, _maximumPropagationPasses);
+        _simulator.RecordCompiledClockDispatch();
     }
 }

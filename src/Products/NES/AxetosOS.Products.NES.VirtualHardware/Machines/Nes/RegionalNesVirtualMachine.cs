@@ -147,9 +147,18 @@ public sealed class RegionalNesVirtualMachine
     {
         switch (ActiveMotherboard)
         {
-            case ActiveNesMotherboard.Famicom: Slot.AttachTo(Famicom); break;
-            case ActiveNesMotherboard.NtscNes: Slot.AttachTo(NtscNes); break;
-            case ActiveNesMotherboard.PalNes: Slot.AttachTo(PalNes); break;
+            case ActiveNesMotherboard.Famicom:
+                Slot.AttachTo(Famicom);
+                Famicom.RecompileTopology();
+                break;
+            case ActiveNesMotherboard.NtscNes:
+                Slot.AttachTo(NtscNes);
+                NtscNes.RecompileTopology();
+                break;
+            case ActiveNesMotherboard.PalNes:
+                Slot.AttachTo(PalNes);
+                PalNes.RecompileTopology();
+                break;
         }
     }
 

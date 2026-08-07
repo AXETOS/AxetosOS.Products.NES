@@ -9,6 +9,9 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Memory;
 public sealed class ProgramRomChip : VirtualHardwareComponent
 {
     private readonly byte[] _storage;
+    private readonly ulong _addressInputMask;
+    private readonly ulong _controlInputMask;
+    private bool _drivingData;
 
     public ProgramRomChip(string componentId, int addressWidth, ReadOnlySpan<byte> contents)
         : base(componentId)
@@ -42,6 +45,10 @@ public sealed class ProgramRomChip : VirtualHardwareComponent
         Data = new DigitalBus($"{componentId}.D", dataPins);
         ChipSelectBar = AddPin("/CS", PinDirection.Input);
         OutputEnableBar = AddPin("/OE", PinDirection.Input);
+        _addressInputMask = Address.InputChangeMask;
+        _controlInputMask = ChipSelectBar.InputChangeMask | OutputEnableBar.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public int Capacity => _storage.Length;
@@ -53,25 +60,45 @@ public sealed class ProgramRomChip : VirtualHardwareComponent
 
     public byte Inspect(int address) => _storage[address];
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         ReadDriveCount = 0;
+        _drivingData = false;
         Data.Release();
     }
 
-    public override void Reset() => Data.Release();
+    protected override void OnInputChanges(ulong changedInputMask) => ProcessInputChanges(changedInputMask);
 
-    public override void Evaluate()
+    private void ProcessInputChanges(ulong changedInputMask)
     {
+        if (changedInputMask == 0) return;
+        var controlChanged = (changedInputMask & _controlInputMask) != 0;
+        var addressChanged = (changedInputMask & _addressInputMask) != 0;
+        if (!controlChanged && !addressChanged) return;
+
         if (ChipSelectBar.SampledLevel != DigitalLevel.Low ||
-            OutputEnableBar.SampledLevel != DigitalLevel.Low ||
-            !Address.TrySample(out var rawAddress))
+            OutputEnableBar.SampledLevel != DigitalLevel.Low)
         {
-            Data.Release();
+            if (_drivingData)
+            {
+                Data.Release();
+                _drivingData = false;
+            }
+            return;
+        }
+
+        if (!Address.TrySample(out var rawAddress))
+        {
+            if (_drivingData)
+            {
+                Data.Release();
+                _drivingData = false;
+            }
             return;
         }
 
         Data.Drive(_storage[(int)rawAddress]);
+        _drivingData = true;
         ReadDriveCount++;
     }
 }

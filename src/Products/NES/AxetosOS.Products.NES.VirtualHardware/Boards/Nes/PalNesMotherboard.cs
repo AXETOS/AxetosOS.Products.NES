@@ -123,19 +123,16 @@ public sealed class PalNesMotherboard
     public void PowerOn()
     {
         Board.PowerOn();
-        Simulator.Settle();
     }
 
     public void ReleaseReset()
     {
         ResetSource.Set(DigitalLevel.High);
-        Simulator.Settle();
     }
 
     public void AssertReset()
     {
         ResetSource.Set(DigitalLevel.Low);
-        Simulator.Settle();
     }
 
     public void AdvanceMasterHalfCycle() => _masterExecutionPlan.AdvanceHalfCycle();
@@ -145,6 +142,9 @@ public sealed class PalNesMotherboard
     public void AdvanceCicCycles(int cycles) => _cicExecutionPlan.AdvanceCycles(cycles);
 
     public void AdvanceMasterCycles(int cycles) => _masterExecutionPlan.AdvanceCycles(cycles);
+
+    internal void RecompileTopology() => _masterExecutionPlan.RecompileTopology();
+
 
     private void TiePackagePower()
     {

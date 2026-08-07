@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Diagnostics;
 using AxetosOS.Audio.Windows;
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
@@ -113,21 +114,16 @@ var activeSimulator = host.Machine.ActiveMotherboard switch
     _ => throw new InvalidOperationException("No active motherboard simulator.")
 };
 if (profileSimulation) activeSimulator.SetProfilingEnabled(true);
+Rp2C02? tracedPpu = null;
 if (ppuSplitTrace)
 {
-    Rp2C02? tracedPpu = host.Machine.ActiveMotherboard switch
+    tracedPpu = host.Machine.ActiveMotherboard switch
     {
         ActiveNesMotherboard.Famicom => host.Machine.Famicom.Ppu,
         ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.Ppu,
         _ => null
     };
-    if (tracedPpu is not null)
-    {
-        tracedPpu.SplitTrace += trace => Console.WriteLine(
-            $"PPU SPLIT: frame={trace.Frame:N0}; scanline={trace.Scanline}; dot={trace.Dot}; " +
-            $"op={trace.Operation}; value=${trace.Value:X2}; v=${trace.VramAddress:X4}; " +
-            $"t=${trace.TemporaryAddress:X4}; x={trace.FineX}; w={(trace.WriteToggle ? 1 : 0)}");
-    }
+    tracedPpu?.SplitTraceOutput.SetCaptureEnabled(true);
 }
 var initial = host.Snapshot();
 Console.WriteLine("AxetosOS Products / NES — virtual hardware desktop host");
@@ -140,9 +136,7 @@ Console.WriteLine("Execution:   physical virtual-hardware buses and master clock
 Console.WriteLine("Video:       RP2C02 color output -> AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:       RP2A03 DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
 Console.WriteLine("Controls:    Esc=Exit (controller hardware adapter is the next input milestone)");
-Console.WriteLine($"Kernel:      {(activeSimulator.UsesStrictEventKernel ? "strict indexed event queue" : "compatibility polling")}");
-if (!activeSimulator.UsesStrictEventKernel)
-    Console.WriteLine($"Legacy:      {string.Join(", ", activeSimulator.LegacyPollingComponents)}");
+Console.WriteLine("Kernel:      chip-owned activation direct propagation (no signal queue)");
 if (profileSimulation) Console.WriteLine("Profiler:    enabled; component timing sampled 1/256; results every 5 seconds");
 if (ppuSplitTrace) Console.WriteLine("PPU trace:   sprite-zero and $2002/$2005/$2006 split-screen events enabled");
 
@@ -162,8 +156,8 @@ var fpsStatisticsStarted = false;
 var fpsStatisticsStartTime = TimeSpan.Zero;
 var fpsStatisticsStartFrame = initial.PpuFrames;
 var haltReported = false;
-var lastInstructionProgress = host.Snapshot().CpuInstructions;
-var lastInstructionProgressFrame = host.Snapshot().PpuFrames;
+var lastInstructionProgress = initial.CpuInstructions;
+var lastInstructionProgressFrame = initial.PpuFrames;
 var stallReportedForState = string.Empty;
 var lastProfileReport = TimeSpan.Zero;
 
@@ -173,6 +167,11 @@ while (presenter.IsOpen)
     if (!presenter.IsOpen) break;
 
     host.AdvanceMasterCycles(MasterCyclesPerVideoBatch);
+
+    tracedPpu?.SplitTraceOutput.Drain(trace => Console.WriteLine(
+        $"PPU SPLIT: frame={trace.Frame:N0}; scanline={trace.Scanline}; dot={trace.Dot}; " +
+        $"op={trace.Operation}; value=${trace.Value:X2}; v=${trace.VramAddress:X4}; " +
+        $"t=${trace.TemporaryAddress:X4}; x={trace.FineX}; w={(trace.WriteToggle ? 1 : 0)}"));
 
     if (videoSink.CompletedFrame != lastPresentedFrame)
     {
@@ -279,12 +278,34 @@ Console.WriteLine(
     $"current={displayedFps:F2}, min={(double.IsPositiveInfinity(minimumFps) ? 0.0 : minimumFps):F2}, " +
     $"max={maximumFps:F2}, average={finalAverageFps:F2} FPS");
 Console.WriteLine($"Boot checks: reset-vector={final.ResetVectorObserved}, opcode={final.FirstOpcodeObserved}, vblank={final.FirstVblankObserved}, nmi={final.FirstNmiObserved}");
-if (profileSimulation) PrintProfile(activeSimulator.GetProfileSnapshot());
+if (profileSimulation)
+{
+    PrintPerformanceCounters(activeSimulator.GetPerformanceCounters(), final.MasterCycles, final.CpuInstructions, final.PpuFrames);
+    PrintProfile(activeSimulator.GetProfileSnapshot());
+}
 return 0;
+
+static void PrintPerformanceCounters(
+    AxetosOS.Products.NES.VirtualHardware.Simulation.VirtualHardwarePerformanceCounters counters,
+    ulong masterCycles,
+    ulong cpuInstructions,
+    ulong ppuFrames)
+{
+    var ppuDots = masterCycles / 4;
+    var changedNetPercent = counters.NetResolutionAttempts == 0
+        ? 0.0
+        : counters.NetLevelChanges * 100.0 / counters.NetResolutionAttempts;
+
+    Console.WriteLine("Profile counters:");
+    Console.WriteLine($"  clocks: master={masterCycles:N0}; ppu-dots={ppuDots:N0}; cpu-instructions={cpuInstructions:N0}; frames={ppuFrames:N0}");
+    Console.WriteLine($"  kernel: compatibility-settles={counters.SettleCalls:N0}; direct-events={counters.StrictEvents:N0}; topology-compiles={counters.TopologyCompilations:N0}; clock-edges={counters.CompiledClockSourceDispatches:N0}");
+    Console.WriteLine($"  components: evaluations={counters.ComponentEvaluations:N0}");
+    Console.WriteLine($"  nets: resolutions={counters.NetResolutionAttempts:N0}; level-changes={counters.NetLevelChanges:N0} ({changedNetPercent:F1}%); pin-deliveries={counters.PinSampleDeliveries:N0}; receiver-deliveries={counters.ReceiverDeliveries:N0}");
+}
 
 static void PrintProfile(AxetosOS.Products.NES.VirtualHardware.Simulation.VirtualHardwareSimulationProfile profile)
 {
-    Console.WriteLine($"PROFILE: board={profile.BoardId}; settles={profile.SettleCalls:N0}; passes={profile.PropagationPasses:N0}; avg={profile.AveragePassesPerSettle:F2}; max={profile.MaximumPassesPerSettle}; settle={profile.TotalSettleTime.TotalSeconds:F2}s; nets={profile.NetResolutionTime.TotalSeconds:F2}s");
+    Console.WriteLine($"PROFILE: board={profile.BoardId}; compatibility-settles={profile.SettleCalls:N0}; direct-events={profile.PropagationEvents:N0}; component timing sampled below");
     foreach (var component in profile.Components.OrderByDescending(static item => item.EvaluationTime).Take(8))
     {
         Console.WriteLine($"PROFILE COMPONENT: {component.ComponentId}; evaluations={component.EvaluationCount:N0}; time={component.EvaluationTime.TotalSeconds:F2}s");
@@ -312,6 +333,7 @@ sealed class NativeFrameVideoSink : IVirtualNesVideoSink
     private const int Width = 256;
     private const int Height = 240;
     private static readonly uint[] Palette = BuildPalette();
+    private static readonly uint[] EmphasizedPalette = BuildEmphasizedPalette();
     private uint[] _renderPixels = new uint[Width * Height];
     private uint[] _completedPixels = new uint[Width * Height];
 
@@ -326,15 +348,29 @@ sealed class NativeFrameVideoSink : IVirtualNesVideoSink
     public void AcceptPixel(ulong frame, int x, int y, byte colorCode, byte emphasis)
     {
         if ((uint)x >= Width || (uint)y >= Height) return;
-        _renderPixels[(y * Width) + x] = ApplyEmphasis(Palette[colorCode & 0x3F], emphasis);
+        _renderPixels[(y * Width) + x] = EmphasizedPalette[((emphasis & 0x07) << 6) | (colorCode & 0x3F)];
+        PublishFrameIfComplete(frame, x, y);
+    }
+
+    public void AcceptPixels(ReadOnlySpan<RicohVideoPixelSample> samples)
+    {
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var sample = samples[index];
+            if ((uint)sample.X >= Width || (uint)sample.Y >= Height) continue;
+            _renderPixels[(sample.Y * Width) + sample.X] =
+                EmphasizedPalette[((sample.Emphasis & 0x07) << 6) | (sample.ColorCode & 0x3F)];
+            PublishFrameIfComplete(sample.Frame, sample.X, sample.Y);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void PublishFrameIfComplete(ulong frame, int x, int y)
+    {
         if (x != Width - 1 || y != Height - 1 || frame == CompletedFrame) return;
 
         // Publish a complete NES frame atomically. The frame guard also makes
         // this robust against duplicate observations of the final PPU pixel.
-        // AdvanceMasterCycles runs in
-        // batches and can already be drawing the following frame when it
-        // returns to the host loop; without this swap, that partial next frame
-        // overwrote the image that was about to be presented.
         (_renderPixels, _completedPixels) = (_completedPixels, _renderPixels);
         CompletedFrame = frame;
     }
@@ -356,6 +392,17 @@ sealed class NativeFrameVideoSink : IVirtualNesVideoSink
         return rgb.Select(value => 0xFF000000u | (uint)value).ToArray();
     }
 
+    private static uint[] BuildEmphasizedPalette()
+    {
+        var values = new uint[8 * 64];
+        for (var emphasis = 0; emphasis < 8; emphasis++)
+        {
+            for (var color = 0; color < 64; color++)
+                values[(emphasis << 6) | color] = ApplyEmphasis(Palette[color], (byte)emphasis);
+        }
+        return values;
+    }
+
     private static uint ApplyEmphasis(uint argb, byte emphasis)
     {
         if ((emphasis & 0x07) == 0) return argb;
@@ -374,15 +421,32 @@ sealed class NativePcmAudioSink(double masterClockHz, int sampleRate) : IVirtual
     private readonly Queue<float> _samples = new();
     private readonly double _masterCyclesPerSample = masterClockHz / sampleRate;
     private double _nextSampleCycle;
+    private byte _currentDacLevel;
 
-    public ulong NextRequiredMasterCycle => (ulong)Math.Ceiling(_nextSampleCycle);
-
-    public void AcceptSample(ulong masterCycle, byte dacLevel)
+    public void AcceptLevelChange(ulong masterCycle, byte dacLevel)
     {
-        if (masterCycle < _nextSampleCycle) return;
-        _nextSampleCycle += _masterCyclesPerSample;
-        var normalized = (dacLevel / 127.5f) - 1.0f;
-        _samples.Enqueue(Math.Clamp(normalized, -1.0f, 1.0f));
+        FillBefore(masterCycle);
+        _currentDacLevel = dacLevel;
+    }
+
+    public void AcceptLevelChanges(ReadOnlySpan<RicohAudioDacSample> samples)
+    {
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var sample = samples[index];
+            FillBefore(sample.MasterClock);
+            _currentDacLevel = sample.DacLevel;
+        }
+    }
+
+    public void CompleteThrough(ulong masterCycle, byte dacLevel)
+    {
+        _currentDacLevel = dacLevel;
+        while (_nextSampleCycle <= masterCycle)
+        {
+            EnqueueCurrentLevel();
+            _nextSampleCycle += _masterCyclesPerSample;
+        }
     }
 
     public int Drain(float[] destination)
@@ -390,5 +454,20 @@ sealed class NativePcmAudioSink(double masterClockHz, int sampleRate) : IVirtual
         var count = Math.Min(destination.Length, _samples.Count);
         for (var index = 0; index < count; index++) destination[index] = _samples.Dequeue();
         return count;
+    }
+
+    private void FillBefore(ulong masterCycle)
+    {
+        while (_nextSampleCycle < masterCycle)
+        {
+            EnqueueCurrentLevel();
+            _nextSampleCycle += _masterCyclesPerSample;
+        }
+    }
+
+    private void EnqueueCurrentLevel()
+    {
+        var normalized = (_currentDacLevel / 127.5f) - 1.0f;
+        _samples.Enqueue(Math.Clamp(normalized, -1.0f, 1.0f));
     }
 }

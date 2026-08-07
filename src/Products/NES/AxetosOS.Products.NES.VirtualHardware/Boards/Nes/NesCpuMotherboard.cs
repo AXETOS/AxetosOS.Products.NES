@@ -84,6 +84,7 @@ public sealed class NesCpuMotherboard
             TimingProfile.ScanlinesPerFrame,
             TimingProfile.VblankStartScanline,
             TimingProfile.PreRenderScanline));
+        PpuTimingReset = Board.Add(new DigitalSignalSource("nes.ppu-timing-reset", DigitalLevel.High));
         PpuVblank = Board.Add(new DigitalSignalSource("nes.ppu-force-vblank", DigitalLevel.Low));
         Controller1Buttons = CreateControllerSources("nes.controller1");
         Controller2Buttons = CreateControllerSources("nes.controller2");
@@ -122,6 +123,7 @@ public sealed class NesCpuMotherboard
     public NesPpuRegisterPackage PpuRegisters { get; }
     public NesPpuMemoryDevice PpuMemory { get; }
     public NesPpuTimingCore PpuTiming { get; }
+    public DigitalSignalSource PpuTimingReset { get; }
     public DigitalSignalSource PpuVblank { get; }
     public IReadOnlyList<DigitalSignalSource> Controller1Buttons { get; }
     public IReadOnlyList<DigitalSignalSource> Controller2Buttons { get; }
@@ -129,13 +131,11 @@ public sealed class NesCpuMotherboard
     public void PowerOn()
     {
         Board.PowerOn();
-        Simulator.Settle();
     }
 
     public void ReleaseReset()
     {
         ResetCircuit.Release();
-        Simulator.Settle();
     }
 
     public void AdvanceHalfCycle()
@@ -150,11 +150,9 @@ public sealed class NesCpuMotherboard
         for (var phase = 0; phase < ppuHalfCycles; phase++)
         {
             PpuClock.AdvanceHalfCycle();
-            Simulator.Settle();
         }
 
         Clock.AdvanceHalfCycle();
-        Simulator.Settle();
     }
 
     public void AdvanceCycle()
@@ -166,9 +164,7 @@ public sealed class NesCpuMotherboard
     public void AdvancePpuDot()
     {
         PpuClock.AdvanceHalfCycle();
-        Simulator.Settle();
         PpuClock.AdvanceHalfCycle();
-        Simulator.Settle();
     }
 
     public void AdvancePpuDots(int count)
@@ -177,10 +173,15 @@ public sealed class NesCpuMotherboard
         for (var dot = 0; dot < count; dot++) AdvancePpuDot();
     }
 
+    public void ResetPpuTiming()
+    {
+        PpuTimingReset.Set(DigitalLevel.Low);
+        PpuTimingReset.Set(DigitalLevel.High);
+    }
+
     public void SetPpuVblank(bool active)
     {
         PpuVblank.Set(active ? DigitalLevel.High : DigitalLevel.Low);
-        Simulator.Settle();
     }
 
     public void SetControllerButtons(int port, byte buttons)
@@ -197,7 +198,6 @@ public sealed class NesCpuMotherboard
             sources[bit].Set((buttons & (1 << bit)) != 0 ? DigitalLevel.High : DigitalLevel.Low);
         }
 
-        Simulator.Settle();
     }
 
     public void RunUntilHalted(int maximumCycles = 100_000)
@@ -247,6 +247,7 @@ public sealed class NesCpuMotherboard
         Board.Connect("/READ", ReadInverter.Output, WorkRam.OutputEnableBar, PrgRom.OutputEnableBar);
         Board.Connect("SYNC", Cpu.Sync, Analyzer.Sync);
         Board.Connect("PPU_CLK", PpuClock.Output, PpuTiming.Clock);
+        Board.Connect("PPU_TIMING_RESET", PpuTimingReset.Output, PpuTiming.ResetBar);
         Board.Connect("PPU_NMI_ENABLE", PpuRegisters.NmiEnable, PpuTiming.NmiEnable);
         Board.Connect("PPU_FORCE_VBLANK", PpuVblank.Output, PpuTiming.ForceVblank);
         Board.Connect("PPU_VBLANK", PpuTiming.Vblank, PpuRegisters.Vblank);

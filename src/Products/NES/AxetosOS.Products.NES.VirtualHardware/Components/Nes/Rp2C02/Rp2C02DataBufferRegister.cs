@@ -5,14 +5,19 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes.Rp2C02;
 /// <summary>Eight-bit RP2C02 PPUDATA read buffer with edge-triggered load.</summary>
 public sealed class Rp2C02DataBufferRegister : VirtualHardwareComponent
 {
-    private bool _loadLast;
+    private readonly ulong _loadInputMask;
+    private readonly ulong _clearInputMask;
 
     public Rp2C02DataBufferRegister(string componentId) : base(componentId)
     {
         Input = CreateBus("IN", PinDirection.Input);
         Output = CreateBus("OUT", PinDirection.Output);
-        Load = AddPin("LOAD", PinDirection.Input);
+        Load = AddPin("LOAD", PinDirection.Input, DigitalInputActivation.RisingEdge);
         Clear = AddPin("CLEAR", PinDirection.Input);
+        _loadInputMask = Load.InputChangeMask;
+        _clearInputMask = Clear.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public DigitalBus Input { get; }
@@ -21,15 +26,27 @@ public sealed class Rp2C02DataBufferRegister : VirtualHardwareComponent
     public DigitalPin Clear { get; }
     public byte Value { get; private set; }
 
-    public override void PowerOn() { Value = 0; _loadLast = false; Output.Drive(0); }
-    public override void Reset() { Value = 0; Output.Drive(0); }
-
-    public override void Evaluate()
+    private void InitializePackageState() { Value = 0; Output.Drive(0); }
+    protected override void OnInputChanges(ulong changedInputMask)
     {
-        if (Clear.SampledLevel == DigitalLevel.High) Value = 0;
-        var load = Load.SampledLevel == DigitalLevel.High;
-        if (load && !_loadLast && Input.TrySample(out var value)) Value = (byte)value;
-        _loadLast = load;
+        var clearChanged = (changedInputMask & _clearInputMask) != 0;
+        var loadRising = (changedInputMask & _loadInputMask) != 0;
+        if (!clearChanged && !loadRising) return;
+
+        if (Clear.SampledLevel == DigitalLevel.High)
+        {
+            if (Value != 0)
+            {
+                Value = 0;
+                Output.Drive(0);
+            }
+            return;
+        }
+
+        if (!loadRising || !Input.TrySample(out var value)) return;
+        var next = (byte)value;
+        if (Value == next) return;
+        Value = next;
         Output.Drive(Value);
     }
 

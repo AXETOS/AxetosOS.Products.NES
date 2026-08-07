@@ -3,7 +3,7 @@ using AxetosOS.Products.NES.VirtualHardware.Electrical;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Power;
 
-public sealed class DigitalPowerRail : VirtualHardwareComponent, IInputDrivenVirtualHardwareComponent
+public sealed class DigitalPowerRail : VirtualHardwareComponent, IExternalBoardSource
 {
     private readonly DigitalLevel _level;
 
@@ -22,6 +22,5 @@ public sealed class DigitalPowerRail : VirtualHardwareComponent, IInputDrivenVir
 
     public DigitalPin Output { get; }
 
-    public override void PowerOn() => Output.Drive(_level);
-    public override void Evaluate() => Output.Drive(_level);
+    public void ApplyPowerOnDrive() => Output.Drive(_level);
 }

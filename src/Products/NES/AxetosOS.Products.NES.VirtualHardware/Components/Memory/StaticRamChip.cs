@@ -9,6 +9,9 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Memory;
 public sealed class StaticRamChip : VirtualHardwareComponent
 {
     private readonly byte[] _storage;
+    private readonly ulong _addressInputMask;
+    private readonly ulong _dataInputMask;
+    private readonly ulong _controlInputMask;
 
     public StaticRamChip(string componentId, int addressWidth)
         : base(componentId)
@@ -37,6 +40,13 @@ public sealed class StaticRamChip : VirtualHardwareComponent
         ChipSelectBar = AddPin("/CS", PinDirection.Input);
         OutputEnableBar = AddPin("/OE", PinDirection.Input);
         WriteEnableBar = AddPin("/WE", PinDirection.Input);
+        _addressInputMask = Address.InputChangeMask;
+        _dataInputMask = Data.InputChangeMask;
+        _controlInputMask = ChipSelectBar.InputChangeMask
+            | OutputEnableBar.InputChangeMask
+            | WriteEnableBar.InputChangeMask;
+    
+        InitializePackageState();
     }
 
     public int Capacity => _storage.Length;
@@ -49,17 +59,31 @@ public sealed class StaticRamChip : VirtualHardwareComponent
 
     public byte Inspect(int address) => _storage[address];
 
-    public override void PowerOn()
+    private void InitializePackageState()
     {
         Array.Clear(_storage);
         WriteCount = 0;
         Data.Release();
     }
 
-    public override void Reset() => Data.Release();
-
-    public override void Evaluate()
+    protected override void OnInputChanges(ulong changedInputMask)
     {
+        var controlChanged = (changedInputMask & _controlInputMask) != 0;
+        var addressChanged = (changedInputMask & _addressInputMask) != 0;
+        var dataChanged = (changedInputMask & _dataInputMask) != 0;
+        if (!controlChanged && !addressChanged && !dataChanged) return;
+
+        if (!controlChanged)
+        {
+            if (ChipSelectBar.SampledLevel == DigitalLevel.High) return;
+            if (ChipSelectBar.SampledLevel == DigitalLevel.Low
+                && WriteEnableBar.SampledLevel == DigitalLevel.High)
+            {
+                if (OutputEnableBar.SampledLevel == DigitalLevel.High) return;
+                if (dataChanged && !addressChanged) return;
+            }
+        }
+
         if (ChipSelectBar.SampledLevel != DigitalLevel.Low || !Address.TrySample(out var rawAddress))
         {
             Data.Release();
@@ -83,12 +107,8 @@ public sealed class StaticRamChip : VirtualHardwareComponent
         }
 
         if (OutputEnableBar.SampledLevel == DigitalLevel.Low)
-        {
             Data.Drive(_storage[address]);
-        }
         else
-        {
             Data.Release();
-        }
     }
 }

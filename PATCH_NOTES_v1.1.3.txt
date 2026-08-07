@@ -1,0 +1,8 @@
+AxetosOS Products / NES v1.1.3
+
+Compile-only hotfix for the v1.1.2 chip-boundary regression test.
+
+Changed:
+- Added the missing Components.Instrumentation namespace import to VirtualHardwareChipBoundaryTests.cs so DigitalSignalSource resolves.
+- No runtime, simulator, electrical, CPU, PPU, or chip behavior changed.
+- No removed compatibility or scheduler API was restored.

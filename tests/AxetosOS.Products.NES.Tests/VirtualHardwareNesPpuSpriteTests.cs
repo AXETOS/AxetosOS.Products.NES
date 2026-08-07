@@ -98,8 +98,7 @@ public sealed class VirtualHardwareNesPpuSpriteTests
         machine.PowerOn();
         machine.ReleaseReset();
         machine.RunUntilHalted();
-        machine.PpuTiming.Reset();
-        machine.Simulator.Settle();
+        machine.ResetPpuTiming();
         return machine;
     }
 }
