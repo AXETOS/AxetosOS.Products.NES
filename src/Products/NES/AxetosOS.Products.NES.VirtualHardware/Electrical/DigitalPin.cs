@@ -17,6 +17,7 @@ public sealed class DigitalPin
     private DigitalLevel _lastAcceptedInputLevel = DigitalLevel.Unknown;
     private int _inputActivationPhase;
     private ulong _inputActivationEdgeCount;
+    private ulong _lastOutputPublicationSequence;
 
     public DigitalPin(string name, PinDirection direction)
     {
@@ -63,7 +64,7 @@ public sealed class DigitalPin
 
         var net = Net;
         if (net is null) return;
-        if (OwnerComponent?.TryStageOutputChange(net) == true) return;
+        if (OwnerComponent?.TryStageOutputChange(this) == true) return;
         net.PropagateDriverChange();
     }
 
@@ -81,7 +82,7 @@ public sealed class DigitalPin
 
         var net = Net;
         if (net is null) return;
-        if (OwnerComponent?.TryStageOutputChange(net) == true) return;
+        if (OwnerComponent?.TryStageOutputChange(this) == true) return;
         net.PropagateDriverChange();
     }
 
@@ -94,9 +95,33 @@ public sealed class DigitalPin
 
         var net = Net;
         if (net is null) return;
-        if (OwnerComponent?.TryStageOutputChange(net) == true) return;
+        if (OwnerComponent?.TryStageOutputChange(this) == true) return;
         net.PropagateDriverChange();
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryMarkOutputPublication(ulong publicationSequence)
+    {
+        if (_lastOutputPublicationSequence == publicationSequence) return false;
+        _lastOutputPublicationSequence = publicationSequence;
+        return true;
+    }
+
+    /// <summary>
+    /// Publishes this package-owned output pin to whatever physical trace is
+    /// attached. The owning chip does not know or retain that trace.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void PublishStagedDriveChange() => Net?.PropagateDriverChange();
+
+    /// <summary>
+    /// Publishes one chip reaction's changed physical package pins as a single
+    /// electrical change-set. Trace lookup happens here at the package pin
+    /// boundary, outside the chip's internal state.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void PublishStagedDriveChanges(DigitalPin[] changedPins, int count) =>
+        DigitalNet.PublishChangedOutputPins(changedPins, count);
 
     /// <summary>
     /// Updates the drive state of a topology-validated single-driver source.
@@ -112,34 +137,6 @@ public sealed class DigitalPin
     {
         _sampledLevel = level;
         if (IsInputCapable) _lastAcceptedInputLevel = level;
-    }
-
-    /// <summary>
-    /// Hot path for a topology-validated rising-edge-only clock input. The
-    /// motherboard must still present both electrical levels, but a falling
-    /// edge does nothing beyond recording Low at the package pin. Rising edges
-    /// update the chip-owned divider counter and return true only when the
-    /// package actually needs to wake.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool TryAcceptCompiledRisingEdgeClockLevel(DigitalLevel level)
-    {
-        var previous = _lastAcceptedInputLevel;
-        _sampledLevel = level;
-        if (previous == level) return false;
-        _lastAcceptedInputLevel = level;
-
-        // High -> Low is electrically visible at the pin but never enters the
-        // owning chip's logic and never touches the activation/divider counter.
-        if (level != DigitalLevel.High) return false;
-
-        _inputActivationEdgeCount++;
-        if (InputActivationPeriod == 1) return true;
-
-        _inputActivationPhase++;
-        if (_inputActivationPhase < InputActivationPeriod) return false;
-        _inputActivationPhase = 0;
-        return true;
     }
 
     /// <summary>

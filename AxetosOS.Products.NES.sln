@@ -6,10 +6,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.Abstr
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.Cartridges", "src\Products\NES\AxetosOS.Products.NES.Cartridges\AxetosOS.Products.NES.Cartridges.csproj", "{C614854A-4454-4D22-9A8C-66D0A782669A}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.Hardware", "src\Products\NES\AxetosOS.Products.NES.Hardware\AxetosOS.Products.NES.Hardware.csproj", "{D642E129-3CB9-4D90-B1F8-91ED31B236E8}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.HeadlessHost", "src\Products\NES\AxetosOS.Products.NES.HeadlessHost\AxetosOS.Products.NES.HeadlessHost.csproj", "{8C791ED6-650E-4BC0-8C2D-42419CBE8B99}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.Tests", "tests\AxetosOS.Products.NES.Tests\AxetosOS.Products.NES.Tests.csproj", "{11C513E5-24B4-4501-AD77-780591EF1151}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AxetosOS.Products.NES.DesktopHost", "src\Products\NES\AxetosOS.Products.NES.DesktopHost\AxetosOS.Products.NES.DesktopHost.csproj", "{5D2D3A92-5374-4D29-AD50-50A3018A1300}"
@@ -30,14 +26,6 @@ Global
         {C614854A-4454-4D22-9A8C-66D0A782669A}.Debug|Any CPU.Build.0 = Debug|Any CPU
         {C614854A-4454-4D22-9A8C-66D0A782669A}.Release|Any CPU.ActiveCfg = Release|Any CPU
         {C614854A-4454-4D22-9A8C-66D0A782669A}.Release|Any CPU.Build.0 = Release|Any CPU
-        {D642E129-3CB9-4D90-B1F8-91ED31B236E8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-        {D642E129-3CB9-4D90-B1F8-91ED31B236E8}.Debug|Any CPU.Build.0 = Debug|Any CPU
-        {D642E129-3CB9-4D90-B1F8-91ED31B236E8}.Release|Any CPU.ActiveCfg = Release|Any CPU
-        {D642E129-3CB9-4D90-B1F8-91ED31B236E8}.Release|Any CPU.Build.0 = Release|Any CPU
-        {8C791ED6-650E-4BC0-8C2D-42419CBE8B99}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-        {8C791ED6-650E-4BC0-8C2D-42419CBE8B99}.Debug|Any CPU.Build.0 = Debug|Any CPU
-        {8C791ED6-650E-4BC0-8C2D-42419CBE8B99}.Release|Any CPU.ActiveCfg = Release|Any CPU
-        {8C791ED6-650E-4BC0-8C2D-42419CBE8B99}.Release|Any CPU.Build.0 = Release|Any CPU
         {11C513E5-24B4-4501-AD77-780591EF1151}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
         {11C513E5-24B4-4501-AD77-780591EF1151}.Debug|Any CPU.Build.0 = Debug|Any CPU
         {11C513E5-24B4-4501-AD77-780591EF1151}.Release|Any CPU.ActiveCfg = Release|Any CPU

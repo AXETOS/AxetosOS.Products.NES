@@ -13,7 +13,9 @@ namespace AxetosOS.Products.NES.VirtualHardware.Electrical;
 /// When one package changes several outputs during one internal reaction, its
 /// base package presents all affected traces before any receiver executes. That
 /// package-boundary atomicity prevents software-only half-updated buses while
-/// retaining direct, synchronous propagation.
+/// retaining direct, synchronous propagation. The trace never inspects a
+/// receiver's activation/edge/divider semantics: transport is topology-only;
+/// the receiving DigitalPin/chip owns the decision to wake or return.
 /// </summary>
 public sealed class DigitalNet
 {
@@ -24,11 +26,8 @@ public sealed class DigitalNet
     private bool _pinSnapshotDirty = true;
     private bool _compiled;
     private NetResolverKind _resolverKind;
-    private VirtualHardwareComponent? _lastPublicationOwner;
-    private ulong _lastPublicationSequence;
     private DigitalPin? _compiledSingleDriverSource;
     private DigitalPin[] _compiledSingleDriverObservers = [];
-    private bool _compiledAllReceiversRisingEdge;
 
     public DigitalNet(string name)
     {
@@ -54,7 +53,7 @@ public sealed class DigitalNet
     /// never stores or inspects another package.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void PublishChangedOutputs(DigitalNet[] changed, int count)
+    internal static void PublishChangedOutputPins(DigitalPin[] changedPins, int count)
     {
         var frame = AcquirePropagationFrame();
         try
@@ -63,8 +62,12 @@ public sealed class DigitalNet
 
             for (var index = 0; index < count; index++)
             {
-                var net = changed[index];
+                var net = changedPins[index].Net;
+                if (net is null) continue;
                 diagnostics ??= net.Diagnostics;
+                // If two package output pins happen to share one physical trace,
+                // the first pass resolves the final states of both pins; a later
+                // duplicate pass observes no level change and is therefore inert.
                 net.PresentDriverChange(frame);
             }
 
@@ -120,7 +123,6 @@ public sealed class DigitalNet
         _pinSnapshotDirty = true;
         _compiledSingleDriverSource = null;
         _compiledSingleDriverObservers = [];
-        _compiledAllReceiversRisingEdge = false;
         pin.Net = this;
         pin.SetObservedLevel(Level);
 
@@ -131,17 +133,6 @@ public sealed class DigitalNet
             CompileTopology();
             PropagateDriverChange();
         }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool TryMarkOutputPublication(VirtualHardwareComponent owner, ulong publicationSequence)
-    {
-        if (ReferenceEquals(_lastPublicationOwner, owner) && _lastPublicationSequence == publicationSequence)
-            return false;
-
-        _lastPublicationOwner = owner;
-        _lastPublicationSequence = publicationSequence;
-        return true;
     }
 
     /// <summary>
@@ -165,9 +156,6 @@ public sealed class DigitalNet
         _compiledSingleDriverObservers = _observerPins
             .Where(pin => !ReferenceEquals(pin, source))
             .ToArray();
-        _compiledAllReceiversRisingEdge = _inputRoutes.Length != 0;
-        for (var index = 0; index < _inputRoutes.Length; index++)
-            _compiledAllReceiversRisingEdge &= _inputRoutes[index].IsRisingEdgeInput;
     }
 
     /// <summary>
@@ -190,48 +178,6 @@ public sealed class DigitalNet
             observers[index].SetObservedLevel(resolved);
 
         var routes = _inputRoutes;
-        if (_compiledAllReceiversRisingEdge)
-        {
-            // Topology validation guarantees plain input pins with rising-edge
-            // activation. Use the chip-owned clock fast path for BOTH levels:
-            // falling edges only record Low; rising edges wake a package only
-            // when its own activation/divider period is reached.
-            if (routes.Length == 2)
-            {
-                var wake0 = routes[0].AcceptCompiledRisingEdgeClockLevel(resolved);
-                var wake1 = routes[1].AcceptCompiledRisingEdgeClockLevel(resolved);
-                if (wake0) routes[0].ReactCompiledDirect();
-                if (wake1) routes[1].ReactCompiledDirect();
-                return;
-            }
-
-            if (routes.Length == 1)
-            {
-                if (routes[0].AcceptCompiledRisingEdgeClockLevel(resolved))
-                    routes[0].ReactCompiledDirect();
-                return;
-            }
-
-            ulong risingWakeRoutes = 0;
-            var risingRouteCount = Math.Min(routes.Length, 64);
-            for (var index = 0; index < risingRouteCount; index++)
-            {
-                if (routes[index].AcceptCompiledRisingEdgeClockLevel(resolved))
-                    risingWakeRoutes |= 1UL << index;
-            }
-            for (var index = 0; index < risingRouteCount; index++)
-            {
-                if ((risingWakeRoutes & (1UL << index)) != 0)
-                    routes[index].ReactCompiledDirect();
-            }
-            for (var index = 64; index < routes.Length; index++)
-            {
-                if (routes[index].AcceptCompiledRisingEdgeClockLevel(resolved))
-                    routes[index].ReactCompiledDirect();
-            }
-            return;
-        }
-
         if (routes.Length == 2)
         {
             var wake0 = routes[0].AcceptCompiledInputLevel(resolved);
@@ -261,8 +207,6 @@ public sealed class DigitalNet
                 routes[index].ReactCompiledDirect();
         }
 
-        // Extremely high-fanout clock traces are uncommon; preserve correctness
-        // past the compact 64-route wake mask without penalizing the NES path.
         for (var index = 64; index < routes.Length; index++)
         {
             if (routes[index].AcceptCompiledInputLevel(resolved))
@@ -444,7 +388,6 @@ public sealed class DigitalNet
 
         _compiledSingleDriverSource = null;
         _compiledSingleDriverObservers = [];
-        _compiledAllReceiversRisingEdge = false;
         _pinSnapshotDirty = false;
         _compiled = true;
     }
@@ -484,19 +427,9 @@ public sealed class DigitalNet
             _inputMask = pin.InputChangeMask;
         }
 
-        public bool IsRisingEdgeInput =>
-            _pin.Direction == PinDirection.Input &&
-            _pin.InputActivation == DigitalInputActivation.RisingEdge &&
-            _inputMask != 0 &&
-            _component is not null;
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool AcceptCompiledInputLevel(DigitalLevel level) =>
             _component is not null && _pin.TryAcceptInputLevel(level);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool AcceptCompiledRisingEdgeClockLevel(DigitalLevel level) =>
-            _pin.TryAcceptCompiledRisingEdgeClockLevel(level);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void ReactCompiledDirect()

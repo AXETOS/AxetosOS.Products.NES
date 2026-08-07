@@ -11,23 +11,19 @@ using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.Tests;
 
-public sealed class VirtualHardwareSelectiveWakeSchedulingTests
+public sealed class VirtualHardwareChipOwnedActivationTests
 {
     [Fact]
-    public void Power_rails_and_oscillators_settle_once_until_their_output_is_changed_externally()
+    public void Power_rails_and_oscillator_changes_propagate_directly_without_scheduler()
     {
         var board = new VirtualHardwareBoard("one-shot-sources");
         var rail = board.Add(new DigitalPowerRail("vcc", DigitalLevel.High));
         var clock = board.Add(new DigitalOscillator("clock", 1));
         board.Connect("vcc.net", rail.Output);
         board.Connect("clock.net", clock.Output);
-        var simulator = new VirtualHardwareSimulator(board);
-
-        simulator.Settle();
-        simulator.Settle();
+        _ = new VirtualHardwareSimulator(board);
 
         clock.AdvanceHalfCycle();
-        simulator.Settle();
         Assert.Equal(DigitalLevel.High, clock.Output.SampledLevel);
     }
 
@@ -36,24 +32,20 @@ public sealed class VirtualHardwareSelectiveWakeSchedulingTests
     {
         var board = new VirtualHardwareBoard("bidirectional-package-boundary");
         var external = board.Add(new DigitalSignalSource("external", DigitalLevel.Low));
-        var component = board.Add(new SelectiveBidirectionalProbe("probe"));
+        var component = board.Add(new BidirectionalProbe("probe"));
         board.Connect("bus", external.Output, component.Bus);
-        var simulator = new VirtualHardwareSimulator(board);
+        _ = new VirtualHardwareSimulator(board);
 
-        simulator.Settle();
         Assert.Equal(1, component.EvaluationCount);
 
         component.Bus.Drive(DigitalLevel.High);
-        simulator.Settle();
         Assert.Equal(1, component.EvaluationCount);
 
         component.Bus.Release();
-        simulator.Settle();
         Assert.Equal(1, component.EvaluationCount);
         Assert.Equal(DigitalLevel.Low, component.Bus.SampledLevel);
 
         external.Set(DigitalLevel.High);
-        simulator.Settle();
         Assert.Equal(2, component.EvaluationCount);
         Assert.Equal(DigitalLevel.High, component.Bus.SampledLevel);
     }
@@ -75,9 +67,9 @@ public sealed class VirtualHardwareSelectiveWakeSchedulingTests
         Assert.NotNull(ram.Pins);
     }
 
-    private sealed class SelectiveBidirectionalProbe : VirtualHardwareComponent
+    private sealed class BidirectionalProbe : VirtualHardwareComponent
     {
-        public SelectiveBidirectionalProbe(string componentId) : base(componentId)
+        public BidirectionalProbe(string componentId) : base(componentId)
         {
             Bus = AddPin("BUS", PinDirection.Bidirectional);
         }

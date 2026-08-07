@@ -1,6 +1,37 @@
 # AxetosOS Products / NES
 
-**Version: 1.3.6**
+**Version: 1.3.7**
+
+
+## v1.3.7 — physical IC boundary consolidation
+
+This release makes the physical IC/package boundary the only NES execution architecture. A real chip may contain many functional blocks, but those blocks communicate directly inside the chip; only actual package-pin changes cross onto motherboard traces.
+
+- Removed the retired synthetic `NesCpuMotherboard` execution path. It split RP2A03/RP2C02 internals into motherboard-visible helper components and therefore violated the physical package boundary.
+- Removed the synthetic NES helper packages `NesPpuTimingCore`, `NesPpuRegisterPackage`, `NesPpuMemoryDevice`, `NesOamDmaController`, and `NesControllerIoPackage`. Their real behavior lives inside RP2C02/RP2C07, RP2A03/RP2A07, the actual board RAM/latch/decoder packages, and the controller package.
+- Removed the old standalone RP2C02 internal helper-package models (`Rp2C02BusSequencer`, `Rp2C02DataBufferRegister`, `Rp2C02VramAddressRegisters`). Those are internal PPU functions, not motherboard chips.
+- `VirtualHardwareNesMachineFactory` now constructs the same physical Famicom/NTSC/PAL regional machine used by the desktop boot host. There is no alternate synthetic NES composition behind ROM loading.
+- Removed the older high-level `AxetosOS.Products.NES.Hardware` execution project and its `HeadlessHost` entirely. There is no second CPU/PPU execution architecture left beside the physical `VirtualHardware` path. Cartridge-format metadata/parsing utilities remain separate because they are file-loading concerns, not emulated motherboard hardware.
+- The desktop game path depends on `VirtualHardware` only.
+- Added architectural tests that inspect every concrete virtual-hardware component and fail if a package embeds another `IVirtualHardwareComponent`, a private `VirtualHardwareBoard`, or a chip-owned `DigitalNet`. Internal functional blocks must be plain package-local state/classes.
+- Compiled `DigitalNet` transport no longer inspects or caches receiver rising-edge/falling-edge/divider semantics. A trace only presents the resolved level; `DigitalPin` owns edge/divider activation and the chip owns all higher-level enable/select behavior.
+- `VirtualHardwareComponent` no longer stages motherboard `DigitalNet` references while a chip reacts. It stages only its own changed output pins; the pin/electrical boundary discovers the attached trace after the chip has completed its internal work. The chip object therefore retains no motherboard topology.
+- Added board-boundary tests confirming Famicom, NTSC NES, and PAL NES expose one real CPU/APU package and one real PPU package rather than internal pseudo-packages.
+- Removed dead scheduler/activation-contract source placeholders that no longer belong to the direct pin-reactive architecture.
+
+The rule is now enforced structurally:
+
+```text
+physical input pin changes
+        ↓
+chip decides whether/how to react
+        ↓
+all required internal work stays inside that chip
+        ↓
+only a real external output-pin change reaches the motherboard
+```
+
+The motherboard still knows only physical topology and board-level electrical components. It never routes or suppresses a signal because it understands CPU, PPU, DMA, APU, register, or mapper semantics.
 
 
 ## v1.3.6 — chip-owned activation sweep
@@ -226,7 +257,7 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 3. A chip affects the machine only by driving or releasing its own output-capable pins.
 4. A chip may not retain motherboard, simulator, host, renderer, audio sink, memory-device, or peer-chip references.
 5. Motherboards own composition and wiring, never replacement chip behavior.
-6. Static topology may be compiled once, but every runtime signal still travels through installed virtual pins, nets, buses, and packages.
+6. Static motherboard topology may be compiled once, but every external runtime board signal still travels through the installed physical package pins and traces. Internal signals that never leave an IC stay inside that IC and do not use motherboard nets.
 7. Runtime digital behavior propagates immediately through physical traces; there is no central signal, net, or component queue.
 8. Motherboards never suppress a connected input because a chip is deselected. Pins always receive the electrical level; power/select/enable/edge rejection is owned by the receiving chip.
 
@@ -236,10 +267,8 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 src/Products/NES/
   AxetosOS.Products.NES.VirtualHardware/   chips, boards, wiring and simulator
   AxetosOS.Products.NES.DesktopHost/       native video/audio/input host
-  AxetosOS.Products.NES.HeadlessHost/      diagnostic host
   AxetosOS.Products.NES.Abstractions/      shared contracts
-  AxetosOS.Products.NES.Cartridges/        cartridge metadata and loading
-  AxetosOS.Products.NES.Hardware/          established reference implementation
+  AxetosOS.Products.NES.Cartridges/        ROM/cartridge metadata and file-loading utilities
 
 tests/AxetosOS.Products.NES.Tests/         hardware and regression tests
 ```

@@ -1,16 +1,30 @@
-using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
+using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
+using AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Loading;
 
+/// <summary>
+/// A ROM image attached to the physical regional virtual-hardware console.
+/// The selected NES/Famicom motherboard contains only real board-level packages
+/// and traces; CPU/APU/DMA and PPU internals remain inside their physical ICs.
+/// </summary>
 public sealed record VirtualHardwareNesMachine(
     VirtualHardwareNesRomImage Cartridge,
     NesResolvedRegion RegionSelection,
-    NesCpuMotherboard Motherboard);
+    RegionalNesVirtualMachine Hardware)
+{
+    public ActiveNesMotherboard ActiveMotherboard => Hardware.ActiveMotherboard;
+    public object ActiveBoard => Hardware.ActiveBoard
+        ?? throw new InvalidOperationException("No physical motherboard is selected.");
+    public NromCartridge CartridgeBoard => Hardware.Slot.Cartridge
+        ?? throw new InvalidOperationException("No physical cartridge board is attached.");
+}
 
 /// <summary>
-/// Software composition boundary for launching VirtualHardware from a ROM.
-/// It reads metadata, resolves Auto/override region policy, validates the
-/// currently supported cartridge board, and constructs the selected hardware.
+/// Software composition boundary for launching the pin-level physical hardware
+/// model from a ROM. This factory no longer constructs the retired synthetic
+/// NES CPU/PPU helper motherboard; it always selects the same physical Famicom,
+/// NTSC NES or PAL NES board architecture used by the runtime boot host.
 /// </summary>
 public static class VirtualHardwareNesMachineFactory
 {
@@ -39,16 +53,13 @@ public static class VirtualHardwareNesMachineFactory
     {
         ArgumentNullException.ThrowIfNull(image);
         ValidateCurrentCartridgeSupport(image);
-        var resolved = NesHardwareRegionResolver.Resolve(image, fileName, regionSelection);
-        var mirroring = image.Mirroring switch
-        {
-            VirtualHardwareNesMirroring.Horizontal => NesNametableMirroring.Horizontal,
-            VirtualHardwareNesMirroring.Vertical => NesNametableMirroring.Vertical,
-            VirtualHardwareNesMirroring.FourScreen => NesNametableMirroring.FourScreen,
-            _ => throw new InvalidOperationException($"Unknown mirroring mode {image.Mirroring}.")
-        };
-        var motherboard = new NesCpuMotherboard(image.PrgRom, image.ChrRom, mirroring, resolved.Region);
-        return new VirtualHardwareNesMachine(image, resolved, motherboard);
+
+        var hardware = new RegionalNesVirtualMachine();
+        hardware.InsertRom(image, fileName, regionSelection);
+        var resolved = hardware.Slot.ResolvedRegion
+            ?? throw new InvalidOperationException("Inserted ROM did not resolve to a physical NES region.");
+
+        return new VirtualHardwareNesMachine(image, resolved, hardware);
     }
 
     private static void ValidateCurrentCartridgeSupport(VirtualHardwareNesRomImage image)

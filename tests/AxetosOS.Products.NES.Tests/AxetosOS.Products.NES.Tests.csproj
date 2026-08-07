@@ -12,7 +12,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Products\NES\AxetosOS.Products.NES.Cartridges\AxetosOS.Products.NES.Cartridges.csproj" />
-    <ProjectReference Include="..\..\src\Products\NES\AxetosOS.Products.NES.Hardware\AxetosOS.Products.NES.Hardware.csproj" />
     <ProjectReference Include="..\..\src\Products\NES\AxetosOS.Products.NES.VirtualHardware\AxetosOS.Products.NES.VirtualHardware.csproj" />
   </ItemGroup>
 </Project>

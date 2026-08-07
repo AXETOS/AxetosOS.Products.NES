@@ -1,0 +1,16 @@
+AxetosOS Products / NES v1.3.7
+
+Physical IC boundary consolidation:
+- The physical VirtualHardware package boundary is the only NES execution model.
+- Internal CPU/APU/DMA/PPU functional blocks stay inside RP2A03/RP2A07/RP2C02/RP2C07 and communicate directly.
+- Removed synthetic motherboard-visible PPU/DMA/controller helper packages.
+- Removed the retired high-level Hardware/Headless execution architecture.
+- ROM machine factory now selects the physical Famicom/NTSC/PAL machine used by DesktopHost.
+- VirtualHardwareComponent stages only its own output pins, never DigitalNet references.
+- DigitalNet transport no longer knows receiver edge/divider activation semantics; DigitalPin/chips own those decisions.
+- Structural tests enforce the package boundary across all concrete VirtualHardware components.
+
+Important validation note:
+The removed execution architectures had their own tests. Those tests are intentionally removed with the retired code, so the v1.3.7 test total will be lower than v1.3.6's 377. The remaining suite validates the physical VirtualHardware architecture that is actually used for games.
+
+This environment cannot run .NET. Run dotnet test locally before committing or benchmarking.

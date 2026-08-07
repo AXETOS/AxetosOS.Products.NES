@@ -136,7 +136,7 @@ Console.WriteLine("Execution:   physical virtual-hardware buses and master clock
 Console.WriteLine("Video:       RP2C02 color output -> AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:       RP2A03 DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
 Console.WriteLine("Controls:    Esc=Exit (controller hardware adapter is the next input milestone)");
-Console.WriteLine("Kernel:      chip-owned activation direct propagation (no signal queue)");
+Console.WriteLine("Kernel:      physical IC-boundary direct propagation (no signal queue)");
 if (profileSimulation) Console.WriteLine("Profiler:    enabled; component timing sampled 1/256; results every 5 seconds");
 if (ppuSplitTrace) Console.WriteLine("PPU trace:   sprite-zero and $2002/$2005/$2006 split-screen events enabled");
 

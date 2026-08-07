@@ -1,6 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <ProjectReference Include="..\AxetosOS.Products.NES.Abstractions\AxetosOS.Products.NES.Abstractions.csproj" />
-    <ProjectReference Include="..\AxetosOS.Products.NES.Cartridges\AxetosOS.Products.NES.Cartridges.csproj" />
-  </ItemGroup>
-</Project>

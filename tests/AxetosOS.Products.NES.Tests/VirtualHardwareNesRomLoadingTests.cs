@@ -1,5 +1,7 @@
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
+using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
+using AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
 using Xunit;
 
 namespace AxetosOS.Products.NES.Tests;
@@ -7,26 +9,31 @@ namespace AxetosOS.Products.NES.Tests;
 public sealed class VirtualHardwareNesRomLoadingTests
 {
     [Fact]
-    public void Nes20_pal_header_constructs_pal_motherboard_in_auto_mode()
+    public void Nes20_pal_header_selects_the_physical_pal_motherboard_in_auto_mode()
     {
         var machine = VirtualHardwareNesMachineFactory.Load(
             CreateRom(nes20: true, timing: 1),
             "Example.nes");
 
-        Assert.Equal(NesHardwareRegion.Pal, machine.Motherboard.Region);
+        Assert.Equal(ActiveNesMotherboard.PalNes, machine.ActiveMotherboard);
+        Assert.Equal(NesHardwareRegion.Pal, machine.RegionSelection.Region);
         Assert.Equal(NesRegionSelectionSource.Nes20Header, machine.RegionSelection.Source);
-        Assert.Equal(312, machine.Motherboard.PpuTiming.ScanlinesPerFrame);
+        Assert.IsType<PalNesMotherboard>(machine.ActiveBoard);
+        Assert.IsType<Rp2A07>(machine.Hardware.PalNes.Cpu);
+        Assert.IsType<Rp2C07>(machine.Hardware.PalNes.Ppu);
     }
 
     [Fact]
-    public void Japanese_filename_refines_ntsc_header_to_ntsc_j_motherboard()
+    public void Japanese_filename_selects_the_physical_famicom_board()
     {
         var machine = VirtualHardwareNesMachineFactory.Load(
             CreateRom(nes20: true, timing: 0),
             "Game (Japan).nes");
 
-        Assert.Equal(NesHardwareRegion.NtscJapan, machine.Motherboard.Region);
+        Assert.Equal(ActiveNesMotherboard.Famicom, machine.ActiveMotherboard);
+        Assert.Equal(NesHardwareRegion.NtscJapan, machine.RegionSelection.Region);
         Assert.Equal(NesRegionSelectionSource.FileName, machine.RegionSelection.Source);
+        Assert.IsType<FamicomMotherboard>(machine.ActiveBoard);
     }
 
     [Fact]
@@ -37,28 +44,33 @@ public sealed class VirtualHardwareNesRomLoadingTests
             "Game (Europe).nes",
             NesRegionSelection.NtscJapan);
 
-        Assert.Equal(NesHardwareRegion.NtscJapan, machine.Motherboard.Region);
+        Assert.Equal(ActiveNesMotherboard.Famicom, machine.ActiveMotherboard);
+        Assert.Equal(NesHardwareRegion.NtscJapan, machine.RegionSelection.Region);
         Assert.Equal(NesRegionSelectionSource.ManualOverride, machine.RegionSelection.Source);
     }
 
     [Fact]
-    public void Legacy_ines_pal_hint_selects_pal_before_filename_fallback()
+    public void Legacy_ines_pal_hint_selects_the_physical_pal_board_before_filename_fallback()
     {
         var machine = VirtualHardwareNesMachineFactory.Load(
             CreateRom(nes20: false, timing: 1),
             "Unknown.nes");
 
-        Assert.Equal(NesHardwareRegion.Pal, machine.Motherboard.Region);
+        Assert.Equal(ActiveNesMotherboard.PalNes, machine.ActiveMotherboard);
         Assert.Equal(NesRegionSelectionSource.INesHeader, machine.RegionSelection.Source);
     }
 
     [Fact]
-    public void Auto_mode_falls_back_to_ntsc_u_when_metadata_is_ambiguous()
+    public void Auto_mode_falls_back_to_the_physical_ntsc_u_board_when_metadata_is_ambiguous()
     {
         var machine = VirtualHardwareNesMachineFactory.Load(CreateRom(), "Game.nes");
 
-        Assert.Equal(NesHardwareRegion.NtscNorthAmerica, machine.Motherboard.Region);
+        Assert.Equal(ActiveNesMotherboard.NtscNes, machine.ActiveMotherboard);
+        Assert.Equal(NesHardwareRegion.NtscNorthAmerica, machine.RegionSelection.Region);
         Assert.Equal(NesRegionSelectionSource.Default, machine.RegionSelection.Source);
+        Assert.IsType<NtscNesMotherboard>(machine.ActiveBoard);
+        Assert.IsType<Rp2A03>(machine.Hardware.NtscNes.Cpu);
+        Assert.IsType<Rp2C02>(machine.Hardware.NtscNes.Ppu);
     }
 
     [Fact]
@@ -75,7 +87,7 @@ public sealed class VirtualHardwareNesRomLoadingTests
     }
 
     [Fact]
-    public void Factory_rejects_mapper_not_yet_wired_into_virtual_hardware()
+    public void Factory_rejects_mapper_not_yet_wired_into_physical_virtual_hardware()
     {
         var error = Assert.Throws<NotSupportedException>(() =>
             VirtualHardwareNesMachineFactory.Load(CreateRom(mapper: 1), "MMC1.nes"));
@@ -84,13 +96,17 @@ public sealed class VirtualHardwareNesRomLoadingTests
     }
 
     [Fact]
-    public void Factory_constructs_nrom_128_with_physical_prg_mirroring()
+    public void Factory_attaches_one_nrom_board_to_the_selected_physical_motherboard()
     {
-        var machine = VirtualHardwareNesMachineFactory.Load(CreateRom(), "Game (USA).nes");
+        var machine = VirtualHardwareNesMachineFactory.Load(CreateRom(chrUnits: 1), "Game (USA).nes");
 
-        Assert.Equal(16 * 1024, machine.Cartridge.PrgRomSizeBytes);
-        Assert.Equal(0xA9, machine.Motherboard.PrgRom.Inspect(0));
-        Assert.Equal(0xA9, machine.Motherboard.PrgRom.Inspect(16 * 1024));
+        Assert.NotNull(machine.CartridgeBoard);
+        Assert.True(machine.CartridgeBoard.IsInserted);
+        Assert.Contains(
+            machine.Hardware.NtscNes.Board.Components,
+            component => ReferenceEquals(component, machine.CartridgeBoard));
+        Assert.Same(machine.Hardware.NtscNes.CpuAddressNets[0], machine.CartridgeBoard.CpuAddress.Pins[0].Net);
+        Assert.Same(machine.Hardware.NtscNes.PpuAddressDataNets[0], machine.CartridgeBoard.PpuAddressData.Pins[0].Net);
     }
 
     private static byte[] CreateRom(

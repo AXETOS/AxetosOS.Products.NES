@@ -1,34 +1,12 @@
-# Legal sample ROMs
+# NES samples
 
-`axetos-cpu-smoke.nes` is an original minimal NROM-128 image created for this repository. It performs a few implemented CPU instructions and loops forever. No Nintendo or third-party game code or assets are included.
+The retired high-level `AxetosOS.Products.NES.HeadlessHost` execution path was removed in v1.3.7.
+NES execution now uses the physical `VirtualHardware` machine only.
 
-Run it with:
-
-```powershell
-dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-cpu-smoke.nes --cycles 1000
-```
-
-
-## axetos-ppu-background.nes
-
-Original AXETOS NROM test cartridge that initializes a checkerboard CHR tile, nametable and palette, enables background rendering and loops. Use the headless host `--frame` option to export the framebuffer as PPM.
-
-## `axetos-ppu-sprites.nes`
-
-Original NROM visual test cartridge for background rendering, primary OAM, sprite priority/flipping and `$4014` OAM DMA. It contains no commercial code or assets.
-
-
-## `axetos-controller-motion.nes`
-
-Original NROM test cartridge that polls controller port 1 once per VBlank and moves sprite 0 left or right through OAM DMA. This particular diagnostic ROM intentionally responds only to Left and Right; the desktop host still maps the complete NES controller. `axetos-controller-motion.input.json` supplies a deterministic cycle-based input timeline for the headless host.
+Run an NROM sample/ROM through the same physical IC-boundary host used for games:
 
 ```powershell
-dotnet run --project .\src\Products\NES\AxetosOS.Products.NES.HeadlessHost -- .\samples\axetos-controller-motion.nes --cycles 420000 --input-script .\samples\axetos-controller-motion.input.json --frame .\output\controller-motion.ppm
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-cpu-smoke.nes --board famicom
 ```
 
-
-## axetos-apu-tone.nes
-
-Original NROM test cartridge that enables pulse channel 1 and produces a steady tone through the RP2A03 APU register interface. It contains no commercial code or assets.
-
-- `axetos-apu-dmc.nes` — original NROM test cartridge that streams a synthetic one-bit sample through the DMC channel.
+Controller/input diagnostic samples will be reconnected through the physical controller package when the native controller adapter is completed; they are not routed through the removed reference emulator.

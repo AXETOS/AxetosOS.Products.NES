@@ -6,7 +6,9 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components;
 /// <summary>
 /// Base class for a self-contained physical package. A package can inspect only
 /// its own retained pin levels and internal state, and can affect the circuit
-/// only by driving its own output-capable pins.
+/// only by driving its own output-capable pins. Internal functional blocks are
+/// ordinary package-local state/classes and communicate directly; the package
+/// itself never retains motherboard nets, peer packages, or a private board.
 ///
 /// One package reaction is atomic at the package boundary: all output drive
 /// changes made while handling one incoming change are published to the board
@@ -17,8 +19,8 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components;
 public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
 {
     private readonly List<DigitalPin> _pins = [];
-    private DigitalNet[] _changedOutputNets = new DigitalNet[16];
-    private int _changedOutputNetCount;
+    private DigitalPin[] _changedOutputPins = new DigitalPin[16];
+    private int _changedOutputPinCount;
     private ulong _pendingInputChanges;
     private ulong _outputPublicationSequence;
     private bool _handlingInputChanges;
@@ -92,25 +94,25 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
             // Package-owned references are permanent members of the board.
             // Retain the reusable backing array and reset only its active count
             // instead of clearing reference slots after every chip reaction.
-            _changedOutputNetCount = 0;
+            _changedOutputPinCount = 0;
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool TryStageOutputChange(DigitalNet net)
+    internal bool TryStageOutputChange(DigitalPin pin)
     {
         if (!_handlingInputChanges) return false;
 
-        // O(1) duplicate suppression. A package can touch the same physical
-        // trace from more than one output assignment during one reaction; the
-        // trace is still resolved only once when the package publishes.
-        if (net.TryMarkOutputPublication(this, _outputPublicationSequence))
+        // The package stages only its own physical output pins. It never keeps
+        // a motherboard-net reference. A pin touched more than once during one
+        // internal reaction is published once with its final drive state.
+        if (pin.TryMarkOutputPublication(_outputPublicationSequence))
         {
-            var count = _changedOutputNetCount;
-            if (count == _changedOutputNets.Length)
-                Array.Resize(ref _changedOutputNets, _changedOutputNets.Length * 2);
-            _changedOutputNets[count] = net;
-            _changedOutputNetCount = count + 1;
+            var count = _changedOutputPinCount;
+            if (count == _changedOutputPins.Length)
+                Array.Resize(ref _changedOutputPins, _changedOutputPins.Length * 2);
+            _changedOutputPins[count] = pin;
+            _changedOutputPinCount = count + 1;
         }
         return true;
     }
@@ -147,21 +149,21 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void FlushChangedOutputs()
     {
-        var count = _changedOutputNetCount;
+        var count = _changedOutputPinCount;
         if (count == 0) return;
 
         // Clear only the active count before receivers can react. Re-entrant
         // input changes therefore start a fresh publication set while the same
-        // package-owned array is reused without per-reaction Array.Clear work.
-        _changedOutputNetCount = 0;
-        var changed = _changedOutputNets;
+        // package-owned pin array is reused without per-reaction Array.Clear.
+        _changedOutputPinCount = 0;
+        var changed = _changedOutputPins;
         if (count == 1)
         {
-            changed[0].PropagateDriverChange();
+            changed[0].PublishStagedDriveChange();
             return;
         }
 
-        DigitalNet.PublishChangedOutputs(changed, count);
+        DigitalPin.PublishStagedDriveChanges(changed, count);
     }
 
     /// <summary>
