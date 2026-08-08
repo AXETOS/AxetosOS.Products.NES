@@ -136,8 +136,8 @@ Console.WriteLine("Execution:   physical virtual-hardware buses and master clock
 Console.WriteLine("Video:       RP2C02 color output -> AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:       RP2A03 DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
 Console.WriteLine("Controls:    Esc=Exit (controller hardware adapter is the next input milestone)");
-Console.WriteLine("Kernel:      physical IC-boundary direct propagation (no signal queue)");
-if (profileSimulation) Console.WriteLine("Profiler:    enabled; component timing sampled 1/256; results every 5 seconds");
+Console.WriteLine("Kernel:      chip-owned pin-gated direct propagation (no signal queue)");
+if (profileSimulation) Console.WriteLine("Profiler:    enabled; component/net/internal-IC timing sampled 1/256; host timing exact; results every 5 seconds");
 if (ppuSplitTrace) Console.WriteLine("PPU trace:   sprite-zero and $2002/$2005/$2006 split-screen events enabled");
 
 const int MasterCyclesPerVideoBatch = 16_384;
@@ -160,13 +160,29 @@ var lastInstructionProgress = initial.CpuInstructions;
 var lastInstructionProgressFrame = initial.PpuFrames;
 var stallReportedForState = string.Empty;
 var lastProfileReport = TimeSpan.Zero;
+long profileEventPumpTicks = 0;
+long profileSimulationTicks = 0;
+long profileVideoPresentationTicks = 0;
+long profileAudioTransferTicks = 0;
+long profileDiagnosticsTicks = 0;
+ulong profileSimulationBatches = 0;
+ulong profilePresentedFrames = 0;
+ulong profileAudioSamples = 0;
 
 while (presenter.IsOpen)
 {
+    var profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
     presenter.PumpEvents();
+    if (profileSimulation) profileEventPumpTicks += Stopwatch.GetTimestamp() - profileStarted;
     if (!presenter.IsOpen) break;
 
+    profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
     host.AdvanceMasterCycles(MasterCyclesPerVideoBatch);
+    if (profileSimulation)
+    {
+        profileSimulationTicks += Stopwatch.GetTimestamp() - profileStarted;
+        profileSimulationBatches++;
+    }
 
     tracedPpu?.SplitTraceOutput.Drain(trace => Console.WriteLine(
         $"PPU SPLIT: frame={trace.Frame:N0}; scanline={trace.Scanline}; dot={trace.Dot}; " +
@@ -175,18 +191,30 @@ while (presenter.IsOpen)
 
     if (videoSink.CompletedFrame != lastPresentedFrame)
     {
+        profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
         videoSink.CompletedPixels.Span.CopyTo(surface.PixelSpan);
         presenter.Present(surface, ScalingMode.IntegerNearest);
+        if (profileSimulation)
+        {
+            profileVideoPresentationTicks += Stopwatch.GetTimestamp() - profileStarted;
+            profilePresentedFrames++;
+        }
         lastPresentedFrame = videoSink.CompletedFrame;
     }
 
+    profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
     int drained;
     while ((drained = audioSink.Drain(audioTransfer)) > 0)
+    {
         audio.Submit(audioTransfer.AsSpan(0, drained));
+        if (profileSimulation) profileAudioSamples += (ulong)drained;
+    }
+    if (profileSimulation) profileAudioTransferTicks += Stopwatch.GetTimestamp() - profileStarted;
 
     var now = timer.Elapsed;
     if (now - lastTitleUpdate >= TimeSpan.FromMilliseconds(500))
     {
+        var diagnosticsStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
         var diagnostics = host.Snapshot();
         if (!fpsStatisticsStarted && now >= TimeSpan.FromSeconds(2))
         {
@@ -258,10 +286,21 @@ while (presenter.IsOpen)
             haltReported = true;
         }
         lastTitleUpdate = now;
+        if (profileSimulation) profileDiagnosticsTicks += Stopwatch.GetTimestamp() - diagnosticsStarted;
     }
 
     if (profileSimulation && now - lastProfileReport >= TimeSpan.FromSeconds(5))
     {
+        PrintHostProfile(
+            now,
+            profileEventPumpTicks,
+            profileSimulationTicks,
+            profileVideoPresentationTicks,
+            profileAudioTransferTicks,
+            profileDiagnosticsTicks,
+            profileSimulationBatches,
+            profilePresentedFrames,
+            profileAudioSamples);
         PrintProfile(activeSimulator.GetProfileSnapshot());
         lastProfileReport = now;
     }
@@ -280,6 +319,16 @@ Console.WriteLine(
 Console.WriteLine($"Boot checks: reset-vector={final.ResetVectorObserved}, opcode={final.FirstOpcodeObserved}, vblank={final.FirstVblankObserved}, nmi={final.FirstNmiObserved}");
 if (profileSimulation)
 {
+    PrintHostProfile(
+        timer.Elapsed,
+        profileEventPumpTicks,
+        profileSimulationTicks,
+        profileVideoPresentationTicks,
+        profileAudioTransferTicks,
+        profileDiagnosticsTicks,
+        profileSimulationBatches,
+        profilePresentedFrames,
+        profileAudioSamples);
     PrintPerformanceCounters(activeSimulator.GetPerformanceCounters(), final.MasterCycles, final.CpuInstructions, final.PpuFrames);
     PrintProfile(activeSimulator.GetProfileSnapshot());
 }
@@ -303,12 +352,55 @@ static void PrintPerformanceCounters(
     Console.WriteLine($"  nets: resolutions={counters.NetResolutionAttempts:N0}; level-changes={counters.NetLevelChanges:N0} ({changedNetPercent:F1}%); pin-deliveries={counters.PinSampleDeliveries:N0}; receiver-deliveries={counters.ReceiverDeliveries:N0}");
 }
 
+static void PrintHostProfile(
+    TimeSpan wallTime,
+    long eventPumpTicks,
+    long simulationTicks,
+    long videoTicks,
+    long audioTicks,
+    long diagnosticsTicks,
+    ulong simulationBatches,
+    ulong presentedFrames,
+    ulong audioSamples)
+{
+    static double Seconds(long ticks) => (double)ticks / Stopwatch.Frequency;
+    static double Percent(long ticks, TimeSpan wall) => wall.TotalSeconds <= 0
+        ? 0
+        : Seconds(ticks) * 100.0 / wall.TotalSeconds;
+
+    Console.WriteLine($"PROFILE HOST: wall={wallTime.TotalSeconds:F2}s; batches={simulationBatches:N0}; presented-frames={presentedFrames:N0}; audio-samples={audioSamples:N0}");
+    Console.WriteLine($"PROFILE HOST SECTION: simulation={Seconds(simulationTicks):F2}s ({Percent(simulationTicks, wallTime):F1}% wall)");
+    Console.WriteLine($"PROFILE HOST SECTION: video-present={Seconds(videoTicks):F2}s ({Percent(videoTicks, wallTime):F1}% wall)");
+    Console.WriteLine($"PROFILE HOST SECTION: audio-transfer={Seconds(audioTicks):F2}s ({Percent(audioTicks, wallTime):F1}% wall)");
+    Console.WriteLine($"PROFILE HOST SECTION: event-pump={Seconds(eventPumpTicks):F2}s ({Percent(eventPumpTicks, wallTime):F1}% wall)");
+    Console.WriteLine($"PROFILE HOST SECTION: diagnostics/title={Seconds(diagnosticsTicks):F2}s ({Percent(diagnosticsTicks, wallTime):F1}% wall)");
+}
+
 static void PrintProfile(AxetosOS.Products.NES.VirtualHardware.Simulation.VirtualHardwareSimulationProfile profile)
 {
-    Console.WriteLine($"PROFILE: board={profile.BoardId}; compatibility-settles={profile.SettleCalls:N0}; direct-events={profile.PropagationEvents:N0}; component timing sampled below");
-    foreach (var component in profile.Components.OrderByDescending(static item => item.EvaluationTime).Take(8))
+    var componentTotal = profile.Components.Sum(static item => item.EvaluationTime.TotalSeconds);
+    Console.WriteLine(
+        $"PROFILE: board={profile.BoardId}; direct-events={profile.PropagationEvents:N0}; " +
+        $"net-transport={profile.NetResolutionTime.TotalSeconds:F2}s from {profile.TimedNetResolutionSamples:N0}/{profile.NetResolutionAttempts:N0} samples; " +
+        $"estimated-component-total={componentTotal:F2}s");
+
+    foreach (var component in profile.Components
+        .Where(static item => item.EvaluationCount != 0)
+        .OrderByDescending(static item => item.EvaluationTime)
+        .Take(12))
     {
-        Console.WriteLine($"PROFILE COMPONENT: {component.ComponentId}; evaluations={component.EvaluationCount:N0}; time={component.EvaluationTime.TotalSeconds:F2}s");
+        var share = componentTotal <= 0 ? 0 : component.EvaluationTime.TotalSeconds * 100.0 / componentTotal;
+        Console.WriteLine(
+            $"PROFILE COMPONENT: {component.ComponentId}; evaluations={component.EvaluationCount:N0}; " +
+            $"samples={component.TimedEvaluationCount:N0}; estimated={component.EvaluationTime.TotalSeconds:F2}s; component-share={share:F1}%");
+    }
+
+    foreach (var section in profile.Sections
+        .OrderByDescending(static item => item.EstimatedTime)
+        .Take(16))
+    {
+        Console.WriteLine(
+            $"PROFILE IC SECTION: {section.ComponentId}.{section.Section}; samples={section.SampleCount:N0}; estimated={section.EstimatedTime.TotalSeconds:F2}s");
     }
 }
 

@@ -18,6 +18,7 @@ public sealed class DigitalPin
     private int _inputActivationPhase;
     private ulong _inputActivationEdgeCount;
     private ulong _lastOutputPublicationSequence;
+    private bool _ownerWakeEnabled = true;
 
     public DigitalPin(string name, PinDirection direction)
     {
@@ -37,10 +38,25 @@ public sealed class DigitalPin
 
     internal VirtualHardwareComponent? OwnerComponent { get; set; }
     internal int OwnerComponentIndex { get; set; } = -1;
+    internal int NetDriverIndex { get; set; } = -1;
     internal ulong InputChangeMask { get; init; }
     internal DigitalInputActivation InputActivation { get; set; } = DigitalInputActivation.AnyChange;
     internal int InputActivationPeriod { get; set; } = 1;
     internal ulong InputActivationEdgeCount => _inputActivationEdgeCount;
+
+
+    /// <summary>
+    /// Package-owned activation latch for this input pin. The motherboard always
+    /// delivers the electrical level and this pin always records it first. A chip
+    /// may disable wake-up for ordinary data/address pins while its own select or
+    /// enable circuitry disconnects them. Activation/control pins normally remain
+    /// enabled so they can switch the internal circuitry back on.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void SetOwnerWakeEnabled(bool enabled) => _ownerWakeEnabled = enabled;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool OwnerWantsWake() => _ownerWakeEnabled;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Drive(
@@ -65,7 +81,7 @@ public sealed class DigitalPin
         var net = Net;
         if (net is null) return;
         if (OwnerComponent?.TryStageOutputChange(this) == true) return;
-        net.PropagateDriverChange();
+        net.PropagateDriverChange(this);
     }
 
     /// <summary>
@@ -83,7 +99,7 @@ public sealed class DigitalPin
         var net = Net;
         if (net is null) return;
         if (OwnerComponent?.TryStageOutputChange(this) == true) return;
-        net.PropagateDriverChange();
+        net.PropagateDriverChange(this);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -96,7 +112,7 @@ public sealed class DigitalPin
         var net = Net;
         if (net is null) return;
         if (OwnerComponent?.TryStageOutputChange(this) == true) return;
-        net.PropagateDriverChange();
+        net.PropagateDriverChange(this);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -112,7 +128,7 @@ public sealed class DigitalPin
     /// attached. The owning chip does not know or retain that trace.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void PublishStagedDriveChange() => Net?.PropagateDriverChange();
+    internal void PublishStagedDriveChange() => Net?.PropagateDriverChange(this);
 
     /// <summary>
     /// Publishes one chip reaction's changed physical package pins as a single
@@ -140,6 +156,14 @@ public sealed class DigitalPin
     }
 
     /// <summary>
+    /// Topology-compiled store for an output-only package pin. DigitalNet calls
+    /// this only for pins already proven non-input-capable, so the several
+    /// billion normal-run physical deliveries do not repeat a direction test.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void SetObservedOutputLevel(DigitalLevel level) => _sampledLevel = level;
+
+    /// <summary>
     /// Presents a resolved motherboard level to this package pin. A
     /// bidirectional pin accepts an incoming transition only while its own
     /// output driver is released, so a chip cannot react to its own drive.
@@ -157,25 +181,49 @@ public sealed class DigitalPin
             return false;
         }
 
-        var previous = _lastAcceptedInputLevel;
-        if (previous == level) return false;
+        // Ordinary AnyChange package pins dominate the NES motherboard. When a
+        // chip-owned select/enable gate is closed, the physical level and input
+        // history must still advance, but there is no reason to compare the old
+        // value or enter activation machinery merely to discover that the chip
+        // will not wake. This remains package-owned suppression: DigitalNet has
+        // already delivered the resolved electrical level unconditionally.
+        var activation = InputActivation;
+        if (activation == DigitalInputActivation.AnyChange)
+        {
+            if (!OwnerWantsWake())
+            {
+                _lastAcceptedInputLevel = level;
+                return false;
+            }
+
+            var previous = _lastAcceptedInputLevel;
+            if (previous == level) return false;
+            _lastAcceptedInputLevel = level;
+            return true;
+        }
+
+        var previousEdgeLevel = _lastAcceptedInputLevel;
+        if (previousEdgeLevel == level) return false;
         _lastAcceptedInputLevel = level;
 
-        var activatingEdge = InputActivation switch
+        if (activation == DigitalInputActivation.RisingEdge)
         {
-            DigitalInputActivation.RisingEdge => level == DigitalLevel.High && previous != DigitalLevel.High,
-            DigitalInputActivation.FallingEdge => level == DigitalLevel.Low && previous != DigitalLevel.Low,
-            _ => true
-        };
-        if (!activatingEdge) return false;
+            if (level != DigitalLevel.High) return false;
+        }
+        else if (activation == DigitalInputActivation.FallingEdge)
+        {
+            if (level != DigitalLevel.Low) return false;
+        }
 
+        // Edge counters/dividers belong only to edge-activated pins such as
+        // clocks. No ordinary bus pin pays this cost.
         _inputActivationEdgeCount++;
-        if (InputActivationPeriod == 1) return true;
+        if (InputActivationPeriod == 1) return OwnerWantsWake();
 
         _inputActivationPhase++;
         if (_inputActivationPhase < InputActivationPeriod) return false;
         _inputActivationPhase = 0;
-        return true;
+        return OwnerWantsWake();
     }
 
     internal void ResetInputActivationCounter()

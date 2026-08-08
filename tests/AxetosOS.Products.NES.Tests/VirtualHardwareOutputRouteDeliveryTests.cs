@@ -1,4 +1,4 @@
-using Xunit;
+﻿using Xunit;
 using AxetosOS.Products.NES.VirtualHardware.Boards;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Memory;
@@ -12,7 +12,7 @@ namespace AxetosOS.Products.NES.Tests;
 public sealed class VirtualHardwareOutputRouteDeliveryTests
 {
     [Fact]
-    public void Latched_data_delivery_is_processed_by_the_chip_while_output_remains_unchanged()
+    public void Latched_data_delivery_reaches_pin_without_waking_inactive_chip_or_changing_output()
     {
         var board = new VirtualHardwareBoard("test.output-route.latch");
         var vcc = board.Add(new DigitalPowerRail("vcc", DigitalLevel.High));
@@ -35,11 +35,11 @@ public sealed class VirtualHardwareOutputRouteDeliveryTests
         Assert.Equal(DigitalLevel.High, latch.D.Pins[0].SampledLevel);
         Assert.Equal(0, latch.LatchedKnownMask & 1);
         var counters = simulator.GetPerformanceCounters();
-        Assert.Equal(1UL, counters.ComponentEvaluations);
+        Assert.Equal(0UL, counters.ComponentEvaluations);
     }
 
     [Fact]
-    public void Sram_address_delivery_is_processed_by_the_chip_while_deselected_output_remains_unchanged()
+    public void Sram_address_delivery_reaches_pin_without_waking_deselected_chip_or_changing_output()
     {
         var board = new VirtualHardwareBoard("test.output-route.sram");
         var vcc = board.Add(new DigitalPowerRail("vcc", DigitalLevel.High));
@@ -67,6 +67,6 @@ public sealed class VirtualHardwareOutputRouteDeliveryTests
 
         Assert.Equal(DigitalLevel.High, ram.Address.Pins[0].SampledLevel);
         var counters = simulator.GetPerformanceCounters();
-        Assert.Equal(1UL, counters.ComponentEvaluations);
+        Assert.Equal(0UL, counters.ComponentEvaluations);
     }
 }

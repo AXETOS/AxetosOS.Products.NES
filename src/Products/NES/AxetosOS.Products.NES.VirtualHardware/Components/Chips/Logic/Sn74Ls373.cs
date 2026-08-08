@@ -39,6 +39,8 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent
         _latchEnableInputMask = LatchEnable.InputChangeMask;
         _outputEnableInputMask = OutputEnableBar.InputChangeMask;
         _dataInputMask = D.InputChangeMask;
+
+        D.SetOwnerWakeEnabled(false);
     
         InitializePackageState();
     }
@@ -53,6 +55,9 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent
     public byte LatchedKnownMask => _latchedKnownMask;
     public bool IsLatchedValueKnown => _latchedKnownMask == byte.MaxValue;
 
+    private void RefreshDataWakeState() =>
+        D.SetOwnerWakeEnabled(_wasPowered && LatchEnable.SampledLevel == DigitalLevel.High);
+
     private void InitializePackageState()
     {
         _latchedValue = 0;
@@ -60,6 +65,7 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent
         _wasPowered = false;
         _outputStateValid = false;
         _outputEnableState = DigitalLevel.High;
+        RefreshDataWakeState();
         Q.Release();
     }
 
@@ -86,23 +92,28 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent
             return;
         }
 
-        var powered = IsPowered();
-        if (!powered)
+        if (powerChanged)
         {
-            _wasPowered = false;
-            if (_outputEnableState != DigitalLevel.High || _outputStateValid) Q.Release();
-            _outputEnableState = DigitalLevel.High;
-            _outputStateValid = false;
-            return;
+            if (!IsPowered())
+            {
+                _wasPowered = false;
+                if (_outputEnableState != DigitalLevel.High || _outputStateValid) Q.Release();
+                _outputEnableState = DigitalLevel.High;
+                _outputStateValid = false;
+                RefreshDataWakeState();
+                return;
+            }
+
+            if (!_wasPowered)
+            {
+                // A real unclocked latch has no guaranteed power-up contents.
+                _latchedValue = 0;
+                _latchedKnownMask = 0;
+                _wasPowered = true;
+            }
         }
 
-        if (!_wasPowered)
-        {
-            // A real unclocked latch has no guaranteed power-up contents.
-            _latchedValue = 0;
-            _latchedKnownMask = 0;
-            _wasPowered = true;
-        }
+        if (powerChanged || latchEnableChanged) RefreshDataWakeState();
 
         if (LatchEnable.SampledLevel == DigitalLevel.High)
         {

@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 
@@ -146,6 +147,16 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         _controller2InputMask = ControllerData2.InputChangeMask;
         _controllerInputMask = _controller1InputMask | _controller2InputMask;
 
+        // D0-D7, /IRQ and /RES are synchronous CPU inputs in this package model:
+        // their physical levels must remain current, but an individual transition
+        // cannot do work until the next internal CPU clock boundary. /NMI remains
+        // edge-sensitive and therefore deliberately ungated.
+        Data.SetOwnerWakeEnabled(false);
+        IrqBar.SetOwnerWakeEnabled(false);
+        ResetBar.SetOwnerWakeEnabled(false);
+        ControllerData1.SetOwnerWakeEnabled(false);
+        ControllerData2.SetOwnerWakeEnabled(false);
+
         InitializePackageState();
     }
 
@@ -282,6 +293,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         M2.Drive(DigitalLevel.Low);
         ControllerRead1Bar.Drive(DigitalLevel.High);
         ControllerRead2Bar.Drive(DigitalLevel.High);
+        RefreshControllerInputWakeState();
         ControllerOut0.Drive(DigitalLevel.Low);
         ControllerOut1.Drive(DigitalLevel.Low);
         ControllerOut2.Drive(DigitalLevel.Low);
@@ -310,6 +322,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
                 ReleasePackageOutputs();
                 _packagePowered = false;
                 _resetAsserted = false;
+                RefreshControllerInputWakeState();
                 return;
             }
 
@@ -317,6 +330,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent
             {
                 InitializePackageState();
                 _packagePowered = true;
+                RefreshControllerInputWakeState();
             }
         }
 
@@ -357,6 +371,103 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         SampleControllerInputs();
         ClockApuCpuCycle();
         ExecuteBusCycle();
+    }
+
+    protected override void OnInputChangesProfiled(
+        ulong changedInputMask,
+        VirtualHardwareProfileSample sample)
+    {
+        // Data/IRQ/reset package pins are always electrically current, but most
+        // of them are sampled only at an internal CPU clock boundary.  Avoid
+        // entering the CPU/APU core at all for pin traffic that cannot cause an
+        // asynchronous action.
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        if (!_packagePowered && !powerChanged) return;
+        var clockChanged = (changedInputMask & _masterClockInputMask) != 0;
+        var nmiChanged = (changedInputMask & _nmiInputMask) != 0;
+        var controllerChanged = (changedInputMask & _controllerInputMask) != 0;
+        if (!powerChanged && !clockChanged && !nmiChanged && !controllerChanged) return;
+
+        if (!_packagePowered || powerChanged)
+        {
+            if (!IsPowered())
+            {
+                ReleasePackageOutputs();
+                _packagePowered = false;
+                _resetAsserted = false;
+                RefreshControllerInputWakeState();
+                return;
+            }
+
+            if (!_packagePowered)
+            {
+                InitializePackageState();
+                _packagePowered = true;
+                RefreshControllerInputWakeState();
+            }
+        }
+
+        if (nmiChanged) SampleNmiEdge();
+        if (controllerChanged)
+        {
+            var selectedControllerChanged =
+                ((changedInputMask & _controller1InputMask) != 0 && ControllerRead1Bar.DriveLevel == DigitalLevel.Low)
+                || ((changedInputMask & _controller2InputMask) != 0 && ControllerRead2Bar.DriveLevel == DigitalLevel.Low);
+            if (selectedControllerChanged)
+            {
+                var controllerStarted = sample.BeginSection();
+                SampleControllerInputs();
+                sample.EndSection(VirtualHardwareProfileSection.Rp2A03ControllerIo, controllerStarted);
+            }
+        }
+        if (!clockChanged) return;
+
+        // The physical CLK pin still receives both Low and High levels, but
+        // this package declares rising-edge activation for that input. Reaching
+        // this point therefore already means a real Low -> High clock edge.
+        if (MasterClock.SampledLevel != DigitalLevel.High) return;
+
+        // The chip-owned CLK input counts every physical master-clock rising
+        // edge but wakes the full package only at the internal M2 divider
+        // boundary. Reaching this point is therefore one M2 half-cycle.
+        _m2Level = _m2Level == DigitalLevel.High ? DigitalLevel.Low : DigitalLevel.High;
+        M2.Drive(_m2Level);
+        if (_m2Level != DigitalLevel.High) return;
+
+        if (ResetBar.SampledLevel == DigitalLevel.Low)
+        {
+            if (!_resetAsserted) BeginResetSequence();
+            _resetAsserted = true;
+            return;
+        }
+
+        _resetAsserted = false;
+        RisingEdgeCount++;
+        // Controller data can legitimately remain at the same electrical level
+        // for consecutive reads, so sample once at the CPU cycle boundary as
+        // well as on actual IN0/IN1 transitions.
+        var controllerStartedAtCpuBoundary = sample.BeginSection();
+        SampleControllerInputs();
+        sample.EndSection(VirtualHardwareProfileSection.Rp2A03ControllerIo, controllerStartedAtCpuBoundary);
+
+        var apuStarted = sample.BeginSection();
+        ClockApuCpuCycle();
+        sample.EndSection(VirtualHardwareProfileSection.Rp2A03Apu, apuStarted);
+
+        var dmaPath = _dmcFetchActive || _dmaPending || _dmaActive || (_dmc.NeedsSample && _busRead);
+        var busStarted = sample.BeginSection();
+        ExecuteBusCycle();
+        sample.EndSection(
+            dmaPath ? VirtualHardwareProfileSection.Rp2A03Dma : VirtualHardwareProfileSection.Rp2A03CpuCore,
+            busStarted);
+    }
+
+    private void RefreshControllerInputWakeState()
+    {
+        ControllerData1.SetOwnerWakeEnabled(
+            _packagePowered && ControllerRead1Bar.DriveLevel == DigitalLevel.Low);
+        ControllerData2.SetOwnerWakeEnabled(
+            _packagePowered && ControllerRead2Bar.DriveLevel == DigitalLevel.Low);
     }
 
     private bool IsPowered() =>
@@ -1015,11 +1126,13 @@ public sealed class Rp2A03 : VirtualHardwareComponent
         if (readController2) _controllerRead2Valid = false;
         ControllerRead1Bar.Drive(readController1 ? DigitalLevel.Low : DigitalLevel.High);
         ControllerRead2Bar.Drive(readController2 ? DigitalLevel.Low : DigitalLevel.High);
+        RefreshControllerInputWakeState();
     }
     private void BeginWrite(ushort address, byte value)
     {
         ControllerRead1Bar.Drive(DigitalLevel.High);
         ControllerRead2Bar.Drive(DigitalLevel.High);
+        RefreshControllerInputWakeState();
         _sync = false;
         Address.Drive(address);
         Data.Drive(value);

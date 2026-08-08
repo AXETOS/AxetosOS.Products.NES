@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 
@@ -122,6 +123,22 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _cpuChipSelectInputMask = ChipSelectBar.InputChangeMask;
         _cpuPortInputMask = _cpuOrdinaryInputMask | _cpuChipSelectInputMask;
 
+        // RS/RW/D are physically present at the package pins on every CPU bus
+        // transition, but they cannot wake the register circuit while /CS is
+        // inactive or after the current selected transaction has already latched.
+        // /CS itself remains ungated and is therefore the activation switch.
+        RegisterSelect.SetOwnerWakeEnabled(false);
+        CpuData.SetOwnerWakeEnabled(false);
+        CpuReadWrite.SetOwnerWakeEnabled(false);
+
+        // External VRAM data is sampled synchronously by the internal transaction
+        // sequencer on a later PPU clock phase. Changes on AD0-AD7 must therefore
+        // update the physical package pins without recursively waking the PPU.
+        // EXT is not consumed by this package model and likewise cannot activate
+        // internal work merely because an external level changes.
+        MultiplexedAddressData.SetOwnerWakeEnabled(false);
+        Extension.SetOwnerWakeEnabled(false);
+
         InitializePackageState();
     }
 
@@ -181,6 +198,17 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     public ulong VblankSuppressionCount { get; private set; }
     public ulong RenderingOamWriteCount { get; private set; }
     public ulong ForcedBlankPaletteOutputCount { get; private set; }
+
+    private void RefreshCpuPortWakeState()
+    {
+        var enabled = _packagePowered
+            && !_resetAsserted
+            && ChipSelectBar.SampledLevel != DigitalLevel.High
+            && !_cpuTransactionActive;
+        RegisterSelect.SetOwnerWakeEnabled(enabled);
+        CpuData.SetOwnerWakeEnabled(enabled);
+        CpuReadWrite.SetOwnerWakeEnabled(enabled);
+    }
 
     private bool Powered => Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
 
@@ -318,6 +346,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                 _resetAsserted = false;
                 _cpuTransactionActive = false;
                 _cpuTransactionRead = false;
+                RefreshCpuPortWakeState();
                 CpuData.Release();
                 return;
             }
@@ -327,6 +356,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
                 InitializePackageState();
                 _packagePowered = true;
                 newlyPowered = true;
+                RefreshCpuPortWakeState();
             }
         }
 
@@ -334,11 +364,13 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         {
             if (!resetChanged || ResetBar.SampledLevel == DigitalLevel.Low) return;
             _resetAsserted = false;
+            RefreshCpuPortWakeState();
         }
         else if ((newlyPowered || resetChanged) && ResetBar.SampledLevel == DigitalLevel.Low)
         {
             ApplyResetState();
             _resetAsserted = true;
+            RefreshCpuPortWakeState();
             return;
         }
 
@@ -351,6 +383,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
             // this selected cycle, later RS/RW/D settling is electrically
             // visible at the pins but cannot create another register access.
             HandleCpuPort();
+            RefreshCpuPortWakeState();
             outputsMayHaveChanged = true;
         }
 
@@ -378,6 +411,123 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         if (!outputsMayHaveChanged) return;
         DriveVramBus();
         DriveNmi();
+    }
+
+    protected override void OnInputChangesProfiled(
+        ulong changedInputMask,
+        VirtualHardwareProfileSample sample)
+    {
+        // Every package pin has already accepted its new electrical level before
+        // this method is entered.  Keep the chip smart: if power is absent, or
+        // if ordinary CPU-register pins move while /CS is definitely inactive,
+        // stop here before touching any PPU state.  /CS itself always wakes the
+        // register interface so selection/deselection is handled immediately.
+        var powerChanged = (changedInputMask & _powerInputMask) != 0;
+        if (!_packagePowered && !powerChanged) return;
+
+        var clockChanged = (changedInputMask & _clockInputMask) != 0;
+        var resetChanged = (changedInputMask & _resetInputMask) != 0;
+        var chipSelectChanged = (changedInputMask & _cpuChipSelectInputMask) != 0;
+        var ordinaryCpuPortChanged = (changedInputMask & _cpuOrdinaryInputMask) != 0;
+        if (!powerChanged && !clockChanged && !resetChanged && !chipSelectChanged)
+        {
+            if (!ordinaryCpuPortChanged) return;
+            if (ChipSelectBar.SampledLevel == DigitalLevel.High) return;
+        }
+
+        var newlyPowered = false;
+        if (!_packagePowered || (changedInputMask & _powerInputMask) != 0)
+        {
+            if (!Powered)
+            {
+                ReleasePackageOutputs();
+                _packagePowered = false;
+                _resetAsserted = false;
+                _cpuTransactionActive = false;
+                _cpuTransactionRead = false;
+                RefreshCpuPortWakeState();
+                CpuData.Release();
+                return;
+            }
+
+            if (!_packagePowered)
+            {
+                InitializePackageState();
+                _packagePowered = true;
+                newlyPowered = true;
+                RefreshCpuPortWakeState();
+            }
+        }
+
+        if (_resetAsserted)
+        {
+            if (!resetChanged || ResetBar.SampledLevel == DigitalLevel.Low) return;
+            _resetAsserted = false;
+            RefreshCpuPortWakeState();
+        }
+        else if ((newlyPowered || resetChanged) && ResetBar.SampledLevel == DigitalLevel.Low)
+        {
+            ApplyResetState();
+            _resetAsserted = true;
+            RefreshCpuPortWakeState();
+            return;
+        }
+
+        var outputsMayHaveChanged = false;
+        if ((changedInputMask & _cpuPortInputMask) != 0
+            && (chipSelectChanged || ChipSelectBar.SampledLevel != DigitalLevel.High)
+            && (chipSelectChanged || !_cpuTransactionActive))
+        {
+            // /CS owns the transaction boundary. Once the CPU port has latched
+            // this selected cycle, later RS/RW/D settling is electrically
+            // visible at the pins but cannot create another register access.
+            var cpuPortStarted = sample.BeginSection();
+            HandleCpuPort();
+            sample.EndSection(VirtualHardwareProfileSection.Rp2C02CpuPort, cpuPortStarted);
+            RefreshCpuPortWakeState();
+            outputsMayHaveChanged = true;
+        }
+
+        if (clockChanged && Clock.SampledLevel == DigitalLevel.High)
+        {
+            // The chip-owned CLK input counts every physical master-clock rise
+            // and wakes this package only every fourth rise. Reaching this point
+            // is exactly one RP2C02 PPU dot.
+            var rasterStarted = sample.BeginSection();
+            AdvanceRaster();
+            sample.EndSection(VirtualHardwareProfileSection.Rp2C02Raster, rasterStarted);
+
+            var vramStarted = sample.BeginSection();
+            AdvanceVramTransaction();
+            sample.EndSection(VirtualHardwareProfileSection.Rp2C02Vram, vramStarted);
+
+            var backgroundStarted = sample.BeginSection();
+            AdvanceBackgroundPipeline();
+            sample.EndSection(VirtualHardwareProfileSection.Rp2C02Background, backgroundStarted);
+
+            var spriteStarted = sample.BeginSection();
+            AdvanceSpritePipeline();
+            sample.EndSection(VirtualHardwareProfileSection.Rp2C02Sprite, spriteStarted);
+
+            if (Scanline < 240 && Dot is >= 1 and <= 256)
+            {
+                var videoStarted = sample.BeginSection();
+                VideoOutput.Drive(new RicohVideoPixelSample(
+                    Frame,
+                    Dot - 1,
+                    Scanline,
+                    OutputColorCode,
+                    ColorEmphasis));
+                sample.EndSection(VirtualHardwareProfileSection.Rp2C02VideoOutput, videoStarted);
+            }
+            outputsMayHaveChanged = true;
+        }
+
+        if (!outputsMayHaveChanged) return;
+        var outputsStarted = sample.BeginSection();
+        DriveVramBus();
+        DriveNmi();
+        sample.EndSection(VirtualHardwareProfileSection.Rp2C02PackageOutputs, outputsStarted);
     }
 
     private void AdvanceRaster()

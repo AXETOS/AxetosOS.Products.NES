@@ -28,6 +28,14 @@ public sealed class DigitalNet
     private NetResolverKind _resolverKind;
     private DigitalPin? _compiledSingleDriverSource;
     private DigitalPin[] _compiledSingleDriverObservers = [];
+    private DriverState[] _compiledDriverStates = [];
+    private int _strongLowDrivers;
+    private int _strongHighDrivers;
+    private int _strongUnknownDrivers;
+    private int _weakLowDrivers;
+    private int _weakHighDrivers;
+    private int _weakUnknownDrivers;
+    private ulong _lastBatchPublicationSequence;
 
     public DigitalNet(string name)
     {
@@ -43,6 +51,8 @@ public sealed class DigitalNet
 
     [ThreadStatic]
     private static PropagationFrame? s_freePropagationFrames;
+    [ThreadStatic]
+    private static ulong s_batchPublicationSequence;
 
     /// <summary>
     /// Publishes one package's complete output change-set through motherboard
@@ -56,19 +66,39 @@ public sealed class DigitalNet
     internal static void PublishChangedOutputPins(DigitalPin[] changedPins, int count)
     {
         var frame = AcquirePropagationFrame();
+        var publicationSequence = ++s_batchPublicationSequence;
+        if (publicationSequence == 0) publicationSequence = ++s_batchPublicationSequence;
+
         try
         {
             VirtualHardwareSimulator? diagnostics = null;
 
+            // One package reaction can change several output drivers before the
+            // physical package boundary publishes them. Update every affected
+            // multi-driver trace's compiled electrical aggregate first, so two
+            // changed package pins that happen to share one trace are resolved
+            // from the complete final package state rather than an intermediate
+            // software ordering. This is still synchronous propagation, not a
+            // queued event phase.
             for (var index = 0; index < count; index++)
             {
                 var net = changedPins[index].Net;
                 if (net is null) continue;
+                net.UpdateIncrementalDriverState(changedPins[index]);
+            }
+
+            // Resolve each physically affected trace once. A package can expose
+            // more than one output on a shared trace; the old second resolution
+            // was guaranteed to observe no additional package state. Deduplicating
+            // that trace resolution preserves the same final electrical delivery
+            // while avoiding redundant resolver work.
+            for (var index = 0; index < count; index++)
+            {
+                var pin = changedPins[index];
+                var net = pin.Net;
+                if (net is null || !net.TryMarkBatchPresentation(publicationSequence)) continue;
                 diagnostics ??= net.Diagnostics;
-                // If two package output pins happen to share one physical trace,
-                // the first pass resolves the final states of both pins; a later
-                // duplicate pass observes no level change and is therefore inert.
-                net.PresentDriverChange(frame);
+                net.PresentCurrentDriverState(pin, frame);
             }
 
             for (var index = 0; index < frame.Count; index++)
@@ -131,7 +161,7 @@ public sealed class DigitalNet
         if (_compiled)
         {
             CompileTopology();
-            PropagateDriverChange();
+            if (ResolveAndPresent()) ReactPresentedInputs();
         }
     }
 
@@ -171,11 +201,11 @@ public sealed class DigitalNet
         if (Level == resolved) return;
 
         Level = resolved;
-        source.SetObservedLevel(resolved);
+        source.SetObservedOutputLevel(resolved);
 
         var observers = _compiledSingleDriverObservers;
         for (var index = 0; index < observers.Length; index++)
-            observers[index].SetObservedLevel(resolved);
+            observers[index].SetObservedOutputLevel(resolved);
 
         var routes = _inputRoutes;
         if (routes.Length == 2)
@@ -215,35 +245,195 @@ public sealed class DigitalNet
     }
 
     /// <summary>
+    /// Diagnostics-only counterpart of PropagateCompiledSingleDriverFast. It
+    /// preserves the exact compiled transport path used by normal execution,
+    /// but samples electrical transport and receiver package timing.
+    /// </summary>
+    internal void PropagateCompiledSingleDriverProfiled(VirtualHardwareSimulator diagnostics)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostics);
+        diagnostics.RecordNetResolutionAttempt();
+        var profileStarted = diagnostics.BeginNetResolutionTimingSample();
+
+        var source = _compiledSingleDriverSource!;
+        var resolved = source.DriveLevel;
+        if (Level == resolved)
+        {
+            diagnostics.EndNetResolutionTimingSample(profileStarted);
+            return;
+        }
+
+        Level = resolved;
+        source.SetObservedOutputLevel(resolved);
+
+        var observers = _compiledSingleDriverObservers;
+        for (var index = 0; index < observers.Length; index++)
+            observers[index].SetObservedOutputLevel(resolved);
+
+        diagnostics.RecordNetLevelChange(observers.Length + _inputRoutes.Length);
+
+        var routes = _inputRoutes;
+        if (routes.Length == 2)
+        {
+            var wake0 = routes[0].AcceptCompiledInputLevel(resolved);
+            var wake1 = routes[1].AcceptCompiledInputLevel(resolved);
+            diagnostics.EndNetResolutionTimingSample(profileStarted);
+            if (wake0) routes[0].ReactCompiledDirect(diagnostics);
+            if (wake1) routes[1].ReactCompiledDirect(diagnostics);
+            return;
+        }
+
+        if (routes.Length == 1)
+        {
+            var wake = routes[0].AcceptCompiledInputLevel(resolved);
+            diagnostics.EndNetResolutionTimingSample(profileStarted);
+            if (wake) routes[0].ReactCompiledDirect(diagnostics);
+            return;
+        }
+
+        ulong wakeRoutes = 0;
+        var routeCount = Math.Min(routes.Length, 64);
+        for (var index = 0; index < routeCount; index++)
+        {
+            if (routes[index].AcceptCompiledInputLevel(resolved))
+                wakeRoutes |= 1UL << index;
+        }
+        bool[]? extraWakeRoutes = null;
+        if (routes.Length > 64)
+        {
+            extraWakeRoutes = new bool[routes.Length - 64];
+            for (var index = 64; index < routes.Length; index++)
+            {
+                // More than 64 receivers is extremely uncommon. Profiling may
+                // allocate here, but normal execution never enters this method.
+                extraWakeRoutes[index - 64] = routes[index].AcceptCompiledInputLevel(resolved);
+            }
+        }
+
+        diagnostics.EndNetResolutionTimingSample(profileStarted);
+
+        for (var index = 0; index < routeCount; index++)
+        {
+            if ((wakeRoutes & (1UL << index)) != 0)
+                routes[index].ReactCompiledDirect(diagnostics);
+        }
+        if (extraWakeRoutes is not null)
+        {
+            for (var index = 64; index < routes.Length; index++)
+            {
+                if (extraWakeRoutes[index - 64])
+                    routes[index].ReactCompiledDirect(diagnostics);
+            }
+        }
+    }
+
+    /// <summary>
     /// Called by an attached output pin at the exact point its drive changes
     /// outside a package reaction. The physical consequence is presented and
     /// receivers react synchronously before this call returns.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void PropagateDriverChange()
+    internal void PropagateDriverChange(DigitalPin source)
     {
         if (!_compiled) return;
-        if (!PresentDriverChange()) return;
+        UpdateIncrementalDriverState(source);
+        if (!PresentCurrentDriverState(source, null)) return;
         ReactPresentedInputs();
     }
 
     /// <summary>
-    /// Resolves and presents this trace but deliberately does not execute any
-    /// receiving package. Used by a package output change-set so all of that
-    /// package's changed pins become visible before receivers react.
+    /// Resolves and presents this trace from its current package-driver state but
+    /// deliberately does not execute receiving packages. The one-driver trace
+    /// retains its direct source fast path; three-or-more-driver traces use a
+    /// compiled electrical aggregate updated whenever a driver publishes.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool PresentDriverChange()
+    internal bool PresentDriverChange(DigitalPin source)
     {
         if (!_compiled) return false;
-        return ResolveAndPresent();
+        UpdateIncrementalDriverState(source);
+        return PresentCurrentDriverState(source, null);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool PresentDriverChange(PropagationFrame receivers)
+    private bool PresentCurrentDriverState(DigitalPin source, PropagationFrame? receivers)
     {
         if (!_compiled) return false;
-        return ResolveAndPresent(receivers);
+        return IsCompiledSingleDriver(source)
+            ? PresentResolvedSingleDriver(source, receivers)
+            : ResolveAndPresent(receivers);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsCompiledSingleDriver(DigitalPin source) =>
+        _resolverKind == NetResolverKind.SingleDriver
+        && ReferenceEquals(_driverPins[0], source)
+        && Diagnostics is null;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryMarkBatchPresentation(ulong publicationSequence)
+    {
+        if (_lastBatchPublicationSequence == publicationSequence) return false;
+        _lastBatchPublicationSequence = publicationSequence;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool PresentResolvedSingleDriver(DigitalPin source, PropagationFrame? receivers)
+    {
+        var drive = source.DriveLevel;
+        var resolved = drive is DigitalLevel.Low or DigitalLevel.High ? drive : DigitalLevel.Unknown;
+        if (Level == resolved) return false;
+        Level = resolved;
+
+        var observers = _observerPins;
+        for (var index = 0; index < observers.Length; index++)
+            observers[index].SetObservedOutputLevel(resolved);
+
+        var routes = _inputRoutes;
+        if (routes.Length == 1) routes[0].Accept(resolved, receivers);
+        else if (routes.Length == 2)
+        {
+            routes[0].Accept(resolved, receivers);
+            routes[1].Accept(resolved, receivers);
+        }
+        else
+        {
+            for (var index = 0; index < routes.Length; index++)
+                routes[index].Accept(resolved, receivers);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Updates the topology-compiled driver aggregate for traces with at least
+    /// three possible drivers. This preserves the exact strong-over-weak and
+    /// contention semantics of a full driver scan, but turns the common CPU/PPU
+    /// shared-bus resolution into constant work per published driver change.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void UpdateIncrementalDriverState(DigitalPin source)
+    {
+        if (_resolverKind != NetResolverKind.MultipleDrivers) return;
+
+        var driverIndex = source.NetDriverIndex;
+        if ((uint)driverIndex >= (uint)_compiledDriverStates.Length)
+        {
+            // This can occur only if topology metadata is stale. Rebuilding the
+            // aggregate keeps the electrical model correct rather than trusting
+            // an invalid compiled driver index.
+            RebuildIncrementalDriverState();
+            driverIndex = source.NetDriverIndex;
+            if ((uint)driverIndex >= (uint)_compiledDriverStates.Length) return;
+        }
+
+        var oldState = _compiledDriverStates[driverIndex];
+        var newState = new DriverState(source.DriveLevel, source.DriveStrength);
+        if (oldState.Level == newState.Level && oldState.Strength == newState.Strength) return;
+
+        RemoveDriverState(oldState);
+        AddDriverState(newState);
+        _compiledDriverStates[driverIndex] = newState;
     }
 
     /// <summary>
@@ -256,10 +446,15 @@ public sealed class DigitalNet
     {
         var routes = _inputRoutes;
         var diagnostics = Diagnostics;
-        for (var index = 0; index < routes.Length; index++)
+        if (diagnostics is null)
         {
-            routes[index].React(diagnostics);
+            for (var index = 0; index < routes.Length; index++)
+                routes[index].ReactFast();
+            return;
         }
+
+        for (var index = 0; index < routes.Length; index++)
+            routes[index].ReactProfiled(diagnostics);
     }
 
     public DigitalLevel Resolve()
@@ -273,35 +468,93 @@ public sealed class DigitalNet
     private bool ResolveAndPresent(PropagationFrame? receivers = null)
     {
         var diagnostics = Diagnostics;
-        diagnostics?.RecordNetResolutionAttempt();
+        return diagnostics is null
+            ? ResolveAndPresentFast(receivers)
+            : ResolveAndPresentProfiled(receivers, diagnostics);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool ResolveAndPresentFast(PropagationFrame? receivers)
+    {
+        var resolved = _resolverKind switch
+        {
+            NetResolverKind.Floating => DigitalLevel.Unknown,
+            NetResolverKind.SingleDriver => ResolveSingleDriver(_driverPins[0]),
+            NetResolverKind.TwoDrivers => ResolveTwoDrivers(_driverPins[0], _driverPins[1]),
+            _ => ResolveIncrementalMultipleDrivers()
+        };
+
+        if (Level == resolved) return false;
+        Level = resolved;
+
+        var observers = _observerPins;
+        for (var index = 0; index < observers.Length; index++)
+            observers[index].SetObservedOutputLevel(resolved);
+
+        var routes = _inputRoutes;
+        if (routes.Length == 1)
+        {
+            routes[0].Accept(resolved, receivers);
+        }
+        else if (routes.Length == 2)
+        {
+            routes[0].Accept(resolved, receivers);
+            routes[1].Accept(resolved, receivers);
+        }
+        else
+        {
+            for (var index = 0; index < routes.Length; index++)
+                routes[index].Accept(resolved, receivers);
+        }
+
+        return true;
+    }
+
+    private bool ResolveAndPresentProfiled(
+        PropagationFrame? receivers,
+        VirtualHardwareSimulator diagnostics)
+    {
+        diagnostics.RecordNetResolutionAttempt();
+        var profileStarted = diagnostics.BeginNetResolutionTimingSample();
 
         var resolved = _resolverKind switch
         {
             NetResolverKind.Floating => DigitalLevel.Unknown,
             NetResolverKind.SingleDriver => ResolveSingleDriver(_driverPins[0]),
-            _ => ResolveMultipleDrivers(_driverPins)
+            NetResolverKind.TwoDrivers => ResolveTwoDrivers(_driverPins[0], _driverPins[1]),
+            _ => ResolveIncrementalMultipleDrivers()
         };
 
-        if (Level == resolved) return false;
+        if (Level == resolved)
+        {
+            diagnostics.EndNetResolutionTimingSample(profileStarted);
+            return false;
+        }
 
         Level = resolved;
-        diagnostics?.RecordNetLevelChange(_observerPins.Length + _inputRoutes.Length);
+        diagnostics.RecordNetLevelChange(_observerPins.Length + _inputRoutes.Length);
 
         var observers = _observerPins;
         for (var index = 0; index < observers.Length; index++)
-        {
-            observers[index].SetObservedLevel(resolved);
-        }
+            observers[index].SetObservedOutputLevel(resolved);
 
-        // All receiver pins on this trace accept the new physical level before
-        // any receiving package executes. Each package merely accumulates the
-        // changed pin mask until the direct reaction phase begins.
         var routes = _inputRoutes;
-        for (var index = 0; index < routes.Length; index++)
+        if (routes.Length == 1)
         {
-            routes[index].Accept(resolved, receivers);
+            routes[0].Accept(resolved, receivers);
+        }
+        else if (routes.Length == 2)
+        {
+            routes[0].Accept(resolved, receivers);
+            routes[1].Accept(resolved, receivers);
+        }
+        else
+        {
+            for (var index = 0; index < routes.Length; index++)
+                routes[index].Accept(resolved, receivers);
         }
 
+        diagnostics.EndNetResolutionTimingSample(profileStarted);
         return true;
     }
 
@@ -314,57 +567,121 @@ public sealed class DigitalNet
         _ => DigitalLevel.Unknown
     };
 
-    private static DigitalLevel ResolveMultipleDrivers(DigitalPin[] drivers)
+    /// <summary>
+    /// Common shared-line resolver with exactly two possible drivers. This is
+    /// electrically identical to the generic resolver but avoids its array
+    /// scan/state-machine overhead on every transition.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static DigitalLevel ResolveTwoDrivers(DigitalPin first, DigitalPin second)
     {
-        var strongest = DigitalDriveStrength.Weak;
-        var foundDriver = false;
-        var sawLow = false;
-        var sawHigh = false;
-        var sawUnknown = false;
+        var firstLevel = first.DriveLevel;
+        var secondLevel = second.DriveLevel;
+
+        if (firstLevel == DigitalLevel.HighImpedance) return ResolveSingleDriver(second);
+        if (secondLevel == DigitalLevel.HighImpedance) return ResolveSingleDriver(first);
+
+        var firstStrength = first.DriveStrength;
+        var secondStrength = second.DriveStrength;
+        if (firstStrength > secondStrength) return ResolveSingleDriver(first);
+        if (secondStrength > firstStrength) return ResolveSingleDriver(second);
+
+        if ((firstLevel == DigitalLevel.Low && secondLevel == DigitalLevel.High) ||
+            (firstLevel == DigitalLevel.High && secondLevel == DigitalLevel.Low))
+        {
+            return DigitalLevel.Contention;
+        }
+
+        if (firstLevel == secondLevel)
+        {
+            return firstLevel is DigitalLevel.Low or DigitalLevel.High
+                ? firstLevel
+                : DigitalLevel.Unknown;
+        }
+
+        return DigitalLevel.Unknown;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private DigitalLevel ResolveIncrementalMultipleDrivers()
+    {
+        if ((_strongLowDrivers | _strongHighDrivers | _strongUnknownDrivers) != 0)
+        {
+            if (_strongLowDrivers != 0 && _strongHighDrivers != 0) return DigitalLevel.Contention;
+            if (_strongUnknownDrivers != 0) return DigitalLevel.Unknown;
+            return _strongHighDrivers != 0 ? DigitalLevel.High : DigitalLevel.Low;
+        }
+
+        if ((_weakLowDrivers | _weakHighDrivers | _weakUnknownDrivers) == 0)
+            return DigitalLevel.Unknown;
+        if (_weakLowDrivers != 0 && _weakHighDrivers != 0) return DigitalLevel.Contention;
+        if (_weakUnknownDrivers != 0) return DigitalLevel.Unknown;
+        return _weakHighDrivers != 0 ? DigitalLevel.High : DigitalLevel.Low;
+    }
+
+    private void RebuildIncrementalDriverState()
+    {
+        _strongLowDrivers = 0;
+        _strongHighDrivers = 0;
+        _strongUnknownDrivers = 0;
+        _weakLowDrivers = 0;
+        _weakHighDrivers = 0;
+        _weakUnknownDrivers = 0;
+
+        if (_resolverKind != NetResolverKind.MultipleDrivers)
+        {
+            _compiledDriverStates = [];
+            return;
+        }
+
+        var drivers = _driverPins;
+        if (_compiledDriverStates.Length != drivers.Length)
+            _compiledDriverStates = new DriverState[drivers.Length];
 
         for (var index = 0; index < drivers.Length; index++)
         {
             var pin = drivers[index];
-            var level = pin.DriveLevel;
-            if (level == DigitalLevel.HighImpedance) continue;
+            pin.NetDriverIndex = index;
+            var state = new DriverState(pin.DriveLevel, pin.DriveStrength);
+            _compiledDriverStates[index] = state;
+            AddDriverState(state);
+        }
+    }
 
-            var strength = pin.DriveStrength;
-            if (!foundDriver || strength > strongest)
-            {
-                foundDriver = true;
-                strongest = strength;
-                sawLow = false;
-                sawHigh = false;
-                sawUnknown = false;
-            }
-            else if (strength < strongest)
-            {
-                continue;
-            }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AddDriverState(DriverState state)
+    {
+        if (state.Level == DigitalLevel.HighImpedance) return;
 
-            switch (level)
-            {
-                case DigitalLevel.Low:
-                    sawLow = true;
-                    break;
-                case DigitalLevel.High:
-                    sawHigh = true;
-                    break;
-                default:
-                    sawUnknown = true;
-                    break;
-            }
+        if (state.Strength == DigitalDriveStrength.Strong)
+        {
+            if (state.Level == DigitalLevel.Low) _strongLowDrivers++;
+            else if (state.Level == DigitalLevel.High) _strongHighDrivers++;
+            else _strongUnknownDrivers++;
+            return;
         }
 
-        return !foundDriver
-            ? DigitalLevel.Unknown
-            : sawLow && sawHigh
-                ? DigitalLevel.Contention
-                : sawUnknown
-                    ? DigitalLevel.Unknown
-                    : sawHigh
-                        ? DigitalLevel.High
-                        : DigitalLevel.Low;
+        if (state.Level == DigitalLevel.Low) _weakLowDrivers++;
+        else if (state.Level == DigitalLevel.High) _weakHighDrivers++;
+        else _weakUnknownDrivers++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RemoveDriverState(DriverState state)
+    {
+        if (state.Level == DigitalLevel.HighImpedance) return;
+
+        if (state.Strength == DigitalDriveStrength.Strong)
+        {
+            if (state.Level == DigitalLevel.Low) _strongLowDrivers--;
+            else if (state.Level == DigitalLevel.High) _strongHighDrivers--;
+            else _strongUnknownDrivers--;
+            return;
+        }
+
+        if (state.Level == DigitalLevel.Low) _weakLowDrivers--;
+        else if (state.Level == DigitalLevel.High) _weakHighDrivers--;
+        else _weakUnknownDrivers--;
     }
 
     internal void CompileTopology()
@@ -383,8 +700,10 @@ public sealed class DigitalNet
         {
             0 => NetResolverKind.Floating,
             1 => NetResolverKind.SingleDriver,
+            2 => NetResolverKind.TwoDrivers,
             _ => NetResolverKind.MultipleDrivers
         };
+        RebuildIncrementalDriverState();
 
         _compiledSingleDriverSource = null;
         _compiledSingleDriverObservers = [];
@@ -439,6 +758,13 @@ public sealed class DigitalNet
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReactCompiledDirect(VirtualHardwareSimulator diagnostics)
+        {
+            if (_component is null) return;
+            diagnostics.DeliverInputImmediate(_componentIndex, _component, _inputMask);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Accept(DigitalLevel level, PropagationFrame? receivers)
         {
             if (_component is null || !_pin.TryAcceptInputLevel(level)) return;
@@ -447,20 +773,21 @@ public sealed class DigitalNet
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void React(VirtualHardwareSimulator? diagnostics)
+        public void ReactFast()
         {
             if (_component is null) return;
-
             var changedInputMask = _component.TakePendingInputChangesForDirectReaction();
-            if (changedInputMask == 0) return;
-
-            if (diagnostics is null)
-            {
+            if (changedInputMask != 0)
                 _component.ReceiveInputChanges(changedInputMask);
-                return;
-            }
+        }
 
-            diagnostics.DeliverInputImmediate(_componentIndex, _component, changedInputMask);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReactProfiled(VirtualHardwareSimulator diagnostics)
+        {
+            if (_component is null) return;
+            var changedInputMask = _component.TakePendingInputChangesForDirectReaction();
+            if (changedInputMask != 0)
+                diagnostics.DeliverInputImmediate(_componentIndex, _component, changedInputMask);
         }
     }
 
@@ -489,6 +816,10 @@ public sealed class DigitalNet
         }
     }
 
+    private readonly record struct DriverState(
+        DigitalLevel Level,
+        DigitalDriveStrength Strength);
+
     private readonly record struct ReceiverEntry(
         VirtualHardwareComponent Component,
         int ComponentIndex);
@@ -497,6 +828,7 @@ public sealed class DigitalNet
     {
         Floating,
         SingleDriver,
+        TwoDrivers,
         MultipleDrivers
     }
 }

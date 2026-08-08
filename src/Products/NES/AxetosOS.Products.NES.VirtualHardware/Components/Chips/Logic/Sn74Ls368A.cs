@@ -35,6 +35,8 @@ public sealed class Sn74Ls368A : VirtualHardwareComponent
         _group1DataMask = A[0].InputChangeMask | A[1].InputChangeMask |
             A[2].InputChangeMask | A[3].InputChangeMask;
         _group2DataMask = A[4].InputChangeMask | A[5].InputChangeMask;
+
+        for (var index = 0; index < 6; index++) A[index].SetOwnerWakeEnabled(false);
     }
 
     public DigitalPin Vcc { get; }
@@ -43,6 +45,14 @@ public sealed class Sn74Ls368A : VirtualHardwareComponent
     public DigitalPin Enable2Bar { get; }
     public IReadOnlyList<DigitalPin> A { get; }
     public IReadOnlyList<DigitalPin> YBar { get; }
+
+    private void RefreshDataWakeState()
+    {
+        var group1Enabled = _packagePowered && Enable1Bar.SampledLevel == DigitalLevel.Low;
+        var group2Enabled = _packagePowered && Enable2Bar.SampledLevel == DigitalLevel.Low;
+        for (var index = 0; index < 4; index++) A[index].SetOwnerWakeEnabled(group1Enabled);
+        for (var index = 4; index < 6; index++) A[index].SetOwnerWakeEnabled(group2Enabled);
+    }
 
     protected override void OnInputChanges(ulong changedInputMask)
     {
@@ -53,6 +63,7 @@ public sealed class Sn74Ls368A : VirtualHardwareComponent
         {
             if (_packagePowered) ReleaseAll();
             _packagePowered = false;
+            RefreshDataWakeState();
             return;
         }
 
@@ -61,6 +72,9 @@ public sealed class Sn74Ls368A : VirtualHardwareComponent
             _packagePowered = true;
             powerChanged = true;
         }
+
+        if (powerChanged || (changedInputMask & (_enable1InputMask | _enable2InputMask)) != 0)
+            RefreshDataWakeState();
 
         ProcessGroup(changedInputMask, powerChanged, Enable1Bar, _enable1InputMask, _group1DataMask, 0, 4);
         ProcessGroup(changedInputMask, powerChanged, Enable2Bar, _enable2InputMask, _group2DataMask, 4, 2);

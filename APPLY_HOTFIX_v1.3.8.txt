@@ -1,0 +1,14 @@
+AxetosOS Products / NES v1.3.8 profiler test compile hotfix
+
+Runtime code is unchanged.
+
+Fixes VirtualHardwareProfilerTests.cs:
+- replaces removed/nonexistent DigitalSignalSource with existing DigitalOscillator
+- uses AdvanceHalfCycle() to produce physical 0/1 transitions
+- uses Assert.Single(collection, predicate) to satisfy xUnit2031
+
+Extract this archive over the repository root so AxetosOS/AxetosOS.Products.NES overlays the existing project, then run:
+
+    dotnet test
+
+If the suite passes, run the Release ROM with --profile and paste the PROFILE lines.

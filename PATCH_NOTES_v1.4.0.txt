@@ -1,0 +1,11 @@
+AxetosOS Products / NES v1.4.0
+
+Goal: eliminate package activations that the physical chip's own enable/select circuitry would block, while preserving unconditional motherboard signal delivery.
+
+Motherboard rule remains unchanged:
+  output level -> physical trace -> every connected package pin receives the resolved level.
+
+Chip rule:
+  pin retains level -> chip-owned wake gate -> inactive stage returns before package logic.
+
+No signal queue, component queue, Settle engine, skipped physical clock pulse, or motherboard-side chip knowledge is introduced.

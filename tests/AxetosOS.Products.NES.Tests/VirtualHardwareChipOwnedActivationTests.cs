@@ -4,6 +4,7 @@ using AxetosOS.Products.NES.VirtualHardware.Components;
 using AxetosOS.Products.NES.VirtualHardware.Components.Clock;
 using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Memory;
+using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 using AxetosOS.Products.NES.VirtualHardware.Components.Instrumentation;
 using AxetosOS.Products.NES.VirtualHardware.Components.Power;
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
@@ -48,6 +49,45 @@ public sealed class VirtualHardwareChipOwnedActivationTests
         external.Set(DigitalLevel.High);
         Assert.Equal(2, component.EvaluationCount);
         Assert.Equal(DigitalLevel.High, component.Bus.SampledLevel);
+    }
+
+
+    [Fact]
+    public void Disabled_chip_input_stage_records_levels_without_waking_package_logic()
+    {
+        var board = new VirtualHardwareBoard("chip-owned-pin-gate");
+        var vcc = board.Add(new DigitalPowerRail("vcc", DigitalLevel.High));
+        var gnd = board.Add(new DigitalPowerRail("gnd", DigitalLevel.Low));
+        var le = board.Add(new DigitalSignalSource("le", DigitalLevel.Low));
+        var oe = board.Add(new DigitalSignalSource("oe", DigitalLevel.High));
+        var data = board.Add(new DigitalSignalSource("data", DigitalLevel.Low));
+        var latch = board.Add(new Sn74Ls373("latch"));
+
+        board.Connect("vcc.net", vcc.Output, latch.Vcc);
+        board.Connect("gnd.net", gnd.Output, latch.Gnd);
+        board.Connect("le.net", le.Output, latch.LatchEnable);
+        board.Connect("oe.net", oe.Output, latch.OutputEnableBar);
+        board.Connect("d0.net", data.Output, latch.D.Pins[0]);
+
+        var simulator = new VirtualHardwareSimulator(board);
+        simulator.SetProfilingEnabled(true);
+
+        data.Set(DigitalLevel.High);
+        data.Set(DigitalLevel.Low);
+
+        Assert.Equal(DigitalLevel.Low, latch.D.Pins[0].SampledLevel);
+        Assert.Equal(0UL, Assert.Single(
+            simulator.GetProfileSnapshot().Components,
+            component => component.ComponentId == latch.ComponentId).EvaluationCount);
+
+        le.Set(DigitalLevel.High);
+        simulator.ResetProfile();
+        data.Set(DigitalLevel.High);
+
+        Assert.Equal(DigitalLevel.High, latch.D.Pins[0].SampledLevel);
+        Assert.Equal(1UL, Assert.Single(
+            simulator.GetProfileSnapshot().Components,
+            component => component.ComponentId == latch.ComponentId).EvaluationCount);
     }
 
     [Fact]

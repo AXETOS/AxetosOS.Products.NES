@@ -15,6 +15,10 @@ public sealed class Hm6116 : VirtualHardwareComponent
     private readonly ulong _addressInputMask;
     private readonly ulong _dataInputMask;
     private bool _wasPowered;
+    private bool _dataReleased = true;
+    private bool _outputStateValid;
+    private byte _outputValue;
+    private byte _outputKnownMask;
 
     public Hm6116(string componentId) : base(componentId)
     {
@@ -37,6 +41,9 @@ public sealed class Hm6116 : VirtualHardwareComponent
             | WriteEnableBar.InputChangeMask;
         _addressInputMask = Address.InputChangeMask;
         _dataInputMask = Data.InputChangeMask;
+
+        Address.SetOwnerWakeEnabled(false);
+        Data.SetOwnerWakeEnabled(false);
     
         InitializePackageState();
     }
@@ -49,12 +56,28 @@ public sealed class Hm6116 : VirtualHardwareComponent
     public DigitalBus Address { get; }
     public DigitalBus Data { get; }
 
+    private void RefreshInputWakeState()
+    {
+        var selected = _wasPowered && ChipSelectBar.SampledLevel == DigitalLevel.Low;
+        var writeEnable = WriteEnableBar.SampledLevel;
+        var addressEnabled = selected && (
+            writeEnable == DigitalLevel.Low ||
+            writeEnable is not DigitalLevel.High ||
+            (writeEnable == DigitalLevel.High && OutputEnableBar.SampledLevel == DigitalLevel.Low));
+        var dataEnabled = selected && writeEnable == DigitalLevel.Low;
+        Address.SetOwnerWakeEnabled(addressEnabled);
+        Data.SetOwnerWakeEnabled(dataEnabled);
+    }
+
     protected override void OnInputChanges(ulong changedInputMask) => ProcessInputChanges(changedInputMask);
 
     private void InitializePackageState()
     {
         InitializePowerUpState();
         _wasPowered = false;
+        _dataReleased = true;
+        _outputStateValid = false;
+        RefreshInputWakeState();
         Data.Release();
     }
 
@@ -89,26 +112,31 @@ public sealed class Hm6116 : VirtualHardwareComponent
             }
         }
 
-        var powered = IsPowered();
-        if (!powered)
+        if (powerChanged)
         {
-            if (_wasPowered) Data.Release();
-            _wasPowered = false;
-            return;
+            if (!IsPowered())
+            {
+                if (_wasPowered) ReleaseData();
+                _wasPowered = false;
+                RefreshInputWakeState();
+                return;
+            }
+
+            if (!_wasPowered)
+            {
+                // SRAM contents are unspecified after power is applied, but every
+                // cell settles to a concrete zero/one level. This model chooses a
+                // deterministic all-zero cold-start state.
+                InitializePowerUpState();
+                _wasPowered = true;
+            }
         }
 
-        if (!_wasPowered)
-        {
-            // SRAM contents are unspecified after power is applied, but every
-            // cell settles to a concrete zero/one level. This model chooses a
-            // deterministic all-zero cold-start state.
-            InitializePowerUpState();
-            _wasPowered = true;
-        }
+        if (powerChanged || controlChanged) RefreshInputWakeState();
 
         if (ChipSelectBar.SampledLevel == DigitalLevel.High)
         {
-            Data.Release();
+            ReleaseData();
             return;
         }
 
@@ -120,7 +148,7 @@ public sealed class Hm6116 : VirtualHardwareComponent
 
         if (!Address.TrySample(out var rawAddress))
         {
-            Data.Release();
+            ReleaseData();
             return;
         }
 
@@ -129,7 +157,7 @@ public sealed class Hm6116 : VirtualHardwareComponent
         switch (WriteEnableBar.SampledLevel)
         {
             case DigitalLevel.Low:
-                Data.Release();
+                ReleaseData();
                 CaptureWrite(address);
                 return;
             case DigitalLevel.High:
@@ -138,7 +166,7 @@ public sealed class Hm6116 : VirtualHardwareComponent
             default:
                 // An uncertain /WE while selected may write an arbitrary value.
                 _knownMasks[address] = 0;
-                Data.Release();
+                ReleaseData();
                 return;
         }
     }
@@ -217,7 +245,7 @@ public sealed class Hm6116 : VirtualHardwareComponent
                 DriveStoredValue(address);
                 break;
             case DigitalLevel.High:
-                Data.Release();
+                ReleaseData();
                 break;
             default:
                 DriveUnknownData();
@@ -229,20 +257,32 @@ public sealed class Hm6116 : VirtualHardwareComponent
     {
         var value = _memory[address];
         var knownMask = _knownMasks[address];
-        if (knownMask == byte.MaxValue)
+        if (!_dataReleased && _outputStateValid
+            && _outputValue == value && _outputKnownMask == knownMask)
         {
-            Data.Drive(value);
             return;
         }
 
-        for (var bit = 0; bit < Data.Width; bit++)
+        if (knownMask == byte.MaxValue)
         {
-            var mask = 1 << bit;
-            if ((knownMask & mask) == 0)
-                Data.Pins[bit].Drive(DigitalLevel.Unknown);
-            else
-                Data.Pins[bit].Drive((value & mask) == 0 ? DigitalLevel.Low : DigitalLevel.High);
+            Data.Drive(value);
         }
+        else
+        {
+            for (var bit = 0; bit < Data.Width; bit++)
+            {
+                var mask = 1 << bit;
+                if ((knownMask & mask) == 0)
+                    Data.Pins[bit].Drive(DigitalLevel.Unknown);
+                else
+                    Data.Pins[bit].Drive((value & mask) == 0 ? DigitalLevel.Low : DigitalLevel.High);
+            }
+        }
+
+        _dataReleased = false;
+        _outputStateValid = true;
+        _outputValue = value;
+        _outputKnownMask = knownMask;
     }
 
     private void DriveIndeterminateSelection()
@@ -254,16 +294,27 @@ public sealed class Hm6116 : VirtualHardwareComponent
         }
         else
         {
-            Data.Release();
+            ReleaseData();
         }
     }
 
     private void DriveUnknownData()
     {
+        if (!_dataReleased && _outputStateValid && _outputKnownMask == 0) return;
         foreach (var pin in Data.Pins)
-        {
             pin.Drive(DigitalLevel.Unknown);
-        }
+        _dataReleased = false;
+        _outputStateValid = true;
+        _outputValue = 0;
+        _outputKnownMask = 0;
+    }
+
+    private void ReleaseData()
+    {
+        if (_dataReleased) return;
+        Data.Release();
+        _dataReleased = true;
+        _outputStateValid = false;
     }
 
     private static void ValidateAddress(int address)

@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components;
 
@@ -98,6 +99,47 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
         }
     }
 
+    /// <summary>
+    /// Diagnostics-only sampled reaction path. Normal emulation never enters
+    /// this method. It mirrors the package-owned re-entrant folding semantics
+    /// of ReceiveInputChanges while allowing selected large ICs to expose
+    /// package-internal timing without storing profiler state in the chip.
+    /// </summary>
+    internal void ReceiveInputChangesProfiled(
+        ulong changedInputMask,
+        VirtualHardwareProfileSample sample)
+    {
+        if (changedInputMask == 0) return;
+
+        if (_handlingInputChanges)
+        {
+            _pendingInputChanges |= changedInputMask;
+            return;
+        }
+
+        _handlingInputChanges = true;
+        try
+        {
+            var currentInputChanges = changedInputMask | _pendingInputChanges;
+            _pendingInputChanges = 0;
+
+            while (currentInputChanges != 0)
+            {
+                _outputPublicationSequence++;
+                OnInputChangesProfiled(currentInputChanges, sample);
+                FlushChangedOutputs();
+
+                currentInputChanges = _pendingInputChanges;
+                _pendingInputChanges = 0;
+            }
+        }
+        finally
+        {
+            _handlingInputChanges = false;
+            _changedOutputPinCount = 0;
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryStageOutputChange(DigitalPin pin)
     {
@@ -171,4 +213,12 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
     /// Implementations must not depend on polling or simulator callbacks.
     /// </summary>
     protected virtual void OnInputChanges(ulong changedInputMask) { }
+
+    /// <summary>
+    /// Optional sampled diagnostics override. The default preserves the exact
+    /// physical package behavior by delegating to the normal input handler.
+    /// </summary>
+    protected virtual void OnInputChangesProfiled(
+        ulong changedInputMask,
+        VirtualHardwareProfileSample sample) => OnInputChanges(changedInputMask);
 }

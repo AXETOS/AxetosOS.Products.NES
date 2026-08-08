@@ -1,0 +1,17 @@
+Directory.Build.props
+README.md
+PATCH_FILE_LIST_v1.3.8.txt
+PATCH_NOTES_v1.3.8.txt
+RELEASE_NOTES_v1.3.8.md
+Apply-v1.3.8.ps1
+src/Products/NES/AxetosOS.Products.NES.DesktopHost/Program.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/VirtualHardwareComponent.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A03.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A07.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C02.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C07.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalNet.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledClockExecutionPlan.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/VirtualHardwareProfileSample.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/VirtualHardwareSimulator.cs
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareProfilerTests.cs

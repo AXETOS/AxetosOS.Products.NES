@@ -1,0 +1,20 @@
+AxetosOS Products / NES v1.3.8
+
+Purpose
+-------
+Add an opt-in sampled performance profiler to the validated v1.3.7 physical-IC architecture so the next optimization sweep is driven by measured time rather than guesses.
+
+Key points
+----------
+- Normal execution remains unchanged and queue-free.
+- --profile stays on the compiled master-clock transport instead of switching to a generic resolver.
+- Every physical package is counted/timed automatically.
+- Electrical net transport is sampled and estimated separately from package execution.
+- RP2A03/RP2A07 sampled sections: controller I/O, APU, CPU core, DMA/DMC.
+- RP2C02/RP2C07 sampled sections: CPU port, raster, VRAM, background, sprite, video output, external package outputs.
+- DesktopHost reports exact wall-time categories for simulation, video presentation, audio transfer, event pumping and diagnostics/title updates.
+- Physical packages do not retain profiler or simulator references; sampled handles are ephemeral diagnostics-only call arguments.
+
+Validation
+----------
+This environment cannot run dotnet. Apply the patch, run `dotnet test`, then run the same ROM with `--profile` and paste the PROFILE output.

@@ -85,9 +85,11 @@ public sealed class CompiledClockExecutionPlan
 
     private void AdvanceHalfCycleProfiled()
     {
-        // Profiling intentionally uses the generic immediate path so diagnostics
-        // still count net resolutions and receiver deliveries accurately.
-        _clock.AdvanceHalfCycle();
+        // Keep profiling on the same compiled physical-clock transport used by
+        // normal execution. Diagnostics sample that path instead of switching
+        // to the slower generic resolver and profiling a different machine.
+        _clock.AdvanceHalfCycleCompiled();
+        _compiledClockNet.PropagateCompiledSingleDriverProfiled(_simulator);
         _simulator.RecordCompiledClockDispatch();
     }
 }

@@ -57,6 +57,11 @@ public sealed class NromCartridge : VirtualHardwareComponent
             | PpuReadBar.InputChangeMask
             | PpuWriteBar.InputChangeMask;
         _ppuAddressDataInputMask = PpuAddressData.InputChangeMask;
+
+        // Mapper 0 has no CPU-side write register, so CPU D0-D7 never activate
+        // internal cartridge logic. They still retain their connector levels.
+        CpuData.SetOwnerWakeEnabled(false);
+        PpuAddressData.SetOwnerWakeEnabled(false);
     
         InitializePackageState();
     }
@@ -74,6 +79,7 @@ public sealed class NromCartridge : VirtualHardwareComponent
         _mirroring = image.Mirroring;
         IsInserted = true;
         ApplyResetState();
+        RefreshPpuDataWakeState();
     }
 
     public void Eject()
@@ -86,6 +92,7 @@ public sealed class NromCartridge : VirtualHardwareComponent
         _cpuSelectedData = 0;
         _ppuReadActive = false;
         _ppuWriteActive = false;
+        RefreshPpuDataWakeState();
         ReleaseOutputs();
     }
 
@@ -111,6 +118,16 @@ public sealed class NromCartridge : VirtualHardwareComponent
     public ulong PpuReadCount { get; private set; }
     public ulong PpuWriteCount { get; private set; }
 
+    private void RefreshPpuDataWakeState()
+    {
+        var enabled = IsInserted
+            && Vcc.SampledLevel == DigitalLevel.High
+            && Gnd.SampledLevel == DigitalLevel.Low
+            && (PpuAle.SampledLevel == DigitalLevel.High
+                || (_chrRam && PpuWriteBar.SampledLevel == DigitalLevel.Low));
+        PpuAddressData.SetOwnerWakeEnabled(enabled);
+    }
+
     private void InitializePackageState() => ApplyResetState();
     private void ApplyResetState()
     {
@@ -120,6 +137,7 @@ public sealed class NromCartridge : VirtualHardwareComponent
         _cpuSelectedData = 0;
         _ppuReadActive = false;
         _ppuWriteActive = false;
+        RefreshPpuDataWakeState();
         ReleaseOutputs();
     }
 
@@ -159,8 +177,11 @@ public sealed class NromCartridge : VirtualHardwareComponent
             _ppuReadActive = false;
             _ppuWriteActive = false;
             ReleaseOutputs();
+            RefreshPpuDataWakeState();
             return;
         }
+
+        if (powerChanged || ppuControlChanged) RefreshPpuDataWakeState();
 
         var ppuDataCanMatter = ppuDataChanged
             && (PpuAle.SampledLevel == DigitalLevel.High

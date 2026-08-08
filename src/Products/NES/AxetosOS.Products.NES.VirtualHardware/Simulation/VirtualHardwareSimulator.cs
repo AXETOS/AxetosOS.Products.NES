@@ -20,7 +20,16 @@ public sealed record VirtualHardwarePerformanceCounters(
 public sealed record VirtualHardwareComponentProfile(
     string ComponentId,
     ulong EvaluationCount,
-    TimeSpan EvaluationTime);
+    TimeSpan EvaluationTime)
+{
+    public ulong TimedEvaluationCount { get; init; }
+}
+
+public sealed record VirtualHardwareSectionProfile(
+    string ComponentId,
+    string Section,
+    ulong SampleCount,
+    TimeSpan EstimatedTime);
 
 public sealed record VirtualHardwareSimulationProfile(
     string BoardId,
@@ -32,17 +41,22 @@ public sealed record VirtualHardwareSimulationProfile(
     IReadOnlyList<VirtualHardwareComponentProfile> Components)
 {
     public double AverageEventsPerSettle => SettleCalls == 0 ? 0 : (double)PropagationEvents / SettleCalls;
+    public ulong NetResolutionAttempts { get; init; }
+    public ulong TimedNetResolutionSamples { get; init; }
+    public IReadOnlyList<VirtualHardwareSectionProfile> Sections { get; init; } = [];
 }
 
 /// <summary>
 /// Topology compiler and optional diagnostics collector for the virtual board.
-/// Runtime signal propagation does not pass through this object: output pins
-/// change their attached nets immediately, nets present the resulting level to
-/// input pins immediately, and receiving packages execute directly.
+/// Runtime signal propagation does not pass through this object when profiling
+/// is disabled: output pins change their attached nets immediately, nets
+/// present the resulting level immediately, and receiving packages execute
+/// directly. Profiling is opt-in and samples only one in 256 hot operations.
 /// </summary>
 public sealed class VirtualHardwareSimulator
 {
     private const ulong ProfileTimingSampleInterval = 256;
+    private static readonly int ProfileSectionCount = Enum.GetValues<VirtualHardwareProfileSection>().Length;
 
     private DigitalNet[] _nets = [];
     private VirtualHardwareComponent[] _components = [];
@@ -53,9 +67,13 @@ public sealed class VirtualHardwareSimulator
     private int _profileMaximumEvents;
     private long _profileSettleTicks;
     private long _profileNetResolutionTicks;
+    private ulong _profileNetResolutionAttempts;
+    private ulong _profileTimedNetResolutions;
     private ulong[] _profileComponentEvaluations = [];
     private ulong[] _profileComponentTimedEvaluations = [];
     private long[] _profileComponentTicks = [];
+    private ulong[] _profileSectionSamples = [];
+    private long[] _profileSectionTicks = [];
 
     private ulong _counterSettleCalls;
     private ulong _counterStrictEvents;
@@ -104,9 +122,7 @@ public sealed class VirtualHardwareSimulator
     {
         _profilingEnabled = enabled;
         for (var index = 0; index < _nets.Length; index++)
-        {
             _nets[index].Diagnostics = enabled ? this : null;
-        }
 
         if (reset)
         {
@@ -122,9 +138,13 @@ public sealed class VirtualHardwareSimulator
         _profileMaximumEvents = 0;
         _profileSettleTicks = 0;
         _profileNetResolutionTicks = 0;
+        _profileNetResolutionAttempts = 0;
+        _profileTimedNetResolutions = 0;
         Array.Clear(_profileComponentEvaluations);
         Array.Clear(_profileComponentTimedEvaluations);
         Array.Clear(_profileComponentTicks);
+        Array.Clear(_profileSectionSamples);
+        Array.Clear(_profileSectionTicks);
     }
 
     public VirtualHardwareSimulationProfile GetProfileSnapshot()
@@ -133,14 +153,47 @@ public sealed class VirtualHardwareSimulator
         for (var index = 0; index < _components.Length; index++)
         {
             var measured = _profileComponentTimedEvaluations[index];
-            var estimatedTicks = measured == 0
-                ? 0
-                : (long)((double)_profileComponentTicks[index] * _profileComponentEvaluations[index] / measured);
+            var estimatedTicks = ScaleSampledTicks(
+                _profileComponentTicks[index],
+                _profileComponentEvaluations[index],
+                measured);
             components[index] = new VirtualHardwareComponentProfile(
                 _components[index].ComponentId,
                 _profileComponentEvaluations[index],
-                StopwatchTicksToTimeSpan(estimatedTicks));
+                StopwatchTicksToTimeSpan(estimatedTicks))
+            {
+                TimedEvaluationCount = measured
+            };
         }
+
+        var sections = new List<VirtualHardwareSectionProfile>();
+        for (var componentIndex = 0; componentIndex < _components.Length; componentIndex++)
+        {
+            var measuredComponentEvaluations = _profileComponentTimedEvaluations[componentIndex];
+            if (measuredComponentEvaluations == 0) continue;
+
+            for (var sectionIndex = 0; sectionIndex < ProfileSectionCount; sectionIndex++)
+            {
+                var flatIndex = (componentIndex * ProfileSectionCount) + sectionIndex;
+                var samples = _profileSectionSamples[flatIndex];
+                if (samples == 0) continue;
+
+                var estimatedTicks = ScaleSampledTicks(
+                    _profileSectionTicks[flatIndex],
+                    _profileComponentEvaluations[componentIndex],
+                    measuredComponentEvaluations);
+                sections.Add(new VirtualHardwareSectionProfile(
+                    _components[componentIndex].ComponentId,
+                    ((VirtualHardwareProfileSection)sectionIndex).ToString(),
+                    samples,
+                    StopwatchTicksToTimeSpan(estimatedTicks)));
+            }
+        }
+
+        var estimatedNetTicks = ScaleSampledTicks(
+            _profileNetResolutionTicks,
+            _profileNetResolutionAttempts,
+            _profileTimedNetResolutions);
 
         return new VirtualHardwareSimulationProfile(
             Board.BoardId,
@@ -148,8 +201,13 @@ public sealed class VirtualHardwareSimulator
             _profilePropagationEvents,
             _profileMaximumEvents,
             StopwatchTicksToTimeSpan(_profileSettleTicks),
-            StopwatchTicksToTimeSpan(_profileNetResolutionTicks),
-            components);
+            StopwatchTicksToTimeSpan(estimatedNetTicks),
+            components)
+        {
+            NetResolutionAttempts = _profileNetResolutionAttempts,
+            TimedNetResolutionSamples = _profileTimedNetResolutions,
+            Sections = sections
+        };
     }
 
     /// <summary>
@@ -178,14 +236,14 @@ public sealed class VirtualHardwareSimulator
         _profileComponentEvaluations = new ulong[_components.Length];
         _profileComponentTimedEvaluations = new ulong[_components.Length];
         _profileComponentTicks = new long[_components.Length];
+        _profileSectionSamples = new ulong[_components.Length * ProfileSectionCount];
+        _profileSectionTicks = new long[_components.Length * ProfileSectionCount];
 
         for (var componentIndex = 0; componentIndex < _components.Length; componentIndex++)
         {
             var pins = _components[componentIndex].Pins;
             for (var pinIndex = 0; pinIndex < pins.Count; pinIndex++)
-            {
                 pins[pinIndex].OwnerComponentIndex = componentIndex;
-            }
         }
 
         // Compile every trace first. Initial board publication is deliberately
@@ -203,14 +261,10 @@ public sealed class VirtualHardwareSimulator
         if (_profilingEnabled) _counterTopologyCompilations++;
 
         for (var netIndex = 0; netIndex < _nets.Length; netIndex++)
-        {
             _nets[netIndex].PresentInitialState();
-        }
 
         for (var netIndex = 0; netIndex < _nets.Length; netIndex++)
-        {
             _nets[netIndex].ReactPresentedInputs();
-        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -239,7 +293,9 @@ public sealed class VirtualHardwareSimulator
         }
 
         var started = Stopwatch.GetTimestamp();
-        component.ReceiveInputChanges(changedInputMask);
+        component.ReceiveInputChangesProfiled(
+            changedInputMask,
+            new VirtualHardwareProfileSample(this, componentIndex));
         _profileComponentTicks[componentIndex] += Stopwatch.GetTimestamp() - started;
         _profileComponentTimedEvaluations[componentIndex]++;
     }
@@ -250,7 +306,23 @@ public sealed class VirtualHardwareSimulator
         _counterNetResolutionAttempts++;
         _counterStrictEvents++;
         _profilePropagationEvents++;
+        _profileNetResolutionAttempts++;
         if (_profileMaximumEvents < 1) _profileMaximumEvents = 1;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal long BeginNetResolutionTimingSample()
+    {
+        if ((_profileNetResolutionAttempts - 1) % ProfileTimingSampleInterval != 0) return 0;
+        _profileTimedNetResolutions++;
+        return Stopwatch.GetTimestamp();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void EndNetResolutionTimingSample(long started)
+    {
+        if (started == 0) return;
+        _profileNetResolutionTicks += Stopwatch.GetTimestamp() - started;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -265,6 +337,24 @@ public sealed class VirtualHardwareSimulator
     {
         if (!_profilingEnabled) return;
         _counterCompiledClockSourceDispatches++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RecordProfileSection(
+        int componentIndex,
+        VirtualHardwareProfileSection section,
+        long ticks)
+    {
+        if ((uint)componentIndex >= (uint)_components.Length || ticks <= 0) return;
+        var flatIndex = (componentIndex * ProfileSectionCount) + (int)section;
+        _profileSectionSamples[flatIndex]++;
+        _profileSectionTicks[flatIndex] += ticks;
+    }
+
+    private static long ScaleSampledTicks(long sampledTicks, ulong total, ulong measured)
+    {
+        if (sampledTicks <= 0 || total == 0 || measured == 0) return 0;
+        return (long)((double)sampledTicks * total / measured);
     }
 
     private static TimeSpan StopwatchTicksToTimeSpan(long ticks) =>

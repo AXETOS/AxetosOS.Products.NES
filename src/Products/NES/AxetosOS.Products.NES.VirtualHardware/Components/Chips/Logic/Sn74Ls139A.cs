@@ -45,6 +45,11 @@ public sealed class Sn74Ls139A : VirtualHardwareComponent
         _section1DataMask = A1.InputChangeMask | B1.InputChangeMask;
         _section2EnableMask = Enable2Bar.InputChangeMask;
         _section2DataMask = A2.InputChangeMask | B2.InputChangeMask;
+
+        A1.SetOwnerWakeEnabled(false);
+        B1.SetOwnerWakeEnabled(false);
+        A2.SetOwnerWakeEnabled(false);
+        B2.SetOwnerWakeEnabled(false);
     }
 
     public DigitalPin Vcc { get; }
@@ -66,6 +71,16 @@ public sealed class Sn74Ls139A : VirtualHardwareComponent
     public DigitalPin Y22Bar { get; }
     public DigitalPin Y23Bar { get; }
 
+    private void RefreshDataWakeState()
+    {
+        var section1Enabled = _packagePowered && Enable1Bar.SampledLevel == DigitalLevel.Low;
+        var section2Enabled = _packagePowered && Enable2Bar.SampledLevel == DigitalLevel.Low;
+        A1.SetOwnerWakeEnabled(section1Enabled);
+        B1.SetOwnerWakeEnabled(section1Enabled);
+        A2.SetOwnerWakeEnabled(section2Enabled);
+        B2.SetOwnerWakeEnabled(section2Enabled);
+    }
+
     protected override void OnInputChanges(ulong changedInputMask)
     {
         var powerChanged = (changedInputMask & _powerInputMask) != 0;
@@ -75,6 +90,7 @@ public sealed class Sn74Ls139A : VirtualHardwareComponent
         {
             if (_packagePowered) ReleaseOutputs();
             _packagePowered = false;
+            RefreshDataWakeState();
             return;
         }
 
@@ -83,6 +99,9 @@ public sealed class Sn74Ls139A : VirtualHardwareComponent
             _packagePowered = true;
             powerChanged = true;
         }
+
+        if (powerChanged || (changedInputMask & (_section1EnableMask | _section2EnableMask)) != 0)
+            RefreshDataWakeState();
 
         // Each half is its own decoder.  A/B pins may toggle continuously while
         // /G is High; the package pins still receive those levels, but that half

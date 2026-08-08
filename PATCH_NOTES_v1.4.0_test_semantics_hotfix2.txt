@@ -1,0 +1,14 @@
+AxetosOS Products / NES v1.4.0 test-semantics hotfix2
+
+Fixes the first hotfix script itself.
+
+The original hotfix searched for Assert.Equal(1, ...) but the regression tests
+use Assert.Equal(1UL, counters.ComponentEvaluations). It could also mistake an
+unrelated zero-valued assertion for an already-patched activation assertion.
+
+This replacement:
+- targets only the counters.ComponentEvaluations assertion in each affected test;
+- accepts 1, 1U, 1L or 1UL and replaces it with 0UL;
+- accepts the partially-renamed state left by the failed first hotfix;
+- verifies both methods and both zero-evaluation expectations after writing;
+- changes no runtime/emulator source.
