@@ -1,0 +1,6 @@
+v2.9.1 hotfix for the v2.9 clean compiled package fan-out experiment.
+
+Fixes the compiled/reference divergence by restoring exact input-staging order:
+physical pin acceptance stages the destination package immediately; package execution still waits until the complete source output change-set has been presented.
+
+No tests were weakened or removed. Expected total: 228.

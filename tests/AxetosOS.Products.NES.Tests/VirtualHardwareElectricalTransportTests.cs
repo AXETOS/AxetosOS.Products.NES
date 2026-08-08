@@ -151,6 +151,96 @@ public sealed class VirtualHardwareElectricalTransportTests
         Assert.Equal(DigitalLevel.Contention, receiver.Input.SampledLevel);
     }
 
+    [Fact]
+    public void Packed_four_driver_resolver_matches_reference_electrical_rules_exhaustively()
+    {
+        var net = new DigitalNet("packed-truth-table");
+        var drivers = new[]
+        {
+            new DigitalPin("D0", PinDirection.Output),
+            new DigitalPin("D1", PinDirection.Output),
+            new DigitalPin("D2", PinDirection.Output),
+            new DigitalPin("D3", PinDirection.Output)
+        };
+        foreach (var driver in drivers) net.Connect(driver);
+        net.Resolve(); // Compile topology and seed the packed driver word.
+
+        var states = new (DigitalLevel Level, DigitalDriveStrength Strength)[]
+        {
+            (DigitalLevel.Unknown, DigitalDriveStrength.Weak),
+            (DigitalLevel.Unknown, DigitalDriveStrength.Strong),
+            (DigitalLevel.Low, DigitalDriveStrength.Weak),
+            (DigitalLevel.Low, DigitalDriveStrength.Strong),
+            (DigitalLevel.High, DigitalDriveStrength.Weak),
+            (DigitalLevel.High, DigitalDriveStrength.Strong),
+            (DigitalLevel.HighImpedance, DigitalDriveStrength.Weak),
+            (DigitalLevel.HighImpedance, DigitalDriveStrength.Strong)
+        };
+
+        for (var a = 0; a < states.Length; a++)
+        for (var b = 0; b < states.Length; b++)
+        for (var c = 0; c < states.Length; c++)
+        for (var d = 0; d < states.Length; d++)
+        {
+            drivers[0].Drive(states[a].Level, states[a].Strength);
+            drivers[1].Drive(states[b].Level, states[b].Strength);
+            drivers[2].Drive(states[c].Level, states[c].Strength);
+            drivers[3].Drive(states[d].Level, states[d].Strength);
+
+            var expected = ResolveReference(states[a], states[b], states[c], states[d]);
+            Assert.Equal(expected, net.Level);
+        }
+    }
+
+    private static DigitalLevel ResolveReference(
+        (DigitalLevel Level, DigitalDriveStrength Strength) first,
+        (DigitalLevel Level, DigitalDriveStrength Strength) second,
+        (DigitalLevel Level, DigitalDriveStrength Strength) third,
+        (DigitalLevel Level, DigitalDriveStrength Strength) fourth)
+    {
+        var haveDriver = false;
+        var strongest = DigitalDriveStrength.Weak;
+        var low = false;
+        var high = false;
+        var unknown = false;
+
+        AccumulateReference(first, ref haveDriver, ref strongest, ref low, ref high, ref unknown);
+        AccumulateReference(second, ref haveDriver, ref strongest, ref low, ref high, ref unknown);
+        AccumulateReference(third, ref haveDriver, ref strongest, ref low, ref high, ref unknown);
+        AccumulateReference(fourth, ref haveDriver, ref strongest, ref low, ref high, ref unknown);
+
+        if (!haveDriver) return DigitalLevel.Unknown;
+        if (low && high) return DigitalLevel.Contention;
+        if (unknown) return DigitalLevel.Unknown;
+        return high ? DigitalLevel.High : DigitalLevel.Low;
+    }
+
+    private static void AccumulateReference(
+        (DigitalLevel Level, DigitalDriveStrength Strength) driver,
+        ref bool haveDriver,
+        ref DigitalDriveStrength strongest,
+        ref bool low,
+        ref bool high,
+        ref bool unknown)
+    {
+        if (driver.Level == DigitalLevel.HighImpedance) return;
+
+        if (!haveDriver || (byte)driver.Strength > (byte)strongest)
+        {
+            haveDriver = true;
+            strongest = driver.Strength;
+            low = driver.Level == DigitalLevel.Low;
+            high = driver.Level == DigitalLevel.High;
+            unknown = driver.Level is not (DigitalLevel.Low or DigitalLevel.High);
+            return;
+        }
+
+        if ((byte)driver.Strength < (byte)strongest) return;
+        low |= driver.Level == DigitalLevel.Low;
+        high |= driver.Level == DigitalLevel.High;
+        unknown |= driver.Level is not (DigitalLevel.Low or DigitalLevel.High);
+    }
+
     private sealed class OutputProbe : VirtualHardwareComponent
     {
         public OutputProbe(string componentId) : base(componentId)

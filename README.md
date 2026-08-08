@@ -216,3 +216,14 @@ v2.6.0 keeps the v2.5.0 true-hardware electrical/package baseline and aggressive
 
 The standalone/conformance suite remains 228 tests; runtime performance must be validated locally before this experiment is accepted as a new baseline.
 
+## v2.10.0 packed electrical truth-table resolver experiment
+
+v2.10.0 is a clean, drastic replacement experiment built from the validated v2.6 baseline. It deliberately retires the v2.8 optional generic transport and the v2.9 package-fanout experiment rather than layering another execution mode beside them.
+
+The active true-hardware runtime replaces the common 2/3/4-driver shared-net arbitration kernel itself. Each physical output pin still owns its individual drive level and strength, but topology compilation assigns each driver on a common shared net one anonymous four-bit lane. A changed driver updates that lane immediately. Net resolution then uses one immutable 65,536-entry electrical truth table instead of repeatedly loading multiple driver objects and branching over strength, Hi-Z, unknown and contention rules.
+
+Unused lanes on two- and three-driver nets are compiled as strong Hi-Z, allowing the same four-lane truth table to execute all common shared-net cases without a runtime driver-count branch. Single-driver traces retain their existing direct path, while laboratory nets with more than four drivers retain the generic cold resolver.
+
+This remains topology-only hardware simulation: the electrical layer knows physical pins, wires, driver slots, drive strength and resolved levels. It has no NES, CPU, PPU, RAM, cartridge, mapper, address-space or board-signal semantics. Arbitrary rewiring, Hi-Z, weak/strong priority and output contention remain observable physical behavior.
+
+The suite adds an exhaustive four-driver electrical conformance test over every legal Unknown/Low/High/Hi-Z × weak/strong combination, increasing the expected test total from 228 to **229**.

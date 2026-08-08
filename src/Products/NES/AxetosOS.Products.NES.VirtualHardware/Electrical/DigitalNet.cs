@@ -26,6 +26,7 @@ public sealed class DigitalNet
     private bool _pinSnapshotDirty = true;
     private bool _compiled;
     private NetResolverKind _resolverKind;
+    private ushort _packedDriverStateWord;
     private DigitalPin? _compiledSingleDriverSource;
     private DigitalPin[] _compiledSingleDriverObservers = [];
 
@@ -40,6 +41,15 @@ public sealed class DigitalNet
     public DigitalLevel Level { get; private set; } = DigitalLevel.Unknown;
 
     internal VirtualHardwareSimulator? Diagnostics { get; set; }
+
+    // Every output driver's electrical state fits in four bits: three level bits
+    // plus one drive-strength bit. The common two/three/four-driver motherboard
+    // nets therefore fit in one 16-bit word. Resolution is compiled into one
+    // immutable 64 KiB truth table at type initialization, replacing the branch-
+    // heavy per-driver arbitration that previously ran on every shared-net edge.
+    private const byte ReleasedStrongDriveState =
+        (byte)((byte)DigitalLevel.HighImpedance | ((byte)DigitalDriveStrength.Strong << 3));
+    private static readonly byte[] s_packedDriverResolution = BuildPackedDriverResolutionTable();
 
     [ThreadStatic]
     private static PropagationFrame? s_freePropagationFrames;
@@ -424,15 +434,7 @@ public sealed class DigitalNet
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ResolveAndPresentFast(PropagationFrame? receivers)
     {
-        var resolved = _resolverKind switch
-        {
-            NetResolverKind.Floating => DigitalLevel.Unknown,
-            NetResolverKind.SingleDriver => ResolveSingleDriver(_driverPins[0]),
-            NetResolverKind.TwoDrivers => ResolveTwoDrivers(_driverPins[0], _driverPins[1]),
-            NetResolverKind.ThreeDrivers => ResolveThreeDrivers(_driverPins[0], _driverPins[1], _driverPins[2]),
-            NetResolverKind.FourDrivers => ResolveFourDrivers(_driverPins[0], _driverPins[1], _driverPins[2], _driverPins[3]),
-            _ => ResolveMultipleDrivers(_driverPins)
-        };
+        var resolved = ResolveCompiledDriverState();
 
         if (Level == resolved) return false;
         Level = resolved;
@@ -467,15 +469,7 @@ public sealed class DigitalNet
         diagnostics.RecordNetResolutionAttempt();
         var profileStarted = diagnostics.BeginNetResolutionTimingSample();
 
-        var resolved = _resolverKind switch
-        {
-            NetResolverKind.Floating => DigitalLevel.Unknown,
-            NetResolverKind.SingleDriver => ResolveSingleDriver(_driverPins[0]),
-            NetResolverKind.TwoDrivers => ResolveTwoDrivers(_driverPins[0], _driverPins[1]),
-            NetResolverKind.ThreeDrivers => ResolveThreeDrivers(_driverPins[0], _driverPins[1], _driverPins[2]),
-            NetResolverKind.FourDrivers => ResolveFourDrivers(_driverPins[0], _driverPins[1], _driverPins[2], _driverPins[3]),
-            _ => ResolveMultipleDrivers(_driverPins)
-        };
+        var resolved = ResolveCompiledDriverState();
 
         if (Level == resolved)
         {
@@ -528,75 +522,61 @@ public sealed class DigitalNet
     }
 
     /// <summary>
-    /// Common shared-line resolver with exactly two possible drivers. This is
-    /// electrically identical to the generic resolver but loads each pin's
-    /// complete packed drive level/strength state once.
+    /// Resolves the topology-compiled driver representation. Two-, three- and
+    /// four-driver nets never re-read driver objects here: each driver updates
+    /// its assigned four-bit lane when its physical output state changes, and
+    /// the electrical result is one table lookup. Single-driver and >4-driver
+    /// laboratory traces retain dedicated paths.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static DigitalLevel ResolveTwoDrivers(DigitalPin first, DigitalPin second)
+    private DigitalLevel ResolveCompiledDriverState()
     {
-        var firstState = first.PackedDriveState;
-        var secondState = second.PackedDriveState;
-        var firstLevel = (DigitalLevel)(firstState & 0x07);
-        var secondLevel = (DigitalLevel)(secondState & 0x07);
-
-        if (firstLevel == DigitalLevel.HighImpedance) return ResolveSingleDriverState(secondState);
-        if (secondLevel == DigitalLevel.HighImpedance) return ResolveSingleDriverState(firstState);
-
-        var firstStrength = (firstState >> 3) & 0x01;
-        var secondStrength = (secondState >> 3) & 0x01;
-        if (firstStrength > secondStrength) return ResolveSingleDriverState(firstState);
-        if (secondStrength > firstStrength) return ResolveSingleDriverState(secondState);
-
-        if ((firstLevel == DigitalLevel.Low && secondLevel == DigitalLevel.High) ||
-            (firstLevel == DigitalLevel.High && secondLevel == DigitalLevel.Low))
-        {
-            return DigitalLevel.Contention;
-        }
-
-        if (firstLevel == secondLevel)
-        {
-            return firstLevel is DigitalLevel.Low or DigitalLevel.High
-                ? firstLevel
-                : DigitalLevel.Unknown;
-        }
-
-        return DigitalLevel.Unknown;
+        // Packed shared buses dominate normal board traffic. Keep that case as the
+        // first branch so the hot resolver is one compare plus one table load.
+        if (_resolverKind == NetResolverKind.PackedDrivers)
+            return (DigitalLevel)s_packedDriverResolution[_packedDriverStateWord];
+        if (_resolverKind == NetResolverKind.SingleDriver)
+            return ResolveSingleDriver(_driverPins[0]);
+        return _resolverKind == NetResolverKind.Floating
+            ? DigitalLevel.Unknown
+            : ResolveMultipleDrivers(_driverPins);
     }
 
+    /// <summary>
+    /// Updates one physical driver's lane in this net's packed electrical state.
+    /// The lane index is compiled from topology only; it carries no component or
+    /// bus semantics. Single-driver and >4-driver nets deliberately use -1 and
+    /// never pay this bookkeeping cost.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static DigitalLevel ResolveThreeDrivers(
-        DigitalPin first,
-        DigitalPin second,
-        DigitalPin third)
+    internal void UpdatePackedDriverState(int driverIndex, byte driveState)
+    {
+        // Only pins assigned a compiled 0..3 lane call this method.
+        var shift = driverIndex << 2;
+        var mask = (ushort)(0x0F << shift);
+        _packedDriverStateWord = (ushort)((_packedDriverStateWord & ~mask) | ((driveState & 0x0F) << shift));
+    }
+
+    private static byte[] BuildPackedDriverResolutionTable()
+    {
+        var table = new byte[ushort.MaxValue + 1];
+        for (var packed = 0; packed < table.Length; packed++)
+            table[packed] = (byte)ResolvePackedDriverWordSlow((ushort)packed);
+        return table;
+    }
+
+    private static DigitalLevel ResolvePackedDriverWordSlow(ushort packed)
     {
         byte strongest = 0;
         var haveDriver = false;
         var low = false;
         var high = false;
         var unknown = false;
-        AccumulateDriverState(first.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriverState(second.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriverState(third.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        return FinishDriverResolution(haveDriver, low, high, unknown);
-    }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static DigitalLevel ResolveFourDrivers(
-        DigitalPin first,
-        DigitalPin second,
-        DigitalPin third,
-        DigitalPin fourth)
-    {
-        byte strongest = 0;
-        var haveDriver = false;
-        var low = false;
-        var high = false;
-        var unknown = false;
-        AccumulateDriverState(first.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriverState(second.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriverState(third.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriverState(fourth.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState((byte)(packed & 0x0F), ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState((byte)((packed >> 4) & 0x0F), ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState((byte)((packed >> 8) & 0x0F), ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState((byte)((packed >> 12) & 0x0F), ref strongest, ref haveDriver, ref low, ref high, ref unknown);
         return FinishDriverResolution(haveDriver, low, high, unknown);
     }
 
@@ -669,15 +649,38 @@ public sealed class DigitalNet
             .ToArray();
         _observerPins = pins.Where(pin => !pin.IsInputCapable).ToArray();
 
-        _resolverKind = _driverPins.Length switch
+        var driverCount = _driverPins.Length;
+        _resolverKind = driverCount switch
         {
             0 => NetResolverKind.Floating,
             1 => NetResolverKind.SingleDriver,
-            2 => NetResolverKind.TwoDrivers,
-            3 => NetResolverKind.ThreeDrivers,
-            4 => NetResolverKind.FourDrivers,
+            >= 2 and <= 4 => NetResolverKind.PackedDrivers,
             _ => NetResolverKind.MultipleDrivers
         };
+
+        // Remove any stale slot left by an earlier topology snapshot, then compile
+        // only the common 2-4 driver case into packed lanes. Unused lanes are
+        // strong Hi-Z so the same four-driver truth table is valid for 2/3-driver
+        // nets without a runtime driver-count branch.
+        for (var index = 0; index < _driverPins.Length; index++)
+            _driverPins[index].NetDriverIndex = -1;
+
+        _packedDriverStateWord = 0;
+        if (_resolverKind == NetResolverKind.PackedDrivers)
+        {
+            _packedDriverStateWord = (ushort)(
+                ReleasedStrongDriveState |
+                (ReleasedStrongDriveState << 4) |
+                (ReleasedStrongDriveState << 8) |
+                (ReleasedStrongDriveState << 12));
+
+            for (var index = 0; index < driverCount; index++)
+            {
+                var driver = _driverPins[index];
+                driver.NetDriverIndex = index;
+                UpdatePackedDriverState(index, driver.PackedDriveState);
+            }
+        }
 
         _compiledSingleDriverSource = null;
         _compiledSingleDriverObservers = [];
@@ -821,9 +824,7 @@ public sealed class DigitalNet
     {
         Floating,
         SingleDriver,
-        TwoDrivers,
-        ThreeDrivers,
-        FourDrivers,
+        PackedDrivers,
         MultipleDrivers
     }
 }

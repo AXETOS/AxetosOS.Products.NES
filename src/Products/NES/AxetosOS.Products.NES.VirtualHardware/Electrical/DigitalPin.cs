@@ -60,6 +60,13 @@ public sealed class DigitalPin
         (byte)((byte)level | ((byte)strength << 3));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void PublishPackedDriverStateIfCompiled(byte driveState)
+    {
+        var driverIndex = NetDriverIndex;
+        if (driverIndex >= 0) Net!.UpdatePackedDriverState(driverIndex, driveState);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void SetOwnerWakeEnabled(bool enabled) => _ownerWakeEnabled = enabled;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -84,6 +91,7 @@ public sealed class DigitalPin
         if (_driveState == driveState) return;
 
         _driveState = driveState;
+        PublishPackedDriverStateIfCompiled(driveState);
 
         var net = Net;
         if (net is null) return;
@@ -102,6 +110,7 @@ public sealed class DigitalPin
         var driveState = PackDriveState(level, DigitalDriveStrength.Strong);
         if (_driveState == driveState) return false;
         _driveState = driveState;
+        PublishPackedDriverStateIfCompiled(driveState);
         return true;
     }
 
@@ -111,6 +120,7 @@ public sealed class DigitalPin
         var driveState = PackDriveState(DigitalLevel.HighImpedance, DigitalDriveStrength.Strong);
         if (_driveState == driveState) return false;
         _driveState = driveState;
+        PublishPackedDriverStateIfCompiled(driveState);
         return true;
     }
 
@@ -120,6 +130,7 @@ public sealed class DigitalPin
         var driveState = PackDriveState(level, DigitalDriveStrength.Strong);
         if (_driveState == driveState) return;
         _driveState = driveState;
+        PublishPackedDriverStateIfCompiled(driveState);
 
         var net = Net;
         if (net is null) return;
@@ -133,6 +144,7 @@ public sealed class DigitalPin
         var driveState = PackDriveState(DigitalLevel.HighImpedance, DigitalDriveStrength.Strong);
         if (_driveState == driveState) return;
         _driveState = driveState;
+        PublishPackedDriverStateIfCompiled(driveState);
 
         var net = Net;
         if (net is null) return;

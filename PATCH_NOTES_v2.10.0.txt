@@ -1,0 +1,8 @@
+v2.10.0 clean drastic experiment
+
+Base: validated v2.6.0
+Replaces: common 2/3/4-driver DigitalNet electrical resolver
+Retires: v2.9 package-fanout experiment; v2.8 generic mode remains disabled
+Semantics: physical pins/nets, Hi-Z, weak/strong, Unknown, Contention preserved
+Expected tests: 229
+Benchmark baseline: Mario 22.58 FPS; Donkey Kong 20.14 FPS (reference-runtime, uncapped)

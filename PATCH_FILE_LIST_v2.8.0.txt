@@ -1,0 +1,18 @@
+AxetosOS Products / NES v2.8.0 patch file list
+
+AxetosOS/AxetosOS.Products.NES/Directory.Build.props
+AxetosOS/AxetosOS.Products.NES/README.md
+AxetosOS/AxetosOS.Products.NES/RELEASE_NOTES_v2.8.0.md
+AxetosOS/AxetosOS.Products.NES/PATCH_NOTES_v2.8.0.txt
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.DesktopHost/Program.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Boards/Nes/FamicomMotherboard.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A03.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A07.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalNet.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalPin.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledClockExecutionPlan.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledGenericCircuitExecutionPlan.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/VirtualHardwareSimulator.cs
+AxetosOS/AxetosOS.Products.NES/tests/AxetosOS.Products.NES.Tests/VirtualHardwareMicrocomputerTests.cs
+AxetosOS/AxetosOS.Products.NES/tests/AxetosOS.Products.NES.Tests/VirtualHardwareRegionalNesMachineTests.cs
+AxetosOS/AxetosOS.Products.NES/PATCH_FILE_LIST_v2.8.0.txt

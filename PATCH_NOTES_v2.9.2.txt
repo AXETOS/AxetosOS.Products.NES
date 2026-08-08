@@ -1,0 +1,9 @@
+AxetosOS Products / NES v2.9.2
+
+Hotfix for the v2.9 clean compiled package-fanout replacement.
+
+The remaining equivalence failure was caused by using a cached simulator component index as the execution identity of a receiving package. During connector insertion a net route can be rebuilt before the newly inserted package receives its final simulator index, so that cached index may legitimately be -1 even though the physical package reference is valid.
+
+The compiled fan-out now executes the actual receiving package reference, exactly as the old propagation frame did, while the cached index is retained only for optional profiling attribution. The old propagation-frame hot path is still not used.
+
+Expected suite: 228 tests.
