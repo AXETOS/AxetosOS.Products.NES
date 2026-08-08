@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Processors.Tiny8;
 
@@ -7,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Processors.Tiny8;
 /// architecture. It fetches, reads and writes exclusively through physical
 /// address/data/control pins.
 /// </summary>
-public sealed class Tiny8Processor : VirtualHardwareComponent
+public sealed class Tiny8Processor : VirtualHardwareComponent, ICompiledBusMasterProvider, ICompiledClockedComponent
 {
     private enum ExecutionPhase
     {
@@ -30,6 +31,8 @@ public sealed class Tiny8Processor : VirtualHardwareComponent
     private readonly ulong _clockInputMask;
     private readonly ulong _resetInputMask;
     private bool _resetAsserted;
+    private ICompiledBusFabric? _compiledBusFabric;
+    private bool _compiledResetAsserted;
 
     public Tiny8Processor(string componentId, byte resetVector = 0x80)
         : base(componentId)
@@ -216,4 +219,120 @@ public sealed class Tiny8Processor : VirtualHardwareComponent
         Address.Drive(address);
         ReadWrite.Drive(DigitalLevel.High);
     }
+    IEnumerable<CompiledBusMasterDescriptor> ICompiledBusMasterProvider.GetCompiledBusMasters()
+    {
+        yield return new CompiledBusMasterDescriptor(
+            this,
+            Address.Pins,
+            Data.Pins,
+            EvaluateCompiledBusDriver,
+            fabric => _compiledBusFabric = fabric,
+            () => _compiledBusFabric = null);
+    }
+
+    private CompiledDriveState? EvaluateCompiledBusDriver(DigitalPin pin, uint address, bool readCycle)
+    {
+        for (var bit = 0; bit < Address.Width; bit++)
+        {
+            if (!ReferenceEquals(pin, Address.Pins[bit])) continue;
+            return new CompiledDriveState(
+                (address & (1u << bit)) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+        }
+
+        if (ReferenceEquals(pin, ReadWrite))
+            return new CompiledDriveState(readCycle ? DigitalLevel.High : DigitalLevel.Low);
+        return null;
+    }
+
+    DigitalPin ICompiledClockedComponent.CompiledClockInput => Clock;
+    DigitalPin? ICompiledClockedComponent.CompiledResetInput => ResetBar;
+    DigitalLevel ICompiledClockedComponent.CompiledResetAssertedLevel => DigitalLevel.Low;
+    void ICompiledClockedComponent.ExecuteCompiledClockActivation() => ExecuteCompiledRisingEdge();
+    void ICompiledClockedComponent.SetCompiledResetAsserted(bool asserted)
+    {
+        if (asserted && !_compiledResetAsserted) InitializePackageState();
+        _compiledResetAsserted = asserted;
+    }
+
+    private void ExecuteCompiledRisingEdge()
+    {
+        if (_compiledResetAsserted || _compiledBusFabric is null || _phase == ExecutionPhase.Halted) return;
+
+        RisingEdgeCount++;
+        switch (_phase)
+        {
+            case ExecutionPhase.FetchOpcode:
+            {
+                if (!TryCompiledRead(ProgramCounter, out var opcode)) return;
+                CurrentOpcode = opcode;
+                ProgramCounter++;
+                switch (opcode)
+                {
+                    case LoadImmediateOpcode:
+                        _phase = ExecutionPhase.LoadImmediate;
+                        break;
+                    case StoreAbsoluteOpcode:
+                        _phase = ExecutionPhase.ReadOperandAddressForStore;
+                        break;
+                    case LoadAbsoluteOpcode:
+                        _phase = ExecutionPhase.ReadOperandAddressForLoad;
+                        break;
+                    case HaltOpcode:
+                        InstructionCount++;
+                        _phase = ExecutionPhase.Halted;
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Unknown Tiny8 opcode 0x{opcode:X2} at 0x{(byte)(ProgramCounter - 1):X2}.");
+                }
+                break;
+            }
+
+            case ExecutionPhase.LoadImmediate:
+                if (!TryCompiledRead(ProgramCounter, out var immediate)) return;
+                Accumulator = immediate;
+                ProgramCounter++;
+                CompleteCompiledInstruction();
+                break;
+
+            case ExecutionPhase.ReadOperandAddressForStore:
+                if (!TryCompiledRead(ProgramCounter, out _operandAddress)) return;
+                ProgramCounter++;
+                _phase = ExecutionPhase.CommitStore;
+                _compiledBusFabric.Write(_operandAddress, Accumulator);
+                break;
+
+            case ExecutionPhase.CommitStore:
+                CompleteCompiledInstruction();
+                break;
+
+            case ExecutionPhase.ReadOperandAddressForLoad:
+                if (!TryCompiledRead(ProgramCounter, out _operandAddress)) return;
+                ProgramCounter++;
+                _phase = ExecutionPhase.LoadMemory;
+                break;
+
+            case ExecutionPhase.LoadMemory:
+                if (!TryCompiledRead(_operandAddress, out var value)) return;
+                Accumulator = value;
+                CompleteCompiledInstruction();
+                break;
+
+            case ExecutionPhase.Halted:
+                break;
+        }
+    }
+
+    private bool TryCompiledRead(byte address, out byte value)
+    {
+        var fabric = _compiledBusFabric!;
+        fabric.BeginRead(address);
+        return fabric.CompleteRead(address, out value);
+    }
+
+    private void CompleteCompiledInstruction()
+    {
+        InstructionCount++;
+        _phase = ExecutionPhase.FetchOpcode;
+    }
+
 }

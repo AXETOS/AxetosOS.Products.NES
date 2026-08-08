@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 
@@ -7,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 /// three-state output enable. Storage and output behavior are determined only
 /// by package power and pin levels.
 /// </summary>
-public sealed class Sn74Ls373 : VirtualHardwareComponent
+public sealed class Sn74Ls373 : VirtualHardwareComponent, ICompiledBitProjectionComponent
 {
     private byte _latchedValue;
     private byte _latchedKnownMask;
@@ -214,4 +215,27 @@ public sealed class Sn74Ls373 : VirtualHardwareComponent
 
     private bool IsPowered() =>
         Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
+
+    bool ICompiledBitProjectionComponent.TryTraceCompiledOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleStaticInput,
+        out DigitalPin input)
+    {
+        for (var bit = 0; bit < Q.Width; bit++)
+        {
+            if (!ReferenceEquals(output, Q.Pins[bit])) continue;
+            if (sampleStaticInput(OutputEnableBar) != DigitalLevel.Low)
+            {
+                input = null!;
+                return false;
+            }
+            input = D.Pins[bit];
+            return true;
+        }
+
+        input = null!;
+        return false;
+    }
+
+
 }

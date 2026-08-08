@@ -50,4 +50,31 @@ public sealed class VirtualHardwareMicrocomputerTests
         Assert.True(machine.Rom.ReadDriveCount >= 1);
         Assert.DoesNotContain(machine.Board.Nets, net => net.Level == DigitalLevel.Contention);
     }
+    [Fact]
+    public void Whole_circuit_compiler_executes_unrelated_tiny8_board_from_hardware_facets()
+    {
+        byte[] program =
+        [
+            Tiny8Processor.LoadImmediateOpcode, 0x5A,
+            Tiny8Processor.StoreAbsoluteOpcode, 0x2B,
+            Tiny8Processor.LoadImmediateOpcode, 0x00,
+            Tiny8Processor.LoadAbsoluteOpcode, 0x2B,
+            Tiny8Processor.HaltOpcode
+        ];
+
+        var machine = new PinDrivenMicrocomputer(program);
+        machine.SetCompiledHardwareEnabled(true);
+        machine.PowerOn();
+        machine.ReleaseReset();
+        machine.RunUntilHalted();
+
+        Assert.True(machine.CompiledHardwareEnabled);
+        Assert.True(machine.Cpu.IsHalted);
+        Assert.Equal(0x5A, machine.Cpu.Accumulator);
+        Assert.Equal(0x5A, machine.Ram.Inspect(0x2B));
+        Assert.Equal(5UL, machine.Cpu.InstructionCount);
+        Assert.True(machine.Ram.WriteCount >= 1);
+        Assert.True(machine.Rom.ReadDriveCount >= 1);
+    }
+
 }

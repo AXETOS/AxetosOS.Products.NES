@@ -1,9 +1,10 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Logic;
 
 /// <summary>Pin-driven one-of-N binary address decoder with active-low enable.</summary>
-public sealed class BinaryAddressDecoder : VirtualHardwareComponent
+public sealed class BinaryAddressDecoder : VirtualHardwareComponent, ICompiledCombinationalComponent
 {
     private readonly ulong _addressInputMask;
     private readonly ulong _enableInputMask;
@@ -66,4 +67,43 @@ public sealed class BinaryAddressDecoder : VirtualHardwareComponent
             Outputs[index].Drive(index == (int)selected ? DigitalLevel.Low : DigitalLevel.High);
         _outputsInitialized = true;
     }
+    bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive)
+    {
+        var outputIndex = -1;
+        for (var index = 0; index < Outputs.Count; index++)
+        {
+            if (!ReferenceEquals(output, Outputs[index])) continue;
+            outputIndex = index;
+            break;
+        }
+        if (outputIndex < 0)
+        {
+            drive = default;
+            return false;
+        }
+
+        if (sampleInput(EnableBar) != DigitalLevel.Low)
+        {
+            drive = new CompiledDriveState(DigitalLevel.High);
+            return true;
+        }
+
+        var selected = 0;
+        for (var bit = 0; bit < Address.Width; bit++)
+        {
+            var level = sampleInput(Address.Pins[bit]);
+            if (level == DigitalLevel.High) selected |= 1 << bit;
+            else if (level != DigitalLevel.Low)
+            {
+                drive = new CompiledDriveState(DigitalLevel.High);
+                return true;
+            }
+        }
+        drive = new CompiledDriveState(outputIndex == selected ? DigitalLevel.Low : DigitalLevel.High);
+        return true;
+    }
+
 }

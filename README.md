@@ -250,3 +250,31 @@ No motherboard route contains hardcoded `$0000-$1FFF`, `$2000-$3FFF`, `$8000-$FF
 The existing default fused Famicom/NROM runtime remains unchanged and available as the proven ~60 FPS performance fallback. `--reference-runtime` continues to select the v2.10 physical pin/net runtime, and `--compiled-lab` selects this new whole-circuit compiler experiment. These modes are mutually exclusive so benchmark results do not include duplicate routing engines.
 
 Three new conformance tests verify the compilation boundary, exact machine-state equivalence with the physical reference at the same master-cycle boundary, and APU/DAC equivalence. The expected suite total is **232** tests.
+
+
+## v2.12.0 product-agnostic whole-circuit hardware compiler
+
+v2.12.0 generalizes the v2.11 whole-board performance breakthrough into a hardware compiler whose optimization input is only component-provided hardware facets plus the assembled physical netlist. The existing hand-fused Famicom/NROM runtime remains available unchanged as the default proven fast path, while `--compiled-lab` uses the generalized compiler.
+
+The compiler no longer searches for RP2A03, RP2C02, HM6116, 74-series, controller, cartridge, Famicom, NROM, CPU-RAM, CIRAM, or other product roles. Instead, components may advertise generic physical capabilities such as bus-master pins, addressable target pins and select conditions, combinational output truth, bit projection, clock-source/clocked behavior, signal sinks, serial peripherals, and replaceable external-device boundaries. Those contracts are public so new/custom lab chips can participate without modifying compiler source.
+
+At startup the compiler derives the executable circuit from hardware facts only:
+
+- bus targets are associated through actual shared data traces;
+- target address bits are projected from actual physical address wiring, including bit permutations;
+- data-line permutations are compiled from real wiring rather than assuming D0-D7 order;
+- target selection is obtained by recursively evaluating the connected components' own combinational hardware contracts;
+- clock-domain periods and same-edge execution order come from actual clock pins and their physical net order;
+- serial peripherals and signal sinks are bound by shared physical traces;
+- replaceable external hardware remains a separate runtime unit while still exposing ordinary hardware facets at the connector boundary;
+- an unmodelled output-capable data-bus driver now prevents compilation instead of being silently ignored.
+
+The compiler may still collapse, precompute, fuse and eliminate intermediate runtime work as aggressively as it can prove safe. What it may not use is product meaning. Renaming a board, component or net therefore does not create an optimization, while changing a chip or wire forces the affected routes and shortcuts to be rediscovered from the new circuit.
+
+As a non-NES proof, the existing Tiny8 pin-driven example computer now exposes the same generic compiler facets. A new conformance test compiles and executes Tiny8 + generic RAM + program ROM + binary decoder + inverter through the same whole-circuit compiler, proving that the compiler path is not tied to the NES motherboard classes.
+
+Expected test total: **233**.
+
+## v2.12.1 generic signal-router type hotfix
+
+v2.12.1 fixes a compile-time generic type-inference issue in the product-agnostic whole-circuit compiler. `CompiledSignalRouter` now groups physical signal sinks directly by `DigitalNet`; `DigitalNet` already uses reference identity, so this preserves the intended hardware semantics while keeping the compiler contract strongly typed. No execution behavior, NES/product knowledge, mapper behavior, or optimization strategy is changed from v2.12.0.

@@ -22,7 +22,7 @@ public sealed record Rp2C02SplitTraceEvent(
 /// External PPU memory is accessed exclusively through AD0-AD7, A8-A13, ALE,
 /// /RD and /WR.
 /// </summary>
-public sealed class Rp2C02 : VirtualHardwareComponent
+public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvider, ICompiledBusTargetProvider, ICompiledClockedComponent
 {
     private const int DotsPerScanline = 341;
     private const int ScanlinesPerFrame = 262;
@@ -115,7 +115,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     private readonly ulong _clockInputMask;
     private readonly ulong _resetInputMask;
     private readonly ulong _cpuPortInputMask;
-    private ICompiledFamicomNromFabric? _compiledFabric;
+    private ICompiledBusFabric? _compiledBusFabric;
     private bool _compiledResetAsserted;
     private byte _compiledVramReadLatch;
     private readonly ulong _cpuOrdinaryInputMask;
@@ -199,7 +199,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
     public int Dot { get; private set; }
     public int Scanline { get; private set; }
     public ulong Frame { get; private set; }
-    public ulong MasterClockRisingEdgeCount => _compiledFabric?.MasterClockRisingEdges ?? Clock.InputActivationEdgeCount;
+    public ulong MasterClockRisingEdgeCount => _compiledBusFabric?.ClockRisingEdges ?? Clock.InputActivationEdgeCount;
     public ulong CompletedVramReadCount { get; private set; }
     public ulong CompletedVramWriteCount { get; private set; }
     public bool Vblank => _vblank;
@@ -378,13 +378,25 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         ReleasePackageOutputs();
     }
 
-    internal void AttachCompiledFabric(ICompiledFamicomNromFabric fabric)
+    internal void AttachCompiledBusFabric(ICompiledBusFabric fabric)
     {
-        _compiledFabric = fabric ?? throw new ArgumentNullException(nameof(fabric));
+        _compiledBusFabric = fabric ?? throw new ArgumentNullException(nameof(fabric));
         _compiledResetAsserted = ResetBar.SampledLevel == DigitalLevel.Low;
     }
 
-    internal void DetachCompiledFabric() => _compiledFabric = null;
+    internal void DetachCompiledBusFabric() => _compiledBusFabric = null;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte ReadCompiledMemory(ushort address)
+    {
+        var fabric = _compiledBusFabric!;
+        fabric.BeginRead(address);
+        return fabric.CompleteRead(address, out var value) ? value : (byte)0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WriteCompiledMemory(ushort address, byte value) =>
+        _compiledBusFabric!.Write(address, value);
 
     internal void SetCompiledResetAsserted(bool asserted)
     {
@@ -1059,7 +1071,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _transactionPhase = 0;
         _transactionAddress = (ushort)(address & 0x3FFF);
         _transactionWriteData = writeData;
-        if (_compiledFabric is null) PresentVramAddressPhase();
+        if (_compiledBusFabric is null) PresentVramAddressPhase();
     }
 
     private ushort _transactionAddress;
@@ -1095,13 +1107,13 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         if (_renderReadPhase == 1)
         {
             _renderReadPhase = 2;
-            if (_compiledFabric is not null)
-                _compiledVramReadLatch = _compiledFabric.ReadPpuVram(_renderReadAddress);
+            if (_compiledBusFabric is not null)
+                _compiledVramReadLatch = ReadCompiledMemory(_renderReadAddress);
             else PresentRenderingVramDataPhase();
             return false;
         }
 
-        if (_compiledFabric is not null)
+        if (_compiledBusFabric is not null)
         {
             CompleteRenderingRead(_compiledVramReadLatch);
             CompletedVramReadCount++;
@@ -1123,12 +1135,12 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         var phase = ++_transactionPhase;
         if (phase == 1)
         {
-            if (_compiledFabric is not null)
+            if (_compiledBusFabric is not null)
             {
                 if (_transaction == VramTransaction.Read)
-                    _compiledVramReadLatch = _compiledFabric.ReadPpuVram(_transactionAddress);
+                    _compiledVramReadLatch = ReadCompiledMemory(_transactionAddress);
                 else
-                    _compiledFabric.WritePpuVram(_transactionAddress, _transactionWriteData);
+                    WriteCompiledMemory(_transactionAddress, _transactionWriteData);
             }
             else PresentVramDataPhase();
             return false;
@@ -1137,7 +1149,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
 
         if (_transaction == VramTransaction.Read)
         {
-            if (_compiledFabric is not null)
+            if (_compiledBusFabric is not null)
             {
                 _readBuffer = _compiledVramReadLatch;
                 CompletedVramReadCount++;
@@ -1180,7 +1192,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         _renderReadPhase = 1;
         _renderReadAddress = (ushort)(address & 0x3FFF);
         _renderReadPurpose = purpose;
-        if (_compiledFabric is null) PresentRenderingVramAddressPhase();
+        if (_compiledBusFabric is null) PresentRenderingVramAddressPhase();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1484,7 +1496,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent
 
     private void PresentVramIdle()
     {
-        if (_compiledFabric is not null) return;
+        if (_compiledBusFabric is not null) return;
         PresentAdReleased();
         PresentHighAddressReleased();
         PresentAle(DigitalLevel.Low);
@@ -1556,9 +1568,9 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         var assert = _vblank && _nmiEnabled;
         if (assert == _nmiAsserted) return;
 
-        if (_compiledFabric is not null)
+        if (_compiledBusFabric is not null)
         {
-            _compiledFabric.PresentPpuNmi(assert);
+            _compiledBusFabric.PresentOutputSignal(NmiBar, assert ? DigitalLevel.Low : DigitalLevel.HighImpedance);
             if (assert) NmiFallingEdgeCount++;
         }
         else if (assert)
@@ -1643,6 +1655,80 @@ public sealed class Rp2C02 : VirtualHardwareComponent
         SpritePatternLow,
         SpritePatternHigh
     }
+
+
+    IEnumerable<CompiledBusMasterDescriptor> ICompiledBusMasterProvider.GetCompiledBusMasters()
+    {
+        var addressRoots = new DigitalPin[MultiplexedAddressData.Width + HighAddress.Width];
+        for (var bit = 0; bit < MultiplexedAddressData.Width; bit++)
+            addressRoots[bit] = MultiplexedAddressData.Pins[bit];
+        for (var bit = 0; bit < HighAddress.Width; bit++)
+            addressRoots[bit + MultiplexedAddressData.Width] = HighAddress.Pins[bit];
+
+        yield return new CompiledBusMasterDescriptor(
+            this,
+            addressRoots,
+            MultiplexedAddressData.Pins,
+            EvaluateCompiledVramBusDriver,
+            AttachCompiledBusFabric,
+            DetachCompiledBusFabric);
+    }
+
+    private CompiledDriveState? EvaluateCompiledVramBusDriver(DigitalPin pin, uint address, bool readCycle)
+    {
+        for (var bit = 0; bit < MultiplexedAddressData.Width; bit++)
+        {
+            if (ReferenceEquals(pin, MultiplexedAddressData.Pins[bit]))
+            {
+                return new CompiledDriveState(
+                    (address & (1u << bit)) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+            }
+        }
+        for (var bit = 0; bit < HighAddress.Width; bit++)
+        {
+            if (ReferenceEquals(pin, HighAddress.Pins[bit]))
+            {
+                return new CompiledDriveState(
+                    (address & (1u << (bit + 8))) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+            }
+        }
+
+        if (ReferenceEquals(pin, AddressLatchEnable))
+            return new CompiledDriveState(DigitalLevel.Low);
+        if (ReferenceEquals(pin, VramReadBar))
+            return new CompiledDriveState(readCycle ? DigitalLevel.Low : DigitalLevel.High);
+        if (ReferenceEquals(pin, VramWriteBar))
+            return new CompiledDriveState(readCycle ? DigitalLevel.High : DigitalLevel.Low);
+        return null;
+    }
+
+    IEnumerable<CompiledBusTargetDescriptor> ICompiledBusTargetProvider.GetCompiledBusTargets()
+    {
+        yield return new CompiledBusTargetDescriptor(
+            this,
+            RegisterSelect.Pins,
+            CpuData.Pins,
+            new[]
+            {
+                new CompiledPinCondition(ChipSelectBar, DigitalLevel.Low),
+                new CompiledPinCondition(CpuReadWrite, DigitalLevel.High)
+            },
+            new[]
+            {
+                new CompiledPinCondition(ChipSelectBar, DigitalLevel.Low),
+                new CompiledPinCondition(CpuReadWrite, DigitalLevel.Low)
+            },
+            CompiledBusReadPhase.Begin,
+            address => CompiledCpuReadRegister(address),
+            (address, value) => CompiledCpuWriteRegister(address, value));
+    }
+
+    DigitalPin ICompiledClockedComponent.CompiledClockInput => Clock;
+    DigitalPin? ICompiledClockedComponent.CompiledResetInput => ResetBar;
+    DigitalLevel ICompiledClockedComponent.CompiledResetAssertedLevel => DigitalLevel.Low;
+    void ICompiledClockedComponent.ExecuteCompiledClockActivation() => ExecuteCompiledPpuDot();
+    void ICompiledClockedComponent.SetCompiledResetAsserted(bool asserted) => SetCompiledResetAsserted(asserted);
+
 
 
 }

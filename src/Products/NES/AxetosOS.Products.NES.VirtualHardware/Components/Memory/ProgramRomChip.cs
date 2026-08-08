@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Memory;
 
@@ -6,7 +7,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Memory;
 /// Pin-driven asynchronous ROM. The chip exposes only address, data,
 /// chip-select and output-enable pins to the board.
 /// </summary>
-public sealed class ProgramRomChip : VirtualHardwareComponent
+public sealed class ProgramRomChip : VirtualHardwareComponent, ICompiledBusTargetProvider
 {
     private readonly byte[] _storage;
     private readonly ulong _addressInputMask;
@@ -101,4 +102,25 @@ public sealed class ProgramRomChip : VirtualHardwareComponent
         _drivingData = true;
         ReadDriveCount++;
     }
+    IEnumerable<CompiledBusTargetDescriptor> ICompiledBusTargetProvider.GetCompiledBusTargets()
+    {
+        yield return new CompiledBusTargetDescriptor(
+            this,
+            Address.Pins,
+            Data.Pins,
+            new[]
+            {
+                new CompiledPinCondition(ChipSelectBar, DigitalLevel.Low),
+                new CompiledPinCondition(OutputEnableBar, DigitalLevel.Low)
+            },
+            Array.Empty<CompiledPinCondition>(),
+            CompiledBusReadPhase.Complete,
+            address =>
+            {
+                ReadDriveCount++;
+                return _storage[address];
+            },
+            null);
+    }
+
 }

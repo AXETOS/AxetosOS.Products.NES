@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Memory;
 
@@ -6,7 +7,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Memory;
 /// Standalone HM6116-compatible 2K x 8 static RAM package.
 /// Memory access occurs only through address, data and control pins.
 /// </summary>
-public sealed class Hm6116 : VirtualHardwareComponent
+public sealed class Hm6116 : VirtualHardwareComponent, ICompiledBusTargetProvider
 {
     private readonly byte[] _memory = new byte[2048];
     private readonly byte[] _knownMasks = new byte[2048];
@@ -338,4 +339,28 @@ public sealed class Hm6116 : VirtualHardwareComponent
 
     private bool IsPowered() =>
         Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
+
+    IEnumerable<CompiledBusTargetDescriptor> ICompiledBusTargetProvider.GetCompiledBusTargets()
+    {
+        yield return new CompiledBusTargetDescriptor(
+            this,
+            Address.Pins,
+            Data.Pins,
+            new[]
+            {
+                new CompiledPinCondition(ChipSelectBar, DigitalLevel.Low),
+                new CompiledPinCondition(WriteEnableBar, DigitalLevel.High),
+                new CompiledPinCondition(OutputEnableBar, DigitalLevel.Low)
+            },
+            new[]
+            {
+                new CompiledPinCondition(ChipSelectBar, DigitalLevel.Low),
+                new CompiledPinCondition(WriteEnableBar, DigitalLevel.Low)
+            },
+            CompiledBusReadPhase.Complete,
+            ReadCompiled,
+            WriteCompiled);
+    }
+
+
 }

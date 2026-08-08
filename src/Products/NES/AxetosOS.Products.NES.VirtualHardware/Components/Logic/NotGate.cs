@@ -1,11 +1,12 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Logic;
 
 /// <summary>
 /// A pin-driven inverter. It has no knowledge of a board or machine.
 /// </summary>
-public sealed class NotGate : VirtualHardwareComponent
+public sealed class NotGate : VirtualHardwareComponent, ICompiledCombinationalComponent
 {
     public NotGate(string componentId)
         : base(componentId)
@@ -32,4 +33,23 @@ public sealed class NotGate : VirtualHardwareComponent
                 break;
         }
     }
+    bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive)
+    {
+        if (!ReferenceEquals(output, Output))
+        {
+            drive = default;
+            return false;
+        }
+        drive = new CompiledDriveState(sampleInput(Input) switch
+        {
+            DigitalLevel.Low => DigitalLevel.High,
+            DigitalLevel.High => DigitalLevel.Low,
+            _ => DigitalLevel.Unknown
+        });
+        return true;
+    }
+
 }

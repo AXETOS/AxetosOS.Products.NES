@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Memory;
 
@@ -6,7 +7,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Memory;
 /// Pin-driven asynchronous static RAM. It knows only its address/data pins and
 /// active-low chip-select, output-enable and write-enable controls.
 /// </summary>
-public sealed class StaticRamChip : VirtualHardwareComponent
+public sealed class StaticRamChip : VirtualHardwareComponent, ICompiledBusTargetProvider
 {
     private readonly byte[] _storage;
     private readonly ulong _addressInputMask;
@@ -111,4 +112,31 @@ public sealed class StaticRamChip : VirtualHardwareComponent
         else
             Data.Release();
     }
+    IEnumerable<CompiledBusTargetDescriptor> ICompiledBusTargetProvider.GetCompiledBusTargets()
+    {
+        yield return new CompiledBusTargetDescriptor(
+            this,
+            Address.Pins,
+            Data.Pins,
+            new[]
+            {
+                new CompiledPinCondition(ChipSelectBar, DigitalLevel.Low),
+                new CompiledPinCondition(WriteEnableBar, DigitalLevel.High),
+                new CompiledPinCondition(OutputEnableBar, DigitalLevel.Low)
+            },
+            new[]
+            {
+                new CompiledPinCondition(ChipSelectBar, DigitalLevel.Low),
+                new CompiledPinCondition(WriteEnableBar, DigitalLevel.Low)
+            },
+            CompiledBusReadPhase.Complete,
+            address => _storage[address],
+            (address, value) =>
+            {
+                if (_storage[address] == value) return;
+                _storage[address] = value;
+                WriteCount++;
+            });
+    }
+
 }

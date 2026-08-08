@@ -185,7 +185,11 @@ Console.WriteLine(compiledLab
     : compiledFamicom
         ? $"Kernel:      fused compiled circuit ({host.Machine.Famicom.CompiledRuntimeUnitCount} runtime unit; {host.Machine.Famicom.CompiledFoldedPhysicalTraceCount} fixed traces folded; no signal queue)"
         : "Kernel:      chip-owned pin-gated direct propagation (no signal queue)");
-if (compiledLab) Console.WriteLine("Compiler:    topology/chip-circuit derived only; mapper + ROM remain outside motherboard unit");
+if (compiledLab)
+{
+    Console.WriteLine("Compiler:    component hardware facets + physical topology only; zero board/product semantics");
+    Console.WriteLine("Boundary:    mapper + ROM remain replaceable external hardware");
+}
 if (referenceRuntimeActive) Console.WriteLine("Reference:   legacy per-trace runtime forced for A/B comparison");
 var realTimePacing = !uncappedRuntime && !profileSimulation;
 Console.WriteLine(realTimePacing

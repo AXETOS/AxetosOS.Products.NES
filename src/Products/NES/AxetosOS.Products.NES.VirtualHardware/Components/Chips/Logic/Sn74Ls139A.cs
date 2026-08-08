@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 
@@ -6,7 +7,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 /// Standalone SN74LS139A dual 2-to-4 decoder/demultiplexer package.
 /// Each section has an independent active-low enable and four active-low outputs.
 /// </summary>
-public sealed class Sn74Ls139A : VirtualHardwareComponent
+public sealed class Sn74Ls139A : VirtualHardwareComponent, ICompiledCombinationalComponent
 {
     private readonly DigitalPin[] _section1Outputs;
     private readonly DigitalPin[] _section2Outputs;
@@ -176,4 +177,68 @@ public sealed class Sn74Ls139A : VirtualHardwareComponent
         Y22Bar.Release();
         Y23Bar.Release();
     }
+
+    bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive)
+    {
+        DigitalPin enable;
+        DigitalPin a;
+        DigitalPin b;
+        int selectedOutput;
+        if (ReferenceEquals(output, Y10Bar)) selectedOutput = 0;
+        else if (ReferenceEquals(output, Y11Bar)) selectedOutput = 1;
+        else if (ReferenceEquals(output, Y12Bar)) selectedOutput = 2;
+        else if (ReferenceEquals(output, Y13Bar)) selectedOutput = 3;
+        else selectedOutput = -1;
+
+        if (selectedOutput >= 0)
+        {
+            enable = Enable1Bar;
+            a = A1;
+            b = B1;
+        }
+        else
+        {
+            if (ReferenceEquals(output, Y20Bar)) selectedOutput = 0;
+            else if (ReferenceEquals(output, Y21Bar)) selectedOutput = 1;
+            else if (ReferenceEquals(output, Y22Bar)) selectedOutput = 2;
+            else if (ReferenceEquals(output, Y23Bar)) selectedOutput = 3;
+            else
+            {
+                drive = default;
+                return false;
+            }
+            enable = Enable2Bar;
+            a = A2;
+            b = B2;
+        }
+
+        var enabled = sampleInput(enable);
+        if (enabled == DigitalLevel.High)
+        {
+            drive = new CompiledDriveState(DigitalLevel.High);
+            return true;
+        }
+        if (enabled != DigitalLevel.Low)
+        {
+            drive = new CompiledDriveState(DigitalLevel.Unknown);
+            return true;
+        }
+
+        var av = sampleInput(a);
+        var bv = sampleInput(b);
+        if (av is not (DigitalLevel.Low or DigitalLevel.High) || bv is not (DigitalLevel.Low or DigitalLevel.High))
+        {
+            drive = new CompiledDriveState(DigitalLevel.Unknown);
+            return true;
+        }
+
+        var selected = (av == DigitalLevel.High ? 1 : 0) | (bv == DigitalLevel.High ? 2 : 0);
+        drive = new CompiledDriveState(selected == selectedOutput ? DigitalLevel.Low : DigitalLevel.High);
+        return true;
+    }
+
+
 }

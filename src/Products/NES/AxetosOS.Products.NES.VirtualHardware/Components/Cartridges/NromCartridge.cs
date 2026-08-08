@@ -1,6 +1,7 @@
 using AxetosOS.Products.NES.VirtualHardware.Components;
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 
@@ -8,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 /// Standalone mapper-0 cartridge board. PRG and CHR devices react only to the
 /// normalized cartridge connector pins; no CPU, PPU, or motherboard calls are used.
 /// </summary>
-public sealed class NromCartridge : VirtualHardwareComponent
+public sealed class NromCartridge : VirtualHardwareComponent, ICompiledBusTargetProvider, ICompiledCombinationalComponent, ICompiledExternalDevice
 {
     private byte[] _prg = [];
     private byte[] _chr = [];
@@ -331,4 +332,91 @@ public sealed class NromCartridge : VirtualHardwareComponent
         CiramA10.Release();
         IrqBar.Release();
     }
+
+    bool ICompiledExternalDevice.ReadyForCompiledExecution => IsInserted;
+
+    IEnumerable<CompiledBusTargetDescriptor> ICompiledBusTargetProvider.GetCompiledBusTargets()
+    {
+        if (!IsInserted) yield break;
+
+        yield return new CompiledBusTargetDescriptor(
+            this,
+            CpuAddress.Pins,
+            CpuData.Pins,
+            new[]
+            {
+                new CompiledPinCondition(CpuReadWrite, DigitalLevel.High),
+                new CompiledPinCondition(CpuAddress.Pins[15], DigitalLevel.High)
+            },
+            Array.Empty<CompiledPinCondition>(),
+            CompiledBusReadPhase.Complete,
+            address => ReadCpuCompiled((ushort)address),
+            null);
+
+        var ppuAddressPins = new DigitalPin[PpuAddressData.Width + PpuHighAddress.Width];
+        for (var bit = 0; bit < PpuAddressData.Width; bit++)
+            ppuAddressPins[bit] = PpuAddressData.Pins[bit];
+        for (var bit = 0; bit < PpuHighAddress.Width; bit++)
+            ppuAddressPins[bit + PpuAddressData.Width] = PpuHighAddress.Pins[bit];
+
+        Action<int, byte>? compiledPpuWrite = _chrRam
+            ? (address, value) => WritePpuCompiled((ushort)address, value)
+            : null;
+        yield return new CompiledBusTargetDescriptor(
+            this,
+            ppuAddressPins,
+            PpuAddressData.Pins,
+            new[]
+            {
+                new CompiledPinCondition(PpuHighAddress.Pins[5], DigitalLevel.Low),
+                new CompiledPinCondition(PpuAle, DigitalLevel.Low),
+                new CompiledPinCondition(PpuReadBar, DigitalLevel.Low)
+            },
+            _chrRam
+                ? new[]
+                {
+                    new CompiledPinCondition(PpuHighAddress.Pins[5], DigitalLevel.Low),
+                    new CompiledPinCondition(PpuAle, DigitalLevel.Low),
+                    new CompiledPinCondition(PpuWriteBar, DigitalLevel.Low)
+                }
+                : Array.Empty<CompiledPinCondition>(),
+            CompiledBusReadPhase.Complete,
+            address => ReadPpuCompiled((ushort)address),
+            compiledPpuWrite);
+    }
+
+    bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive)
+    {
+        if (ReferenceEquals(output, CiramChipEnableBar))
+        {
+            drive = new CompiledDriveState(sampleInput(PpuHighAddress.Pins[5]) switch
+            {
+                DigitalLevel.Low => DigitalLevel.High,
+                DigitalLevel.High => DigitalLevel.Low,
+                _ => DigitalLevel.Unknown
+            });
+            return true;
+        }
+
+        if (ReferenceEquals(output, CiramA10))
+        {
+            var sourceBit = _mirroring == VirtualHardwareNesMirroring.Horizontal ? 3 : 2;
+            drive = new CompiledDriveState(sampleInput(PpuHighAddress.Pins[sourceBit]));
+            return true;
+        }
+
+        if (ReferenceEquals(output, IrqBar))
+        {
+            drive = new CompiledDriveState(DigitalLevel.HighImpedance);
+            return true;
+        }
+
+        drive = default;
+        return false;
+    }
+
+
 }

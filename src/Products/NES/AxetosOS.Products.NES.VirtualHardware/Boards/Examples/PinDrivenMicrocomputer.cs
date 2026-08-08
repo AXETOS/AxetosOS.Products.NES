@@ -16,6 +16,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Boards.Examples;
 /// </summary>
 public sealed class PinDrivenMicrocomputer
 {
+    private CompiledLabMotherboardExecutionPlan? _compiledExecutionPlan;
     public PinDrivenMicrocomputer(ReadOnlySpan<byte> program)
     {
         Board = new VirtualHardwareBoard("virtual-hardware.example.microcomputer");
@@ -51,22 +52,39 @@ public sealed class PinDrivenMicrocomputer
     public void PowerOn()
     {
         Board.PowerOn();
+        _compiledExecutionPlan?.SynchronizePowerOn();
     }
 
     public void ReleaseReset()
     {
         ResetCircuit.Release();
+        _compiledExecutionPlan?.RefreshExternalSource(ResetCircuit.ResetBar);
     }
 
     public void AdvanceHalfCycle()
     {
-        Oscillator.AdvanceHalfCycle();
+        if (_compiledExecutionPlan is not null) _compiledExecutionPlan.AdvanceHalfCycle();
+        else Oscillator.AdvanceHalfCycle();
     }
 
     public void AdvanceCycle()
     {
         AdvanceHalfCycle();
         AdvanceHalfCycle();
+    }
+
+    public bool CompiledHardwareEnabled => _compiledExecutionPlan is not null;
+
+    public void SetCompiledHardwareEnabled(bool enabled)
+    {
+        if (!enabled)
+        {
+            _compiledExecutionPlan?.Dispose();
+            _compiledExecutionPlan = null;
+            return;
+        }
+        if (_compiledExecutionPlan is not null) return;
+        _compiledExecutionPlan = new CompiledLabMotherboardExecutionPlan(Board, Oscillator);
     }
 
     public void RunUntilHalted(int maximumCycles = 1_000)

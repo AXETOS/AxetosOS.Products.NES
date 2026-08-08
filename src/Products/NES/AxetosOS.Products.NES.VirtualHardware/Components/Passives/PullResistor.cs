@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Passives;
 
@@ -6,7 +7,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Passives;
 /// Behavioral digital resistor. It samples its rail terminal and weakly drives
 /// the node terminal, allowing a strong chip output to override it.
 /// </summary>
-public sealed class PullResistor : VirtualHardwareComponent
+public sealed class PullResistor : VirtualHardwareComponent, ICompiledCombinationalComponent
 {
     public PullResistor(string componentId)
         : base(componentId)
@@ -33,4 +34,22 @@ public sealed class PullResistor : VirtualHardwareComponent
                 break;
         }
     }
+
+    bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive)
+    {
+        if (!ReferenceEquals(output, Node))
+        {
+            drive = default;
+            return false;
+        }
+        var level = sampleInput(Rail);
+        drive = new CompiledDriveState(
+            level is DigitalLevel.Low or DigitalLevel.High ? level : DigitalLevel.HighImpedance,
+            DigitalDriveStrength.Weak);
+        return true;
+    }
+
 }

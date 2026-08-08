@@ -1,13 +1,14 @@
 using System.Runtime.CompilerServices;
 using AxetosOS.Products.NES.VirtualHardware.Components;
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Clock;
 
 /// <summary>
 /// A digital oscillator whose passage of time is advanced by the simulator.
 /// </summary>
-public sealed class DigitalOscillator : VirtualHardwareComponent, IExternalBoardSource
+public sealed class DigitalOscillator : VirtualHardwareComponent, IExternalBoardSource, ICompiledClockSource
 {
     private bool _high;
 
@@ -75,4 +76,13 @@ public sealed class DigitalOscillator : VirtualHardwareComponent, IExternalBoard
         HalfCycleCount = 0;
         Output.Drive(DigitalLevel.Low);
     }
+
+    DigitalPin ICompiledClockSource.CompiledClockOutput => Output;
+    ulong ICompiledClockSource.CompiledHalfCycleCount => HalfCycleCount;
+    DigitalLevel ICompiledClockSource.CompiledClockLevel => Output.DriveLevel;
+    bool ICompiledClockSource.AdvanceCompiledHalfCycleWithoutPropagation() =>
+        AdvanceHalfCycleCompiledWithoutPropagation();
+    void ICompiledClockSource.AdvanceCompiledFullCyclesWithoutPropagation(int cycles) =>
+        AdvanceFullCyclesCompiledWithoutPropagation(cycles);
+
 }

@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 
@@ -6,7 +7,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 /// Pin-driven standard NES/Famicom controller shift-register package.
 /// Button order is A, B, Select, Start, Up, Down, Left, Right.
 /// </summary>
-public sealed class NesStandardController : VirtualHardwareComponent
+public sealed class NesStandardController : VirtualHardwareComponent, ICompiledSerialPeripheralProvider
 {
     private byte _shiftRegister;
     private DigitalLevel _previousStrobe = DigitalLevel.Low;
@@ -136,4 +137,42 @@ public sealed class NesStandardController : VirtualHardwareComponent
 
     private void DriveCurrentBit() =>
         Data.Drive((_shiftRegister & 0x01) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+
+    IEnumerable<CompiledSerialPeripheralDescriptor> ICompiledSerialPeripheralProvider.GetCompiledSerialPeripherals()
+    {
+        yield return new CompiledSerialPeripheralDescriptor(
+            this,
+            Data,
+            ClockBar,
+            Strobe,
+            ReadCompiledSerial,
+            WriteCompiledLatch);
+    }
+
+    private byte ReadCompiledSerial()
+    {
+        var value = (byte)(_shiftRegister & 0x01);
+        if (_previousStrobe != DigitalLevel.High)
+        {
+            _shiftRegister = (byte)((_shiftRegister >> 1) | 0x80);
+            ShiftCount++;
+        }
+        return value;
+    }
+
+    private void WriteCompiledLatch(bool high)
+    {
+        var next = high ? DigitalLevel.High : DigitalLevel.Low;
+        if (high)
+        {
+            CaptureButtons(countLatch: _previousStrobe != DigitalLevel.High);
+        }
+        else if (_previousStrobe == DigitalLevel.High)
+        {
+            CaptureButtons(countLatch: false);
+        }
+        _previousStrobe = next;
+    }
+
+
 }

@@ -100,14 +100,14 @@ public sealed class FamicomMotherboard
     {
         ResetSource.Set(DigitalLevel.High);
         _compiledNromExecutionPlan?.SetResetAsserted(false);
-        _compiledLabMotherboardExecutionPlan?.SetResetAsserted(false);
+        _compiledLabMotherboardExecutionPlan?.RefreshExternalSource(ResetSource.Output);
     }
 
     public void AssertReset()
     {
         ResetSource.Set(DigitalLevel.Low);
         _compiledNromExecutionPlan?.SetResetAsserted(true);
-        _compiledLabMotherboardExecutionPlan?.SetResetAsserted(true);
+        _compiledLabMotherboardExecutionPlan?.RefreshExternalSource(ResetSource.Output);
     }
 
     public bool CompiledPhysicalMachineEnabled => _compiledNromExecutionPlan is not null;
@@ -150,13 +150,15 @@ public sealed class FamicomMotherboard
         _compiledNromExecutionPlan?.Dispose();
         _compiledNromExecutionPlan = null;
 
-        // Cartridge/mapper hardware remains a replaceable unit outside the
-        // motherboard compilation boundary. The factory is mapper-specific; the
-        // whole-board compiler receives only that boundary contract.
-        var cartridge = Board.Components.OfType<NromCartridge>().SingleOrDefault()
-            ?? throw new InvalidOperationException("A supported physical cartridge must be attached before compiling the motherboard.");
-        var external = CompiledExternalCartridgeFactory.Create(cartridge);
-        _compiledLabMotherboardExecutionPlan = new CompiledLabMotherboardExecutionPlan(Board, MasterClock, external);
+        // Replaceable hardware stays outside the fixed-board runtime unit. The
+        // lab compiler discovers such devices only through the generic external-
+        // device marker and consumes their ordinary hardware compilation facets.
+        // It never asks what product, cartridge, mapper, or board is present.
+        if (!Board.Components.OfType<ICompiledExternalDevice>().Any(device => device.ReadyForCompiledExecution))
+            throw new InvalidOperationException("No ready replaceable hardware device is attached to the compiled board boundary.");
+        _compiledLabMotherboardExecutionPlan = new CompiledLabMotherboardExecutionPlan(
+            Board,
+            (ICompiledClockSource)MasterClock);
     }
 
     public void AdvanceMasterHalfCycle()

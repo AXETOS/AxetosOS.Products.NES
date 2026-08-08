@@ -18,7 +18,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Simulation;
 /// PPU and APU silicon state, but their hot compiled paths do not drive/sample
 /// motherboard package pins.
 /// </summary>
-internal sealed class CompiledFamicomNromExecutionPlan : ICompiledFamicomNromFabric, IDisposable
+internal sealed class CompiledFamicomNromExecutionPlan : IDisposable
 {
     private readonly FamicomMotherboard _board;
     private readonly Rp2A03 _cpu;
@@ -34,6 +34,8 @@ internal sealed class CompiledFamicomNromExecutionPlan : ICompiledFamicomNromFab
     private ushort _cpuReadLatchAddress;
     private byte _cpuReadLatch;
     private bool _resetAsserted;
+    private readonly ICompiledBusFabric _cpuFabric;
+    private readonly ICompiledBusFabric _ppuFabric;
 
     public CompiledFamicomNromExecutionPlan(FamicomMotherboard board)
     {
@@ -48,8 +50,10 @@ internal sealed class CompiledFamicomNromExecutionPlan : ICompiledFamicomNromFab
         _horizontalMirroring = _cartridge.CompiledMirroring == VirtualHardwareNesMirroring.Horizontal;
         _masterClockRisingEdges = (board.MasterClock.HalfCycleCount + (board.MasterClock.Output.DriveLevel == DigitalLevel.High ? 1UL : 0UL)) / 2;
         _resetAsserted = board.ResetSource.Output.DriveLevel != DigitalLevel.High;
-        _cpu.AttachCompiledFabric(this);
-        _ppu.AttachCompiledFabric(this);
+        _cpuFabric = new CpuBusFabric(this);
+        _ppuFabric = new PpuBusFabric(this);
+        _cpu.AttachCompiledBusFabric(_cpuFabric);
+        _ppu.AttachCompiledBusFabric(_ppuFabric);
         _cpu.SetCompiledResetAsserted(_resetAsserted);
         _ppu.SetCompiledResetAsserted(_resetAsserted);
     }
@@ -273,7 +277,41 @@ internal sealed class CompiledFamicomNromExecutionPlan : ICompiledFamicomNromFab
 
     public void Dispose()
     {
-        _cpu.DetachCompiledFabric();
-        _ppu.DetachCompiledFabric();
+        _cpu.DetachCompiledBusFabric();
+        _ppu.DetachCompiledBusFabric();
     }
+
+    private sealed class CpuBusFabric : ICompiledBusFabric
+    {
+        private readonly CompiledFamicomNromExecutionPlan _owner;
+        public CpuBusFabric(CompiledFamicomNromExecutionPlan owner) => _owner = owner;
+        public ulong ClockRisingEdges => _owner.MasterClockRisingEdges;
+        public bool InterruptRequestLow => _owner.CpuIrqLow;
+        public void BeginRead(ushort address) => _owner.BeginCpuRead(address);
+        public bool CompleteRead(ushort address, out byte value) => _owner.CompleteCpuRead(address, out value);
+        public void Write(ushort address, byte value) => _owner.BeginCpuWrite(address, value);
+        public byte ReadSerialInput(int channel) => _owner.ReadControllerSerial(channel);
+        public void WriteParallelOutputs(byte value) => _owner.WriteControllerLatch(value);
+        public void PresentOutputSignal(DigitalPin sourcePin, DigitalLevel level) { }
+    }
+
+    private sealed class PpuBusFabric : ICompiledBusFabric
+    {
+        private readonly CompiledFamicomNromExecutionPlan _owner;
+        public PpuBusFabric(CompiledFamicomNromExecutionPlan owner) => _owner = owner;
+        public ulong ClockRisingEdges => _owner.MasterClockRisingEdges;
+        public bool InterruptRequestLow => false;
+        public void BeginRead(ushort address) { }
+        public bool CompleteRead(ushort address, out byte value)
+        {
+            value = _owner.ReadPpuVram(address);
+            return true;
+        }
+        public void Write(ushort address, byte value) => _owner.WritePpuVram(address, value);
+        public byte ReadSerialInput(int channel) => 0;
+        public void WriteParallelOutputs(byte value) { }
+        public void PresentOutputSignal(DigitalPin sourcePin, DigitalLevel level) =>
+            _owner.PresentPpuNmi(level == DigitalLevel.Low);
+    }
+
 }

@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 
@@ -7,7 +8,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 /// output-enable groups.  The package decides internally whether an A-pin
 /// transition can reach its output stage; the board always delivers the pin.
 /// </summary>
-public sealed class Sn74Ls368A : VirtualHardwareComponent
+public sealed class Sn74Ls368A : VirtualHardwareComponent, ICompiledCombinationalComponent
 {
     private readonly ulong _powerInputMask;
     private readonly ulong _enable1InputMask;
@@ -149,4 +150,48 @@ public sealed class Sn74Ls368A : VirtualHardwareComponent
 
     private bool IsPowered() =>
         Vcc.SampledLevel == DigitalLevel.High && Gnd.SampledLevel == DigitalLevel.Low;
+
+    bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive)
+    {
+        var channel = -1;
+        for (var index = 0; index < YBar.Count; index++)
+        {
+            if (ReferenceEquals(output, YBar[index]))
+            {
+                channel = index;
+                break;
+            }
+        }
+        if (channel < 0)
+        {
+            drive = default;
+            return false;
+        }
+
+        var enable = channel < 4 ? Enable1Bar : Enable2Bar;
+        var enabled = sampleInput(enable);
+        if (enabled == DigitalLevel.High)
+        {
+            drive = new CompiledDriveState(DigitalLevel.HighImpedance);
+            return true;
+        }
+        if (enabled != DigitalLevel.Low)
+        {
+            drive = new CompiledDriveState(DigitalLevel.Unknown);
+            return true;
+        }
+
+        drive = new CompiledDriveState(sampleInput(A[channel]) switch
+        {
+            DigitalLevel.Low => DigitalLevel.High,
+            DigitalLevel.High => DigitalLevel.Low,
+            _ => DigitalLevel.Unknown
+        });
+        return true;
+    }
+
+
 }
