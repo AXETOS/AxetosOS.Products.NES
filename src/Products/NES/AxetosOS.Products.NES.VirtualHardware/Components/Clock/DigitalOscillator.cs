@@ -48,6 +48,27 @@ public sealed class DigitalOscillator : VirtualHardwareComponent, IExternalBoard
         Output.DriveCompiledSource(_high ? DigitalLevel.High : DigitalLevel.Low);
     }
 
+    /// <summary>
+    /// Fused-machine full-cycle accounting. Two physical clock levels occur per
+    /// complete cycle and the oscillator returns to the same drive level, so no
+    /// package-pin publication is needed by the compiled circuit.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void AdvanceFullCyclesCompiledWithoutPropagation(int cycles)
+    {
+        HalfCycleCount += (ulong)cycles * 2UL;
+    }
+
+    /// <summary>Debug/conformance half-cycle path for the fused runtime.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool AdvanceHalfCycleCompiledWithoutPropagation()
+    {
+        _high = !_high;
+        HalfCycleCount++;
+        Output.DriveCompiledSource(_high ? DigitalLevel.High : DigitalLevel.Low);
+        return _high;
+    }
+
     public void ApplyPowerOnDrive()
     {
         _high = false;

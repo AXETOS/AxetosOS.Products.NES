@@ -1,0 +1,13 @@
+AxetosOS Products / NES v2.0.0 patch
+
+Purpose:
+- Introduce startup compilation of the fixed physical Famicom + NROM machine.
+- Replace repeated per-net runtime interpretation on the dominant parallel buses with compiled physical routes.
+- Compile MASTER.CLK directly to its two known Ricoh package clock pins in normal execution.
+- Preserve the existing per-trace runtime behind --reference-runtime for same-build A/B benchmarking.
+
+Expected test result: 224 passed, 0 failed.
+
+Important:
+- The physical VirtualHardware board/chip/pin/net model remains authoritative.
+- No motherboard chip semantics, direct ROM reads, event queue, scheduler, settle pass, or skipped physical clock is introduced.

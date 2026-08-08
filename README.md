@@ -115,3 +115,91 @@ v1.5.1 follows the v1.5.0 profile inside the physical RP2C02/RP2C07 packages. Th
 - RP2C02 and RP2C07 remain behaviorally separate physical packages with the same external pin timing and region-specific raster/emphasis behavior.
 
 No motherboard behavior changes. Every PPU clock, VRAM address/data transition, ALE, `/RD`, `/WR`, and package-pin delivery remains physical and immediate. The packing is only an internal host representation of four independent chip-local shift registers.
+
+## v1.5.2 RP2C0x hardwired rendering VRAM fetch circuit
+
+v1.5.2 separates the PPU's fixed rendering fetch circuit from the slower CPU `$2007` VRAM read/write sequencer. Background and sprite rendering reads are always the same physical package transaction: address/ALE, then released AD with `/RD`, then capture. The hot renderer no longer carries generic transaction kind, completion-policy, or CPU-read/write purpose state through every fetch.
+
+- rendering fetches retain only their physical address, two-phase read state, and destination latch;
+- the rendering address phase drives A8-A13, AD0-AD7 and ALE immediately when the internal dot decoder fires;
+- the next PPU dot directly drives the read/data phase with AD released and `/RD` asserted;
+- the following dot samples AD and routes the returned byte directly to the selected nametable, attribute, pattern, or sprite latch;
+- CPU `$2007` reads/writes keep their separate three-phase physical transaction path and cannot overlap an active rendering fetch;
+- `VramTransactionActive` now represents either physical internal VRAM sequencer owning the package bus;
+- no external A/AD/ALE/`/RD`/`/WR` transition is removed or coalesced.
+
+This keeps the dumb-motherboard boundary unchanged. The optimization is entirely inside RP2C02/RP2C07: fixed-function rendering circuitry no longer pays generic software transaction bookkeeping designed for the CPU port.
+
+
+## v2.0.0 startup-compiled physical Famicom/NROM machine
+
+v2.0.0 changes the execution architecture rather than continuing the v1.x sequence of small hot-path optimizations. The existing `VirtualHardware` board/chip/pin/net model remains the authoritative physical definition. After a mapper-0 cartridge is physically attached to the Japanese Famicom board and topology validation completes, the fixed machine is compiled into a dedicated runtime fabric for normal execution.
+
+The first compiled machine covers the benchmark-critical fixed hardware paths:
+
+- the one-driver `MASTER.CLK` trace is compiled directly to the RP2A03 and RP2C02 package clock pins while retaining every physical Low/High presentation and each chip pin's own divide-by-six/divide-by-four activation counter;
+- CPU A0-A15 are compiled as one 16-trace parallel route;
+- CPU D0-D7 are compiled as one eight-trace shared electrical route with the real RP2A03, PPU, work-RAM and cartridge drivers still participating in per-bit Hi-Z/strength/contention resolution;
+- PPU AD0-AD7 are compiled as one eight-trace shared electrical route across RP2C02, SN74LS373, CIRAM and the cartridge;
+- PPU A8-A13 are compiled as one six-trace physical route;
+- the SN74LS373-to-CIRAM A0-A7 path is compiled as one eight-trace physical route;
+- package output batching remains atomic: a chip's complete output state is established before any receiving package executes, even when one reaction changes both compiled buses and ordinary scalar control pins;
+- receiver pin levels are still stored unconditionally before chip-owned activation gates decide whether internal circuitry wakes;
+- no signal queue, scheduler, motherboard `/CS` knowledge, direct CPU-to-ROM call, skipped PPU/CPU clock, or receiver-aware transport suppression is introduced.
+
+The desktop host uses the compiled Famicom/NROM machine by default. `--reference-runtime` disables the startup-compiled routes in the same build so the old per-trace runtime can be benchmarked against the compiled machine without changing ROM, chip implementation, rendering, audio, or board topology.
+
+This release intentionally starts with Famicom + NROM because Super Mario Bros. and Donkey Kong provide a controlled mapper-0 performance baseline. NTSC NES, PAL NES and later mapper hardware remain on the existing physical runtime until their compiled forms are validated.
+
+
+## v2.1.0 fused compiled Famicom/NROM circuit
+
+v2.1.0 retires the v2.0 per-bus route experiment. That design still fed the ordinary `DigitalPin`/`DigitalNet`/package execution graph and benchmarked slower than the reference runtime.
+
+The new Famicom + NROM compiled runtime folds the fixed machine one level deeper. The ordinary physical board is still assembled and topology-validated first, but normal execution then bypasses motherboard component dispatch for the benchmark machine:
+
+- the 12-master-cycle RP2A03/RP2C02 divider schedule is precompiled and executed directly;
+- full master cycles are accounted without publishing clock levels that cannot activate internal chip state;
+- CPU RAM mirroring is resolved directly by the compiled circuit;
+- NROM 16/32 KiB PRG selection is fixed at startup;
+- CPU $2000-$3FFF register selection reaches the RP2C02 register core directly through the compiled decoder;
+- PPU pattern fetches reach NROM CHR directly while preserving the retained two-dot PPU fetch phases;
+- nametable accesses reach CIRAM directly through startup-fixed horizontal/vertical mirroring;
+- PPU /NMI reaches the RP2A03 edge latch directly;
+- CPU/PPU package pins, motherboard nets, LS139, LS373, LS368, SRAM package evaluation and NROM package evaluation do not participate in the normal compiled hot loop.
+
+The chip classes still retain the authoritative CPU/PPU/APU silicon state and their standalone pin-driven paths remain available for package conformance tests. `--reference-runtime` still runs the v1.5-style physical per-trace engine from the same executable for A/B comparison.
+
+## v2.1.1 real-time host pacing and fused APU conformance
+
+v2.1.1 keeps the v2.1 fused Famicom/NROM circuit and changes the native desktop host from throughput-driven presentation to hardware-clock pacing by default. The compiled machine may have more than 60 FPS of host headroom, but normal play now advances emulated time against the real 21.477272 MHz NTSC/Famicom master clock instead of allowing the game and PCM producer to run ahead of wall time.
+
+- normal desktop execution is paced from accumulated master cycles, not from an arbitrary 60 FPS cap;
+- `--uncapped` preserves raw host-throughput benchmarking, while `--profile` remains uncapped automatically;
+- the host prints final APU cycle, DAC-event and DAC-level diagnostics so a silent title can be distinguished from an audio-device/pacing problem;
+- a new Famicom/NROM conformance ROM programs RP2A03 pulse 1 through `$4000`, `$4002`, `$4003` and `$4015`, then requires the compiled and reference runtimes to produce the same non-zero DAC sample sequence.
+
+The fused circuit itself is unchanged in this release. The purpose is to make >60 FPS execution usable as real hardware headroom rather than faster-than-hardware game time, and to close the APU-only coverage gap exposed by the first v2.1 game tests.
+
+## v2.2.0 true-hardware electrical hot-path sweep
+
+v2.2.0 begins the post-v2.1 optimization program on the real pin/net/package runtime rather than adding more NES-specific fused behavior. The board remains topology-only and every chip remains isolated from peer components and wiring semantics.
+
+The electrical layer restores the proven direct/unrolled three- and four-driver resolvers used by the faster v1.4.2 physical runtime, removing the later incremental per-driver bookkeeping from common shared buses. It also topology-compiles the dominant ordinary input-only and bidirectional `AnyChange` package-pin acceptance paths so each delivered physical level no longer reinterprets pin direction and activation mode before the chip-owned wake gate is consulted.
+
+No physical delivery, Hi-Z state, drive-strength rule, contention state, package-boundary atomic output publication, or receiver activation rule is removed. The v2.1 fused Famicom/NROM runtime remains available only as the existing experimental/fallback path; this release's performance work targets the generic hardware-lab execution path.
+
+## v2.5.0 aggressive true-hardware package/electrical sweep
+
+v2.5.0 is an intentionally aggressive performance experiment built from the validated v2.2 true-hardware baseline. It does not use the fused Famicom/NROM shortcuts and intentionally rolls back the v2.3 package-aggregation and v2.4 discrete-chip experiments.
+
+The package boundary now stages changed physical pins in a 64-bit package-pin mask rather than a per-reaction reference array/publication sequence. Current NES packages fit in one mask; arbitrary laboratory packages above 64 pins retain a generic overflow path. A changed bit still represents one real physical package pin and is still published through that pin's own attached `DigitalNet`.
+
+`DigitalBus` adds package-local parallel output staging for 6-, 8- and 16-pin buses when all member pins belong to the same chip reaction. Every pin's actual drive state changes individually, but the package records the resulting physical pin-change mask once instead of re-entering staging logic for every bit. Outside a chip reaction the ordinary per-pin immediate path is unchanged.
+
+Digital output level and drive strength are packed into one byte per `DigitalPin`, and the 2/3/4-driver electrical resolvers consume that packed state directly. High/Low/Hi-Z/Unknown, weak/strong priority and contention semantics are unchanged. `DigitalLevel`, `DigitalDriveStrength` and `PinDirection` also use byte-sized enum storage.
+
+The architecture remains lab-safe: chips know only themselves, boards know only physical connections, arbitrary rewiring still changes behavior, and no NES/CPU/PPU/mapper meaning is present in the generic electrical runtime. Two package-boundary tests verify wide-bus atomicity and final-state publication when a physical output changes more than once during one chip reaction.
+
+The previously validated v2.2 suite contained 226 tests. v2.5.0 adds two tests, so the expected total is **228**.
+

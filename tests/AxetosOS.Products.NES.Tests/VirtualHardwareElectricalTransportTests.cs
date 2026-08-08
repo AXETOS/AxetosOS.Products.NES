@@ -47,7 +47,7 @@ public sealed class VirtualHardwareElectricalTransportTests
 
 
     [Fact]
-    public void Multi_driver_resolver_preserves_strength_contention_and_release_semantics()
+    public void Multi_driver_compiled_resolver_preserves_strength_contention_and_release_semantics()
     {
         var board = new VirtualHardwareBoard("multi-driver-compiled-resolver");
         var first = board.Add(new OutputProbe("first"));
@@ -73,10 +73,11 @@ public sealed class VirtualHardwareElectricalTransportTests
         Assert.Equal(DigitalLevel.High, receiver.Input.SampledLevel);
     }
 
+
     [Fact]
-    public void Four_driver_hot_bus_resolver_preserves_strength_and_unknown_semantics()
+    public void Four_driver_direct_resolver_preserves_strong_over_weak_and_contention()
     {
-        var board = new VirtualHardwareBoard("four-driver-hot-resolver");
+        var board = new VirtualHardwareBoard("four-driver-direct-resolver");
         var first = board.Add(new OutputProbe("first"));
         var second = board.Add(new OutputProbe("second"));
         var third = board.Add(new OutputProbe("third"));
@@ -86,17 +87,47 @@ public sealed class VirtualHardwareElectricalTransportTests
         _ = new VirtualHardwareSimulator(board);
 
         first.Set(DigitalLevel.High, DigitalDriveStrength.Weak);
-        second.Set(DigitalLevel.Low, DigitalDriveStrength.Weak);
-        Assert.Equal(DigitalLevel.Contention, receiver.Input.SampledLevel);
+        second.Set(DigitalLevel.High, DigitalDriveStrength.Weak);
+        Assert.Equal(DigitalLevel.High, receiver.Input.SampledLevel);
 
         third.Set(DigitalLevel.Low);
         Assert.Equal(DigitalLevel.Low, receiver.Input.SampledLevel);
 
-        fourth.Set(DigitalLevel.Unknown);
-        Assert.Equal(DigitalLevel.Unknown, receiver.Input.SampledLevel);
+        fourth.Set(DigitalLevel.High);
+        Assert.Equal(DigitalLevel.Contention, receiver.Input.SampledLevel);
 
         fourth.Release();
         Assert.Equal(DigitalLevel.Low, receiver.Input.SampledLevel);
+
+        third.Release();
+        Assert.Equal(DigitalLevel.High, receiver.Input.SampledLevel);
+    }
+
+    [Fact]
+    public void Bidirectional_any_change_fast_path_keeps_physical_level_without_self_wakeup()
+    {
+        var board = new VirtualHardwareBoard("bidirectional-any-change-fastpath");
+        var source = board.Add(new OutputProbe("source"));
+        var receiver = board.Add(new BidirectionalProbe("receiver"));
+        board.Connect("shared", source.Output, receiver.Io);
+        _ = new VirtualHardwareSimulator(board);
+
+        var baseline = receiver.ActivationCount;
+        source.Set(DigitalLevel.High);
+        Assert.Equal(baseline + 1, receiver.ActivationCount);
+        Assert.Equal(DigitalLevel.High, receiver.Io.SampledLevel);
+
+        receiver.Drive(DigitalLevel.Low);
+        var whileDriving = receiver.ActivationCount;
+        source.Set(DigitalLevel.Low);
+        source.Set(DigitalLevel.High);
+
+        Assert.Equal(whileDriving, receiver.ActivationCount);
+        Assert.Equal(DigitalLevel.Contention, receiver.Io.SampledLevel);
+
+        receiver.Release();
+        Assert.Equal(DigitalLevel.High, receiver.Io.SampledLevel);
+        Assert.Equal(whileDriving, receiver.ActivationCount);
     }
 
     [Fact]
@@ -156,6 +187,24 @@ public sealed class VirtualHardwareElectricalTransportTests
             First.Drive(DigitalLevel.Low);
             Second.Drive(DigitalLevel.High);
         }
+    }
+
+
+    private sealed class BidirectionalProbe : VirtualHardwareComponent
+    {
+        public BidirectionalProbe(string componentId) : base(componentId)
+        {
+            Io = AddPin("IO", PinDirection.Bidirectional);
+            Io.Release();
+        }
+
+        public DigitalPin Io { get; }
+        public int ActivationCount { get; private set; }
+
+        public void Drive(DigitalLevel level) => Io.Drive(level);
+        public void Release() => Io.Release();
+
+        protected override void OnInputChanges(ulong changedInputMask) => ActivationCount++;
     }
 
     private sealed class RecordingInputProbe : VirtualHardwareComponent

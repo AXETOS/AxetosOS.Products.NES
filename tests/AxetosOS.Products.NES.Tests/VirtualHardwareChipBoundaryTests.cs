@@ -159,6 +159,45 @@ public sealed class VirtualHardwareChipBoundaryTests
     }
 
     [Fact]
+    public void Wide_package_bus_drive_is_published_as_one_atomic_physical_change_set()
+    {
+        var board = new VirtualHardwareBoard("wide-package-atomic");
+        var trigger = board.Add(new DigitalSignalSource("trigger", DigitalLevel.Low));
+        var source = board.Add(new OctalOutputProbe("source"));
+        var receiver = board.Add(new OctalInputProbe("receiver"));
+        board.Connect("trigger.net", trigger.Output, source.Trigger);
+        for (var bit = 0; bit < 8; bit++)
+            board.Connect($"bus.{bit}", source.Outputs.Pins[bit], receiver.Inputs.Pins[bit]);
+        _ = new VirtualHardwareSimulator(board);
+
+        var baseline = receiver.InputActivationCount;
+        trigger.Set(DigitalLevel.High);
+
+        Assert.Equal(baseline + 1, receiver.InputActivationCount);
+        Assert.Equal(0xFFUL, receiver.LastChangedInputMask);
+        Assert.True(receiver.Inputs.TrySample(out var sampled));
+        Assert.Equal(0xA5UL, sampled);
+    }
+
+    [Fact]
+    public void Package_pin_change_mask_publishes_only_the_final_drive_state()
+    {
+        var board = new VirtualHardwareBoard("package-final-state");
+        var trigger = board.Add(new DigitalSignalSource("trigger", DigitalLevel.Low));
+        var source = board.Add(new DoubleToggleOutputProbe("source"));
+        var receiver = board.Add(new InputProbe("receiver"));
+        board.Connect("trigger.net", trigger.Output, source.Trigger);
+        board.Connect("out.net", source.Output, receiver.Input);
+        _ = new VirtualHardwareSimulator(board);
+
+        var baseline = receiver.InputActivationCount;
+        trigger.Set(DigitalLevel.High);
+
+        Assert.Equal(baseline + 1, receiver.InputActivationCount);
+        Assert.Equal(DigitalLevel.Low, receiver.Input.SampledLevel);
+    }
+
+    [Fact]
     public void Compiled_master_clock_trace_propagates_immediately_without_generic_settle_work()
     {
         var board = new VirtualHardwareBoard("compiled-clock-direct");
@@ -245,6 +284,67 @@ public sealed class VirtualHardwareChipBoundaryTests
         {
             InputActivationCount++;
             LastChangedInputMask = changedInputMask;
+        }
+    }
+
+    private sealed class OctalOutputProbe : VirtualHardwareComponent
+    {
+        public OctalOutputProbe(string componentId) : base(componentId)
+        {
+            Trigger = AddPin("TRIGGER", PinDirection.Input);
+            var outputs = Enumerable.Range(0, 8)
+                .Select(bit => AddPin($"Q{bit}", PinDirection.Output))
+                .ToArray();
+            Outputs = new DigitalBus($"{componentId}.Q", outputs);
+        }
+
+        public DigitalPin Trigger { get; }
+        public DigitalBus Outputs { get; }
+
+        protected override void OnInputChanges(ulong changedInputMask)
+        {
+            if (Trigger.SampledLevel == DigitalLevel.High)
+                Outputs.Drive(0xA5);
+        }
+    }
+
+    private sealed class OctalInputProbe : VirtualHardwareComponent
+    {
+        public OctalInputProbe(string componentId) : base(componentId)
+        {
+            var inputs = Enumerable.Range(0, 8)
+                .Select(bit => AddPin($"D{bit}", PinDirection.Input))
+                .ToArray();
+            Inputs = new DigitalBus($"{componentId}.D", inputs);
+        }
+
+        public DigitalBus Inputs { get; }
+        public int InputActivationCount { get; private set; }
+        public ulong LastChangedInputMask { get; private set; }
+
+        protected override void OnInputChanges(ulong changedInputMask)
+        {
+            InputActivationCount++;
+            LastChangedInputMask = changedInputMask;
+        }
+    }
+
+    private sealed class DoubleToggleOutputProbe : VirtualHardwareComponent
+    {
+        public DoubleToggleOutputProbe(string componentId) : base(componentId)
+        {
+            Trigger = AddPin("TRIGGER", PinDirection.Input);
+            Output = AddPin("OUT", PinDirection.Output);
+        }
+
+        public DigitalPin Trigger { get; }
+        public DigitalPin Output { get; }
+
+        protected override void OnInputChanges(ulong changedInputMask)
+        {
+            if (Trigger.SampledLevel != DigitalLevel.High) return;
+            Output.Drive(DigitalLevel.High);
+            Output.Drive(DigitalLevel.Low);
         }
     }
 

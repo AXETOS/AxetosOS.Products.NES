@@ -53,7 +53,11 @@ public sealed class DigitalNet
     /// never stores or inspects another package.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void PublishChangedOutputPins(DigitalPin[] changedPins, int count)
+    internal static void PublishChangedOutputPins(
+        DigitalPin[] packagePins,
+        ulong changedPinMask,
+        DigitalPin[] overflowPins,
+        int overflowCount)
     {
         var frame = AcquirePropagationFrame();
 
@@ -61,15 +65,25 @@ public sealed class DigitalNet
         {
             VirtualHardwareSimulator? diagnostics = null;
 
-            // Every changed package output already contains its final drive state
-            // before the package boundary is published. Resolve directly from
-            // those physical pin states. If two changed package pins share one
-            // trace, the first resolution therefore already sees the complete
-            // final package state and the second becomes a cheap no-change check.
-            // This avoids maintaining a second software copy of every driver.
-            for (var index = 0; index < count; index++)
+            // Package output staging is a compact set of physical package pins.
+            // Each bit is still resolved through that pin's own motherboard net;
+            // no logical bus or peer-package knowledge is introduced here.
+            var remaining = changedPinMask;
+            while (remaining != 0)
             {
-                var pin = changedPins[index];
+                var pinIndex = System.Numerics.BitOperations.TrailingZeroCount(remaining);
+                remaining &= remaining - 1;
+                var pin = packagePins[pinIndex];
+                var net = pin.Net;
+                if (net is null) continue;
+                diagnostics ??= net.Diagnostics;
+                net.PresentCurrentDriverState(pin, frame);
+            }
+
+            // Cold path for laboratory packages with more than 64 pins.
+            for (var index = 0; index < overflowCount; index++)
+            {
+                var pin = overflowPins[index];
                 var net = pin.Net;
                 if (net is null) continue;
                 diagnostics ??= net.Diagnostics;
@@ -497,32 +511,42 @@ public sealed class DigitalNet
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static DigitalLevel ResolveSingleDriver(DigitalPin driver) => driver.DriveLevel switch
+    private static DigitalLevel ResolveSingleDriver(DigitalPin driver) =>
+        ResolveSingleDriverState(driver.PackedDriveState);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static DigitalLevel ResolveSingleDriverState(byte driveState)
     {
-        DigitalLevel.HighImpedance => DigitalLevel.Unknown,
-        DigitalLevel.Low => DigitalLevel.Low,
-        DigitalLevel.High => DigitalLevel.High,
-        _ => DigitalLevel.Unknown
-    };
+        var level = (DigitalLevel)(driveState & 0x07);
+        return level switch
+        {
+            DigitalLevel.HighImpedance => DigitalLevel.Unknown,
+            DigitalLevel.Low => DigitalLevel.Low,
+            DigitalLevel.High => DigitalLevel.High,
+            _ => DigitalLevel.Unknown
+        };
+    }
 
     /// <summary>
     /// Common shared-line resolver with exactly two possible drivers. This is
-    /// electrically identical to the generic resolver but avoids its array
-    /// scan/state-machine overhead on every transition.
+    /// electrically identical to the generic resolver but loads each pin's
+    /// complete packed drive level/strength state once.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static DigitalLevel ResolveTwoDrivers(DigitalPin first, DigitalPin second)
     {
-        var firstLevel = first.DriveLevel;
-        var secondLevel = second.DriveLevel;
+        var firstState = first.PackedDriveState;
+        var secondState = second.PackedDriveState;
+        var firstLevel = (DigitalLevel)(firstState & 0x07);
+        var secondLevel = (DigitalLevel)(secondState & 0x07);
 
-        if (firstLevel == DigitalLevel.HighImpedance) return ResolveSingleDriver(second);
-        if (secondLevel == DigitalLevel.HighImpedance) return ResolveSingleDriver(first);
+        if (firstLevel == DigitalLevel.HighImpedance) return ResolveSingleDriverState(secondState);
+        if (secondLevel == DigitalLevel.HighImpedance) return ResolveSingleDriverState(firstState);
 
-        var firstStrength = first.DriveStrength;
-        var secondStrength = second.DriveStrength;
-        if (firstStrength > secondStrength) return ResolveSingleDriver(first);
-        if (secondStrength > firstStrength) return ResolveSingleDriver(second);
+        var firstStrength = (firstState >> 3) & 0x01;
+        var secondStrength = (secondState >> 3) & 0x01;
+        if (firstStrength > secondStrength) return ResolveSingleDriverState(firstState);
+        if (secondStrength > firstStrength) return ResolveSingleDriverState(secondState);
 
         if ((firstLevel == DigitalLevel.Low && secondLevel == DigitalLevel.High) ||
             (firstLevel == DigitalLevel.High && secondLevel == DigitalLevel.Low))
@@ -546,14 +570,14 @@ public sealed class DigitalNet
         DigitalPin second,
         DigitalPin third)
     {
-        var strongest = DigitalDriveStrength.Weak;
+        byte strongest = 0;
         var haveDriver = false;
         var low = false;
         var high = false;
         var unknown = false;
-        AccumulateDriver(first, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriver(second, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriver(third, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState(first.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState(second.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState(third.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
         return FinishDriverResolution(haveDriver, low, high, unknown);
     }
 
@@ -564,31 +588,31 @@ public sealed class DigitalNet
         DigitalPin third,
         DigitalPin fourth)
     {
-        var strongest = DigitalDriveStrength.Weak;
+        byte strongest = 0;
         var haveDriver = false;
         var low = false;
         var high = false;
         var unknown = false;
-        AccumulateDriver(first, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriver(second, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriver(third, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
-        AccumulateDriver(fourth, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState(first.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState(second.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState(third.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+        AccumulateDriverState(fourth.PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
         return FinishDriverResolution(haveDriver, low, high, unknown);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void AccumulateDriver(
-        DigitalPin driver,
-        ref DigitalDriveStrength strongest,
+    private static void AccumulateDriverState(
+        byte driveState,
+        ref byte strongest,
         ref bool haveDriver,
         ref bool low,
         ref bool high,
         ref bool unknown)
     {
-        var level = driver.DriveLevel;
+        var level = (DigitalLevel)(driveState & 0x07);
         if (level == DigitalLevel.HighImpedance) return;
 
-        var strength = driver.DriveStrength;
+        var strength = (byte)((driveState >> 3) & 0x01);
         if (!haveDriver || strength > strongest)
         {
             strongest = strength;
@@ -621,14 +645,14 @@ public sealed class DigitalNet
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static DigitalLevel ResolveMultipleDrivers(DigitalPin[] drivers)
     {
-        var strongest = DigitalDriveStrength.Weak;
+        byte strongest = 0;
         var haveDriver = false;
         var low = false;
         var high = false;
         var unknown = false;
 
         for (var index = 0; index < drivers.Length; index++)
-            AccumulateDriver(drivers[index], ref strongest, ref haveDriver, ref low, ref high, ref unknown);
+            AccumulateDriverState(drivers[index].PackedDriveState, ref strongest, ref haveDriver, ref low, ref high, ref unknown);
 
         return FinishDriverResolution(haveDriver, low, high, unknown);
     }
@@ -687,6 +711,7 @@ public sealed class DigitalNet
         private readonly VirtualHardwareComponent? _component;
         private readonly int _componentIndex;
         private readonly ulong _inputMask;
+        private readonly InputAcceptanceKind _acceptanceKind;
 
         public CompiledInputRoute(DigitalPin pin)
         {
@@ -694,11 +719,26 @@ public sealed class DigitalNet
             _component = pin.OwnerComponent;
             _componentIndex = pin.OwnerComponentIndex;
             _inputMask = pin.InputChangeMask;
+            _acceptanceKind = pin.InputActivation == DigitalInputActivation.AnyChange
+                ? pin.Direction == PinDirection.Input
+                    ? InputAcceptanceKind.AnyChangeInput
+                    : pin.Direction == PinDirection.Bidirectional
+                        ? InputAcceptanceKind.AnyChangeBidirectional
+                        : InputAcceptanceKind.General
+                : InputAcceptanceKind.General;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool AcceptLevel(DigitalLevel level) => _acceptanceKind switch
+        {
+            InputAcceptanceKind.AnyChangeInput => _pin.TryAcceptCompiledAnyChangeInput(level),
+            InputAcceptanceKind.AnyChangeBidirectional => _pin.TryAcceptCompiledAnyChangeBidirectional(level),
+            _ => _pin.TryAcceptInputLevel(level)
+        };
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool AcceptCompiledInputLevel(DigitalLevel level) =>
-            _component is not null && _pin.TryAcceptInputLevel(level);
+            _component is not null && AcceptLevel(level);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void ReactCompiledDirect()
@@ -717,7 +757,7 @@ public sealed class DigitalNet
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Accept(DigitalLevel level, PropagationFrame? receivers)
         {
-            if (_component is null || !_pin.TryAcceptInputLevel(level)) return;
+            if (_component is null || !AcceptLevel(level)) return;
             if (_component.StageInputChanges(_inputMask) && receivers is not null)
                 receivers.Add(_component, _componentIndex);
         }
@@ -739,6 +779,13 @@ public sealed class DigitalNet
             if (changedInputMask != 0)
                 diagnostics.DeliverInputImmediate(_componentIndex, _component, changedInputMask);
         }
+    }
+
+    private enum InputAcceptanceKind : byte
+    {
+        General,
+        AnyChangeInput,
+        AnyChangeBidirectional
     }
 
     private sealed class PropagationFrame

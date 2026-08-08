@@ -1,0 +1,9 @@
+AxetosOS.Products.NES v2.1.1
+
+Purpose:
+- pace normal fused execution to the real Famicom/NTSC master clock;
+- preserve raw benchmarking with --uncapped;
+- add APU/DAC diagnostics;
+- add compiled/reference pulse-audio conformance coverage.
+
+Expected tests: 225 total.

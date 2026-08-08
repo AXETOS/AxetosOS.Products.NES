@@ -57,8 +57,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private bool _writeToggle;
     private VramTransaction _transaction;
     private int _transactionPhase;
-    private int _transactionCompletionPhase;
-    private VramTransactionPurpose _transactionPurpose;
+    private byte _renderReadPhase;
+    private ushort _renderReadAddress;
+    private VramTransactionPurpose _renderReadPurpose;
     private bool _presentedAdDriven;
     private byte _presentedAdValue;
     private bool _presentedHighAddressDriven;
@@ -176,7 +177,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     public byte FineX => _fineX;
     public bool WriteToggle => _writeToggle;
     public byte ReadBuffer => _readBuffer;
-    public bool VramTransactionActive => _transaction != VramTransaction.None;
+    public bool VramTransactionActive => VramBusBusy;
     public ulong BackgroundNametableFetchCount { get; private set; }
     public ulong BackgroundAttributeFetchCount { get; private set; }
     public ulong BackgroundPatternFetchCount { get; private set; }
@@ -305,8 +306,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _writeToggle = false;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
-        _transactionCompletionPhase = 0;
-        _transactionPurpose = VramTransactionPurpose.None;
+        _renderReadPhase = 0;
+        _renderReadAddress = 0;
+        _renderReadPurpose = VramTransactionPurpose.None;
         _nextTileId = 0;
         _nextTileAttribute = 0;
         _nextBackgroundLoad = 0;
@@ -332,8 +334,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _cpuSelectedLast = false;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
-        _transactionCompletionPhase = 0;
-        _transactionPurpose = VramTransactionPurpose.None;
+        _renderReadPhase = 0;
+        _renderReadAddress = 0;
+        _renderReadPurpose = VramTransactionPurpose.None;
         BackgroundPixelIndex = 0;
         SpritePixelIndex = 0;
         PixelPaletteIndex = 0;
@@ -530,7 +533,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             UpdateOutputColor();
         }
 
-        if (vramTransactionCompleted && _transaction == VramTransaction.None)
+        if (vramTransactionCompleted && !VramBusBusy)
             PresentVramIdle();
 
         if (visibleScanline && Dot is >= 1 and <= 256)
@@ -575,7 +578,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             UpdateOutputColor();
         }
 
-        if (vramTransactionCompleted && _transaction == VramTransaction.None)
+        if (vramTransactionCompleted && !VramBusBusy)
         {
             var outputsStarted = sample.BeginSection();
             PresentVramIdle();
@@ -852,9 +855,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                     {
                         // Palette reads bypass the delayed buffer, while the mirrored
                         // nametable byte still refills it through the external bus.
-                        if (_transaction == VramTransaction.None)
+                        if (!VramBusBusy)
                         {
-                            StartVramTransactionAt((ushort)(_vramAddress & 0x2FFF), VramTransaction.Read, 0, VramTransactionPurpose.CpuRead);
+                            StartVramTransactionAt((ushort)(_vramAddress & 0x2FFF), VramTransaction.Read, 0);
                         }
                         IncrementVramAddressAfterCpuAccess();
                     }
@@ -864,9 +867,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                     value = _readBuffer;
                     if (firstSelectedEvaluation)
                     {
-                        if (_transaction == VramTransaction.None)
+                        if (!VramBusBusy)
                         {
-                            StartVramTransaction(VramTransaction.Read, 0, VramTransactionPurpose.CpuRead);
+                            StartVramTransaction(VramTransaction.Read, 0);
                         }
                         IncrementVramAddressAfterCpuAccess();
                     }
@@ -944,9 +947,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                 }
                 else
                 {
-                    if (_transaction == VramTransaction.None)
+                    if (!VramBusBusy)
                     {
-                        StartVramTransaction(VramTransaction.Write, value, VramTransactionPurpose.CpuWrite);
+                        StartVramTransaction(VramTransaction.Write, value);
                     }
                     IncrementVramAddressAfterCpuAccess();
                 }
@@ -954,17 +957,17 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         }
     }
 
-    private void StartVramTransaction(VramTransaction transaction, byte writeData, VramTransactionPurpose purpose)
-        => StartVramTransactionAt((ushort)(_vramAddress & 0x3FFF), transaction, writeData, purpose);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void StartVramTransaction(VramTransaction transaction, byte writeData)
+        => StartVramTransactionAt((ushort)(_vramAddress & 0x3FFF), transaction, writeData);
 
-    private void StartVramTransactionAt(ushort address, VramTransaction transaction, byte writeData, VramTransactionPurpose purpose)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void StartVramTransactionAt(ushort address, VramTransaction transaction, byte writeData)
     {
         _transaction = transaction;
         _transactionPhase = 0;
-        _transactionCompletionPhase = purpose is VramTransactionPurpose.CpuRead or VramTransactionPurpose.CpuWrite ? 3 : 2;
         _transactionAddress = (ushort)(address & 0x3FFF);
         _transactionWriteData = writeData;
-        _transactionPurpose = purpose;
         PresentVramAddressPhase();
     }
 
@@ -989,17 +992,49 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool AdvanceVramTransaction()
     {
-        if (_transaction == VramTransaction.None) return false;
+        if (_renderReadPhase != 0)
+            return AdvanceRenderingVramRead();
 
+        return _transaction != VramTransaction.None && AdvanceCpuVramTransaction();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool AdvanceRenderingVramRead()
+    {
+        if (_renderReadPhase == 1)
+        {
+            _renderReadPhase = 2;
+            PresentRenderingVramDataPhase();
+            return false;
+        }
+
+        if (MultiplexedAddressData.TrySample(out var data))
+        {
+            CompleteRenderingRead((byte)data);
+            CompletedVramReadCount++;
+        }
+
+        _renderReadPhase = 0;
+        _renderReadPurpose = VramTransactionPurpose.None;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool AdvanceCpuVramTransaction()
+    {
         var phase = ++_transactionPhase;
-        if (phase == 1) PresentVramDataPhase();
-        if (phase < _transactionCompletionPhase) return false;
+        if (phase == 1)
+        {
+            PresentVramDataPhase();
+            return false;
+        }
+        if (phase < 3) return false;
 
         if (_transaction == VramTransaction.Read)
         {
             if (MultiplexedAddressData.TrySample(out var data))
             {
-                CompleteRead((byte)data);
+                _readBuffer = (byte)data;
                 CompletedVramReadCount++;
             }
         }
@@ -1010,13 +1045,12 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
-        _transactionCompletionPhase = 0;
-        _transactionPurpose = VramTransactionPurpose.None;
         return true;
     }
 
     private bool BackgroundRenderingEnabled => _backgroundRenderingEnabled;
     private bool RenderingEnabled => _renderingEnabled;
+    private bool VramBusBusy => _transaction != VramTransaction.None || _renderReadPhase != 0;
     private bool RenderingBusActive => RenderingEnabled
         && IsRenderingScanline()
         && ((Dot >= 1 && Dot <= 256) || (Dot >= 321 && Dot <= 340));
@@ -1026,21 +1060,17 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void BeginBackgroundRead(ushort address, VramTransactionPurpose purpose)
     {
-        if (_transaction != VramTransaction.None) return;
+        if (VramBusBusy) return;
 
-        // The internal fetch decoder starts a real package-level VRAM cycle at
-        // this dot. Present the multiplexed address/ALE phase immediately; the
-        // following PPU dot advances to the data-/RD phase and the next one
-        // samples/completes the read. This is the same physical two-dot fetch
-        // cadence the previous continuously-driven output stage exposed, but
-        // without polling all package outputs on unrelated dots.
-        _transaction = VramTransaction.Read;
-        _transactionPhase = 0;
-        _transactionCompletionPhase = 2;
-        _transactionAddress = (ushort)(address & 0x3FFF);
-        _transactionWriteData = 0;
-        _transactionPurpose = purpose;
-        PresentVramAddressPhase();
+        // Rendering fetches are a fixed two-dot physical circuit: this decoder
+        // edge presents A/AD + ALE, the following PPU dot asserts /RD with AD
+        // released, and the next decoder edge samples the returned byte. Keep
+        // that hot path separate from the slower CPU $2007 read/write sequencer
+        // so no transaction kind/completion-policy decoding occurs per fetch.
+        _renderReadPhase = 1;
+        _renderReadAddress = (ushort)(address & 0x3FFF);
+        _renderReadPurpose = purpose;
+        PresentRenderingVramAddressPhase();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1050,13 +1080,11 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         return (ushort)(_backgroundPatternTableBase | (_nextTileId << 4) | fineY | (highPlane ? 8 : 0));
     }
 
-    private void CompleteRead(byte data)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CompleteRenderingRead(byte data)
     {
-        switch (_transactionPurpose)
+        switch (_renderReadPurpose)
         {
-            case VramTransactionPurpose.CpuRead:
-                _readBuffer = data;
-                break;
             case VramTransactionPurpose.BackgroundNametable:
                 _nextTileId = data;
                 BackgroundNametableFetchCount++;
@@ -1283,6 +1311,26 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void PresentRenderingVramAddressPhase()
+    {
+        PresentHighAddress((byte)(_renderReadAddress >> 8));
+        PresentAd((byte)_renderReadAddress);
+        PresentAle(DigitalLevel.High);
+        PresentReadBar(DigitalLevel.High);
+        PresentWriteBar(DigitalLevel.High);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void PresentRenderingVramDataPhase()
+    {
+        PresentHighAddress((byte)(_renderReadAddress >> 8));
+        PresentAle(DigitalLevel.Low);
+        PresentAdReleased();
+        PresentReadBar(DigitalLevel.Low);
+        PresentWriteBar(DigitalLevel.High);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void PresentVramAddressPhase()
     {
         PresentHighAddress((byte)(_transactionAddress >> 8));
@@ -1459,8 +1507,6 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private enum VramTransactionPurpose
     {
         None,
-        CpuRead,
-        CpuWrite,
         BackgroundNametable,
         BackgroundAttribute,
         BackgroundPatternLow,

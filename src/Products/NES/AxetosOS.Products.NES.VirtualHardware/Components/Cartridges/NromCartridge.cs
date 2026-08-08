@@ -111,6 +111,36 @@ public sealed class NromCartridge : VirtualHardwareComponent
     public DigitalPin CiramA10 { get; }
     public DigitalPin IrqBar { get; }
     public bool IsChrRam => _chrRam;
+    internal VirtualHardwareNesMirroring CompiledMirroring => _mirroring;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal byte ReadCpuCompiled(ushort address)
+    {
+        var index = _prg.Length == 16 * 1024
+            ? address & 0x3FFF
+            : address & 0x7FFF;
+        var value = _prg[index];
+        CpuReadCount++;
+        LastCpuReadAddress = address;
+        LastCpuReadData = value;
+        return value;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal byte ReadPpuCompiled(ushort address)
+    {
+        PpuReadCount++;
+        return _chr[address & 0x1FFF];
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal void WritePpuCompiled(ushort address, byte value)
+    {
+        if (!_chrRam) return;
+        _chr[address & 0x1FFF] = value;
+        PpuWriteCount++;
+    }
+
     public bool IsInserted { get; private set; }
     public ulong CpuReadCount { get; private set; }
     public ushort LastCpuReadAddress { get; private set; }

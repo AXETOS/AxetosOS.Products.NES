@@ -11,13 +11,14 @@ namespace AxetosOS.Products.NES.VirtualHardware.Electrical;
 /// </summary>
 public sealed class DigitalPin
 {
-    private DigitalLevel _driveLevel = DigitalLevel.HighImpedance;
-    private DigitalDriveStrength _driveStrength = DigitalDriveStrength.Strong;
+    // Low three bits hold DigitalLevel; bit three holds drive strength.
+    // A single compact electrical state improves cache density and lets shared
+    // net resolvers load a driver's complete output state once.
+    private byte _driveState = PackDriveState(DigitalLevel.HighImpedance, DigitalDriveStrength.Strong);
     private DigitalLevel _sampledLevel = DigitalLevel.Unknown;
     private DigitalLevel _lastAcceptedInputLevel = DigitalLevel.Unknown;
     private int _inputActivationPhase;
     private ulong _inputActivationEdgeCount;
-    private ulong _lastOutputPublicationSequence;
     private bool _ownerWakeEnabled = true;
 
     public DigitalPin(string name, PinDirection direction)
@@ -30,15 +31,18 @@ public sealed class DigitalPin
     public string Name { get; }
     public PinDirection Direction { get; }
     public DigitalNet? Net { get; internal set; }
-    public DigitalLevel DriveLevel => _driveLevel;
-    public DigitalDriveStrength DriveStrength => _driveStrength;
+    public DigitalLevel DriveLevel => (DigitalLevel)(_driveState & 0x07);
+    public DigitalDriveStrength DriveStrength => (DigitalDriveStrength)((_driveState >> 3) & 0x01);
+    internal byte PackedDriveState => _driveState;
     public DigitalLevel SampledLevel => _sampledLevel;
     public bool IsInputCapable => Direction is PinDirection.Input or PinDirection.Bidirectional;
     public bool IsOutputCapable => Direction is not PinDirection.Input;
 
     internal VirtualHardwareComponent? OwnerComponent { get; set; }
     internal int OwnerComponentIndex { get; set; } = -1;
+    internal int NetDriverIndex { get; set; } = -1;
     internal ulong InputChangeMask { get; init; }
+    internal ulong PackagePinMask { get; init; }
     internal DigitalInputActivation InputActivation { get; set; } = DigitalInputActivation.AnyChange;
     internal int InputActivationPeriod { get; set; } = 1;
     internal ulong InputActivationEdgeCount => _inputActivationEdgeCount;
@@ -51,6 +55,10 @@ public sealed class DigitalPin
     /// enable circuitry disconnects them. Activation/control pins normally remain
     /// enabled so they can switch the internal circuitry back on.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static byte PackDriveState(DigitalLevel level, DigitalDriveStrength strength) =>
+        (byte)((byte)level | ((byte)strength << 3));
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void SetOwnerWakeEnabled(bool enabled) => _ownerWakeEnabled = enabled;
 
@@ -72,10 +80,10 @@ public sealed class DigitalPin
             throw new ArgumentOutOfRangeException(nameof(level), "Contention is a resolved net state, not a drive state.");
         }
 
-        if (_driveLevel == level && _driveStrength == strength) return;
+        var driveState = PackDriveState(level, strength);
+        if (_driveState == driveState) return;
 
-        _driveLevel = level;
-        _driveStrength = strength;
+        _driveState = driveState;
 
         var net = Net;
         if (net is null) return;
@@ -89,11 +97,29 @@ public sealed class DigitalPin
     /// here, so per-bit direction/contention validation is unnecessary.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool SetBinaryStrongForPackage(DigitalLevel level)
+    {
+        var driveState = PackDriveState(level, DigitalDriveStrength.Strong);
+        if (_driveState == driveState) return false;
+        _driveState = driveState;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool SetReleasedForPackage()
+    {
+        var driveState = PackDriveState(DigitalLevel.HighImpedance, DigitalDriveStrength.Strong);
+        if (_driveState == driveState) return false;
+        _driveState = driveState;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void DriveBinaryStrong(DigitalLevel level)
     {
-        if (_driveLevel == level && _driveStrength == DigitalDriveStrength.Strong) return;
-        _driveLevel = level;
-        _driveStrength = DigitalDriveStrength.Strong;
+        var driveState = PackDriveState(level, DigitalDriveStrength.Strong);
+        if (_driveState == driveState) return;
+        _driveState = driveState;
 
         var net = Net;
         if (net is null) return;
@@ -104,22 +130,14 @@ public sealed class DigitalPin
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void ReleaseValidatedOutput()
     {
-        if (_driveLevel == DigitalLevel.HighImpedance && _driveStrength == DigitalDriveStrength.Strong) return;
-        _driveLevel = DigitalLevel.HighImpedance;
-        _driveStrength = DigitalDriveStrength.Strong;
+        var driveState = PackDriveState(DigitalLevel.HighImpedance, DigitalDriveStrength.Strong);
+        if (_driveState == driveState) return;
+        _driveState = driveState;
 
         var net = Net;
         if (net is null) return;
         if (OwnerComponent?.TryStageOutputChange(this) == true) return;
         net.PropagateDriverChange(this);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool TryMarkOutputPublication(ulong publicationSequence)
-    {
-        if (_lastOutputPublicationSequence == publicationSequence) return false;
-        _lastOutputPublicationSequence = publicationSequence;
-        return true;
     }
 
     /// <summary>
@@ -135,15 +153,20 @@ public sealed class DigitalPin
     /// boundary, outside the chip's internal state.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void PublishStagedDriveChanges(DigitalPin[] changedPins, int count) =>
-        DigitalNet.PublishChangedOutputPins(changedPins, count);
+    internal static void PublishStagedDriveChanges(
+        DigitalPin[] packagePins,
+        ulong changedPinMask,
+        DigitalPin[] overflowPins,
+        int overflowCount) =>
+        DigitalNet.PublishChangedOutputPins(packagePins, changedPinMask, overflowPins, overflowCount);
 
     /// <summary>
     /// Updates the drive state of a topology-validated single-driver source.
     /// The compiled motherboard trace performs the immediate propagation.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void DriveCompiledSource(DigitalLevel level) => _driveLevel = level;
+    internal void DriveCompiledSource(DigitalLevel level) =>
+        _driveState = PackDriveState(level, DigitalDriveStrength.Strong);
 
     public void Release() => Drive(DigitalLevel.HighImpedance);
 
@@ -162,6 +185,51 @@ public sealed class DigitalPin
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void SetObservedOutputLevel(DigitalLevel level) => _sampledLevel = level;
 
+
+    /// <summary>
+    /// Topology-compiled fast path for an ordinary input-only AnyChange pin.
+    /// The electrical layer has already proven this pin is not bidirectional and
+    /// does not use edge/divider activation, so the hot delivery path needs only
+    /// to retain the physical level/history and consult the chip-owned wake gate.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryAcceptCompiledAnyChangeInput(DigitalLevel level)
+    {
+        _sampledLevel = level;
+
+        if (!_ownerWakeEnabled)
+        {
+            _lastAcceptedInputLevel = level;
+            return false;
+        }
+
+        if (_lastAcceptedInputLevel == level) return false;
+        _lastAcceptedInputLevel = level;
+        return true;
+    }
+
+    /// <summary>
+    /// Topology-compiled fast path for a bidirectional AnyChange package pin.
+    /// The physical package level is always retained; while this chip drives the
+    /// line, its own receiver remains disconnected exactly as on the generic path.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryAcceptCompiledAnyChangeBidirectional(DigitalLevel level)
+    {
+        _sampledLevel = level;
+        if ((_driveState & 0x07) != (byte)DigitalLevel.HighImpedance) return false;
+
+        if (!_ownerWakeEnabled)
+        {
+            _lastAcceptedInputLevel = level;
+            return false;
+        }
+
+        if (_lastAcceptedInputLevel == level) return false;
+        _lastAcceptedInputLevel = level;
+        return true;
+    }
+
     /// <summary>
     /// Presents a resolved motherboard level to this package pin. A
     /// bidirectional pin accepts an incoming transition only while its own
@@ -175,7 +243,8 @@ public sealed class DigitalPin
         // separately so releasing a bus does not invent a chip input edge.
         _sampledLevel = level;
 
-        if (Direction == PinDirection.Bidirectional && _driveLevel != DigitalLevel.HighImpedance)
+        if (Direction == PinDirection.Bidirectional &&
+            (_driveState & 0x07) != (byte)DigitalLevel.HighImpedance)
         {
             return false;
         }

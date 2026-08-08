@@ -17,6 +17,8 @@ var boardSelection = NesRegionSelection.NtscJapan;
 var palCic = PalCicVariant.PalA3195;
 var profileSimulation = false;
 var ppuSplitTrace = false;
+var referenceRuntime = false;
+var uncappedRuntime = false;
 for (var index = 0; index < args.Length; index++)
 {
     if (args[index].Equals("--ppu-split-trace", StringComparison.OrdinalIgnoreCase))
@@ -28,6 +30,18 @@ for (var index = 0; index < args.Length; index++)
     if (args[index].Equals("--profile", StringComparison.OrdinalIgnoreCase))
     {
         profileSimulation = true;
+        continue;
+    }
+
+    if (args[index].Equals("--reference-runtime", StringComparison.OrdinalIgnoreCase))
+    {
+        referenceRuntime = true;
+        continue;
+    }
+
+    if (args[index].Equals("--uncapped", StringComparison.OrdinalIgnoreCase))
+    {
+        uncappedRuntime = true;
         continue;
     }
 
@@ -43,7 +57,7 @@ for (var index = 0; index < args.Length; index++)
 
     if (romArgument is not null)
     {
-        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--ppu-split-trace]");
+        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--reference-runtime] [--uncapped] [--ppu-split-trace]");
         return 2;
     }
 
@@ -75,6 +89,11 @@ catch (NotSupportedException exception)
     Console.Error.WriteLine(exception.Message);
     return 4;
 }
+
+var referenceRuntimeActive = referenceRuntime
+    && host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom;
+if (referenceRuntimeActive)
+    host.Machine.Famicom.SetCompiledPhysicalMachineEnabled(false);
 
 if (host.Machine.ActiveMotherboard == ActiveNesMotherboard.PalNes)
 {
@@ -132,11 +151,22 @@ Console.WriteLine($"Mapper:     {image.MapperNumber}");
 Console.WriteLine($"Board:      {initial.Motherboard}");
 Console.WriteLine($"PRG ROM:    {image.PrgRomSizeBytes:N0} bytes");
 Console.WriteLine($"CHR:        {(image.ChrRomSizeBytes == 0 ? "8 KiB CHR RAM" : $"{image.ChrRomSizeBytes:N0} bytes ROM")}");
-Console.WriteLine("Execution:   physical virtual-hardware buses and master clock only");
+var compiledFamicom = host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom
+    && host.Machine.Famicom.CompiledPhysicalMachineEnabled;
+Console.WriteLine(compiledFamicom
+    ? "Execution:   startup-compiled fused physical Famicom/NROM machine"
+    : "Execution:   physical virtual-hardware buses and master clock only");
 Console.WriteLine("Video:       RP2C02 color output -> AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:       RP2A03 DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
 Console.WriteLine("Controls:    Esc=Exit (controller hardware adapter is the next input milestone)");
-Console.WriteLine("Kernel:      chip-owned pin-gated direct propagation (no signal queue)");
+Console.WriteLine(compiledFamicom
+    ? $"Kernel:      fused compiled circuit ({host.Machine.Famicom.CompiledRuntimeUnitCount} runtime unit; {host.Machine.Famicom.CompiledFoldedPhysicalTraceCount} fixed traces folded; no signal queue)"
+    : "Kernel:      chip-owned pin-gated direct propagation (no signal queue)");
+if (referenceRuntimeActive) Console.WriteLine("Reference:   legacy per-trace runtime forced for A/B comparison");
+var realTimePacing = !uncappedRuntime && !profileSimulation;
+Console.WriteLine(realTimePacing
+    ? $"Timing:      hardware real-time ({masterClockHz:N0} Hz master clock)"
+    : "Timing:      uncapped host throughput");
 if (profileSimulation) Console.WriteLine("Profiler:    enabled; component/net/internal-IC timing sampled 1/256; host timing exact; results every 5 seconds");
 if (ppuSplitTrace) Console.WriteLine("PPU trace:   sprite-zero and $2002/$2005/$2006 split-screen events enabled");
 
@@ -144,6 +174,7 @@ const int MasterCyclesPerVideoBatch = 16_384;
 const int AudioTransferBufferSize = 4_096;
 var audioTransfer = new float[AudioTransferBufferSize];
 var timer = Stopwatch.StartNew();
+ulong pacedMasterCycles = 0;
 var lastPresentedFrame = ulong.MaxValue;
 var lastTitleUpdate = TimeSpan.Zero;
 var lastFpsSampleTime = TimeSpan.Zero;
@@ -178,6 +209,7 @@ while (presenter.IsOpen)
 
     profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
     host.AdvanceMasterCycles(MasterCyclesPerVideoBatch);
+    pacedMasterCycles += MasterCyclesPerVideoBatch;
     if (profileSimulation)
     {
         profileSimulationTicks += Stopwatch.GetTimestamp() - profileStarted;
@@ -210,6 +242,9 @@ while (presenter.IsOpen)
         if (profileSimulation) profileAudioSamples += (ulong)drained;
     }
     if (profileSimulation) profileAudioTransferTicks += Stopwatch.GetTimestamp() - profileStarted;
+
+    if (realTimePacing)
+        PaceToMasterClock(timer, pacedMasterCycles, masterClockHz);
 
     var now = timer.Elapsed;
     if (now - lastTitleUpdate >= TimeSpan.FromMilliseconds(500))
@@ -317,6 +352,18 @@ Console.WriteLine(
     $"current={displayedFps:F2}, min={(double.IsPositiveInfinity(minimumFps) ? 0.0 : minimumFps):F2}, " +
     $"max={maximumFps:F2}, average={finalAverageFps:F2} FPS");
 Console.WriteLine($"Boot checks: reset-vector={final.ResetVectorObserved}, opcode={final.FirstOpcodeObserved}, vblank={final.FirstVblankObserved}, nmi={final.FirstNmiObserved}");
+var finalCpu = host.Machine.ActiveMotherboard switch
+{
+    ActiveNesMotherboard.Famicom => host.Machine.Famicom.Cpu,
+    ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.Cpu,
+    _ => null
+};
+if (finalCpu is not null)
+{
+    Console.WriteLine(
+        $"Audio core:  apu-cycles={finalCpu.ApuCpuCycleCount:N0}, dac-events={finalCpu.AudioDacOutput.DriveCount:N0}, " +
+        $"dac-level={finalCpu.AudioDacLevel}");
+}
 if (profileSimulation)
 {
     PrintHostProfile(
@@ -333,6 +380,20 @@ if (profileSimulation)
     PrintProfile(activeSimulator.GetProfileSnapshot());
 }
 return 0;
+
+static void PaceToMasterClock(Stopwatch timer, ulong masterCycles, double masterClockHz)
+{
+    var targetTicks = masterCycles * (double)Stopwatch.Frequency / masterClockHz;
+    var remainingTicks = targetTicks - timer.ElapsedTicks;
+    if (remainingTicks <= 0) return;
+
+    // Keep at most roughly one short simulation batch of headroom. Avoid a
+    // continuous sub-millisecond spin loop: Windows audio/video presentation
+    // benefits more from low host load than from nanosecond-level pacing.
+    var remainingMilliseconds = remainingTicks * 1000.0 / Stopwatch.Frequency;
+    if (remainingMilliseconds >= 1.5)
+        Thread.Sleep(Math.Max(1, (int)Math.Floor(remainingMilliseconds)));
+}
 
 static void PrintPerformanceCounters(
     AxetosOS.Products.NES.VirtualHardware.Simulation.VirtualHardwarePerformanceCounters counters,

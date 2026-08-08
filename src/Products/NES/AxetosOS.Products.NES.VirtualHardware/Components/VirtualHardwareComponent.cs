@@ -20,10 +20,11 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components;
 public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
 {
     private readonly List<DigitalPin> _pins = [];
-    private DigitalPin[] _changedOutputPins = new DigitalPin[16];
-    private int _changedOutputPinCount;
+    private DigitalPin[] _packagePins = [];
+    private ulong _changedOutputPinMask;
+    private DigitalPin[] _changedOutputOverflowPins = new DigitalPin[4];
+    private int _changedOutputOverflowCount;
     private ulong _pendingInputChanges;
-    private ulong _outputPublicationSequence;
     private bool _handlingInputChanges;
 
     protected VirtualHardwareComponent(string componentId)
@@ -50,9 +51,12 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
             InputActivationPeriod = inputActivationPeriod,
             InputChangeMask = direction is PinDirection.Input or PinDirection.Bidirectional
                 ? pinIndex < 64 ? 1UL << pinIndex : ulong.MaxValue
-                : 0
+                : 0,
+            PackagePinMask = pinIndex < 64 ? 1UL << pinIndex : 0
         };
         _pins.Add(pin);
+        Array.Resize(ref _packagePins, pinIndex + 1);
+        _packagePins[pinIndex] = pin;
         return pin;
     }
 
@@ -81,7 +85,6 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
 
             while (currentInputChanges != 0)
             {
-                _outputPublicationSequence++;
                 OnInputChanges(currentInputChanges);
                 FlushChangedOutputs();
 
@@ -92,10 +95,8 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
         finally
         {
             _handlingInputChanges = false;
-            // Package-owned references are permanent members of the board.
-            // Retain the reusable backing array and reset only its active count
-            // instead of clearing reference slots after every chip reaction.
-            _changedOutputPinCount = 0;
+            _changedOutputPinMask = 0;
+            _changedOutputOverflowCount = 0;
         }
     }
 
@@ -125,7 +126,6 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
 
             while (currentInputChanges != 0)
             {
-                _outputPublicationSequence++;
                 OnInputChangesProfiled(currentInputChanges, sample);
                 FlushChangedOutputs();
 
@@ -136,8 +136,17 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
         finally
         {
             _handlingInputChanges = false;
-            _changedOutputPinCount = 0;
+            _changedOutputPinMask = 0;
+            _changedOutputOverflowCount = 0;
         }
+    }
+
+    internal bool IsHandlingInputChanges => _handlingInputChanges;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void StageOutputChanges(ulong changedPackagePinMask)
+    {
+        _changedOutputPinMask |= changedPackagePinMask;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -145,17 +154,33 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
     {
         if (!_handlingInputChanges) return false;
 
-        // The package stages only its own physical output pins. It never keeps
-        // a motherboard-net reference. A pin touched more than once during one
-        // internal reaction is published once with its final drive state.
-        if (pin.TryMarkOutputPublication(_outputPublicationSequence))
+        // Every current NES package fits inside one 64-bit package-pin mask.
+        // This is still a set of physical package pins, not a logical bus: each
+        // set bit is later published through that pin's own attached net. The
+        // mask only replaces hot reference-array writes and publication stamps.
+        var packagePinMask = pin.PackagePinMask;
+        if (packagePinMask != 0)
         {
-            var count = _changedOutputPinCount;
-            if (count == _changedOutputPins.Length)
-                Array.Resize(ref _changedOutputPins, _changedOutputPins.Length * 2);
-            _changedOutputPins[count] = pin;
-            _changedOutputPinCount = count + 1;
+            _changedOutputPinMask |= packagePinMask;
+            return true;
         }
+
+        // Generic laboratory packages may exceed 64 pins. Keep a cold overflow
+        // path so the physical model has no package-size restriction.
+        var count = _changedOutputOverflowCount;
+        var overflow = _changedOutputOverflowPins;
+        for (var index = 0; index < count; index++)
+        {
+            if (ReferenceEquals(overflow[index], pin)) return true;
+        }
+
+        if (count == overflow.Length)
+        {
+            Array.Resize(ref _changedOutputOverflowPins, overflow.Length * 2);
+            overflow = _changedOutputOverflowPins;
+        }
+        overflow[count] = pin;
+        _changedOutputOverflowCount = count + 1;
         return true;
     }
 
@@ -191,21 +216,27 @@ public abstract class VirtualHardwareComponent : IVirtualHardwareComponent
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void FlushChangedOutputs()
     {
-        var count = _changedOutputPinCount;
-        if (count == 0) return;
+        var changedMask = _changedOutputPinMask;
+        var overflowCount = _changedOutputOverflowCount;
+        if (changedMask == 0 && overflowCount == 0) return;
 
-        // Clear only the active count before receivers can react. Re-entrant
-        // input changes therefore start a fresh publication set while the same
-        // package-owned pin array is reused without per-reaction Array.Clear.
-        _changedOutputPinCount = 0;
-        var changed = _changedOutputPins;
-        if (count == 1)
+        // Clear package-local staging before any receiver can react. A nested
+        // input transition therefore starts a fresh atomic package change-set.
+        _changedOutputPinMask = 0;
+        _changedOutputOverflowCount = 0;
+
+        if (overflowCount == 0 && changedMask != 0 && (changedMask & (changedMask - 1)) == 0)
         {
-            changed[0].PublishStagedDriveChange();
+            var pinIndex = System.Numerics.BitOperations.TrailingZeroCount(changedMask);
+            _packagePins[pinIndex].PublishStagedDriveChange();
             return;
         }
 
-        DigitalPin.PublishStagedDriveChanges(changed, count);
+        DigitalPin.PublishStagedDriveChanges(
+            _packagePins,
+            changedMask,
+            _changedOutputOverflowPins,
+            overflowCount);
     }
 
     /// <summary>

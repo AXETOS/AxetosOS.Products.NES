@@ -171,6 +171,17 @@ public sealed class Hm6116 : VirtualHardwareComponent
         }
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal byte ReadCompiled(int address) => _memory[address & 0x07FF];
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal void WriteCompiled(int address, byte value)
+    {
+        address &= 0x07FF;
+        _memory[address] = value;
+        _knownMasks[address] = byte.MaxValue;
+    }
+
     /// <summary>Test/inspection access only; not an electrical communication path.</summary>
     public byte Inspect(int address)
     {

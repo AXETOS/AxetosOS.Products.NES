@@ -1,3 +1,4 @@
+using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Logic;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Memory;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
@@ -21,6 +22,7 @@ public sealed class FamicomMotherboard
     public const long MasterClockHertz = 21_477_272;
 
     private CompiledClockExecutionPlan _executionPlan = null!;
+    private CompiledFamicomNromExecutionPlan? _compiledNromExecutionPlan;
 
     public FamicomMotherboard()
     {
@@ -89,23 +91,67 @@ public sealed class FamicomMotherboard
     public void PowerOn()
     {
         Board.PowerOn();
+        _compiledNromExecutionPlan?.SynchronizePowerOn();
     }
 
     public void ReleaseReset()
     {
         ResetSource.Set(DigitalLevel.High);
+        _compiledNromExecutionPlan?.SetResetAsserted(false);
     }
 
     public void AssertReset()
     {
         ResetSource.Set(DigitalLevel.Low);
+        _compiledNromExecutionPlan?.SetResetAsserted(true);
     }
 
-    public void AdvanceMasterHalfCycle() => _executionPlan.AdvanceHalfCycle();
+    public bool CompiledPhysicalMachineEnabled => _compiledNromExecutionPlan is not null;
+    public int CompiledRuntimeUnitCount => _compiledNromExecutionPlan?.RuntimeUnits ?? 0;
+    public int CompiledFoldedPhysicalTraceCount => _compiledNromExecutionPlan?.FoldedPhysicalTraces ?? 0;
 
-    public void AdvanceMasterCycles(int cycles) => _executionPlan.AdvanceCycles(cycles);
+    public void SetCompiledPhysicalMachineEnabled(bool enabled)
+    {
+        if (!enabled)
+        {
+            _compiledNromExecutionPlan?.Dispose();
+            _compiledNromExecutionPlan = null;
+            return;
+        }
 
-    internal void RecompileTopology() => _executionPlan.RecompileTopology();
+        if (_compiledNromExecutionPlan is not null) return;
+        if (!Board.Components.OfType<NromCartridge>().Any())
+            throw new InvalidOperationException("A physical NROM cartridge must be attached before compiling the Famicom machine.");
+        _compiledNromExecutionPlan = new CompiledFamicomNromExecutionPlan(this);
+    }
+
+    public void AdvanceMasterHalfCycle()
+    {
+        var compiled = _compiledNromExecutionPlan;
+        if (compiled is not null) compiled.AdvanceHalfCycle();
+        else _executionPlan.AdvanceHalfCycle();
+    }
+
+    public void AdvanceMasterCycles(int cycles)
+    {
+        var compiled = _compiledNromExecutionPlan;
+        if (compiled is not null) compiled.AdvanceCycles(cycles);
+        else _executionPlan.AdvanceCycles(cycles);
+    }
+
+    internal void RecompileTopology()
+    {
+        _compiledNromExecutionPlan?.Dispose();
+        _compiledNromExecutionPlan = null;
+        _executionPlan.RecompileTopology();
+
+        // Cartridge insertion fixes the complete Famicom/NROM wiring. From this
+        // point the physical description can be compiled into one fused runtime
+        // circuit; an unpopulated motherboard deliberately stays on the generic
+        // model for standalone board/chip tests.
+        if (Board.Components.OfType<NromCartridge>().Any())
+            _compiledNromExecutionPlan = new CompiledFamicomNromExecutionPlan(this);
+    }
 
 
     private void TiePackagePower()

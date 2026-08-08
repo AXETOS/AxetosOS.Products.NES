@@ -87,6 +87,107 @@ public sealed class VirtualHardwareRegionalNesMachineTests
     }
 
     [Fact]
+    public void Famicom_nrom_compiles_one_fused_physical_runtime_after_cartridge_attachment()
+    {
+        var machine = new RegionalNesVirtualMachine();
+        machine.InsertRom(CreateImage(), "Game (Japan).nes");
+
+        Assert.True(machine.Famicom.CompiledPhysicalMachineEnabled);
+        Assert.Equal(1, machine.Famicom.CompiledRuntimeUnitCount);
+        Assert.Equal(47, machine.Famicom.CompiledFoldedPhysicalTraceCount);
+
+        // Compilation is an execution representation only. The authoritative
+        // physical package pins remain attached to the original motherboard
+        // traces and can still be inspected even though the fused hot loop no
+        // longer dispatches through them.
+        Assert.Same(machine.Famicom.CpuAddressNets[0], machine.Famicom.Cpu.Address.Pins[0].Net);
+        Assert.Same(machine.Famicom.CpuDataNets[0], machine.Slot.Cartridge!.CpuData.Pins[0].Net);
+        Assert.Same(machine.Famicom.PpuAddressDataNets[0], machine.Famicom.Ppu.MultiplexedAddressData.Pins[0].Net);
+    }
+
+    [Fact]
+    public void Famicom_compiled_machine_can_be_disabled_for_same_build_reference_comparison()
+    {
+        var machine = new RegionalNesVirtualMachine();
+        machine.InsertRom(CreateImage(), "Game (Japan).nes");
+        Assert.True(machine.Famicom.CompiledPhysicalMachineEnabled);
+
+        machine.Famicom.SetCompiledPhysicalMachineEnabled(false);
+
+        Assert.False(machine.Famicom.CompiledPhysicalMachineEnabled);
+        Assert.Same(machine.Famicom.CpuDataNets[0], machine.Famicom.Cpu.Data.Pins[0].Net);
+        Assert.Same(machine.Famicom.PpuAddressDataNets[0], machine.Famicom.Ppu.MultiplexedAddressData.Pins[0].Net);
+    }
+
+    [Fact]
+    public void Compiled_famicom_nrom_matches_reference_runtime_at_the_same_master_cycle_boundary()
+    {
+        var image = CreateImage();
+        var compiled = new RegionalNesVirtualMachine();
+        var reference = new RegionalNesVirtualMachine();
+        compiled.InsertRom(image, "Game (Japan).nes");
+        reference.InsertRom(image, "Game (Japan).nes");
+        reference.Famicom.SetCompiledPhysicalMachineEnabled(false);
+
+        compiled.PowerOn();
+        reference.PowerOn();
+        compiled.ReleaseReset();
+        reference.ReleaseReset();
+
+        const int masterCycles = 1_200;
+        compiled.AdvanceMasterCycles(masterCycles);
+        reference.AdvanceMasterCycles(masterCycles);
+
+        Assert.Equal(reference.Famicom.MasterClock.HalfCycleCount, compiled.Famicom.MasterClock.HalfCycleCount);
+        Assert.Equal(reference.Famicom.Cpu.MasterClockRisingEdgeCount, compiled.Famicom.Cpu.MasterClockRisingEdgeCount);
+        Assert.Equal(reference.Famicom.Ppu.MasterClockRisingEdgeCount, compiled.Famicom.Ppu.MasterClockRisingEdgeCount);
+        Assert.Equal(reference.Famicom.Cpu.RisingEdgeCount, compiled.Famicom.Cpu.RisingEdgeCount);
+        Assert.Equal(reference.Famicom.Cpu.CompletedInstructionCount, compiled.Famicom.Cpu.CompletedInstructionCount);
+        Assert.Equal(reference.Famicom.Cpu.ProgramCounter, compiled.Famicom.Cpu.ProgramCounter);
+        Assert.Equal(reference.Famicom.Cpu.CurrentOpcode, compiled.Famicom.Cpu.CurrentOpcode);
+        Assert.Equal(reference.Famicom.Cpu.CurrentM2Level, compiled.Famicom.Cpu.CurrentM2Level);
+        Assert.Equal(reference.Famicom.Ppu.Scanline, compiled.Famicom.Ppu.Scanline);
+        Assert.Equal(reference.Famicom.Ppu.Dot, compiled.Famicom.Ppu.Dot);
+        Assert.Equal(reference.Famicom.Ppu.Frame, compiled.Famicom.Ppu.Frame);
+        var referenceCartridge = reference.Slot.Cartridge!;
+        var compiledCartridge = compiled.Slot.Cartridge!;
+        Assert.Equal(referenceCartridge.CpuReadCount, compiledCartridge.CpuReadCount);
+        Assert.Equal(referenceCartridge.LastCpuReadAddress, compiledCartridge.LastCpuReadAddress);
+        Assert.Equal(referenceCartridge.LastCpuReadData, compiledCartridge.LastCpuReadData);
+        Assert.Equal(referenceCartridge.PpuReadCount, compiledCartridge.PpuReadCount);
+    }
+
+
+    [Fact]
+    public void Compiled_famicom_nrom_preserves_apu_register_writes_and_dac_output()
+    {
+        var image = CreatePulseAudioImage();
+        var compiled = new RegionalNesVirtualMachine();
+        var reference = new RegionalNesVirtualMachine();
+        compiled.InsertRom(image, "Pulse Audio (Japan).nes");
+        reference.InsertRom(image, "Pulse Audio (Japan).nes");
+        reference.Famicom.SetCompiledPhysicalMachineEnabled(false);
+
+        compiled.Famicom.Cpu.AudioDacOutput.SetCaptureEnabled(true);
+        reference.Famicom.Cpu.AudioDacOutput.SetCaptureEnabled(true);
+        compiled.PowerOn();
+        reference.PowerOn();
+        compiled.ReleaseReset();
+        reference.ReleaseReset();
+
+        const int masterCycles = 60_000;
+        compiled.AdvanceMasterCycles(masterCycles);
+        reference.AdvanceMasterCycles(masterCycles);
+
+        var compiledSamples = compiled.Famicom.Cpu.AudioDacOutput.Drain();
+        var referenceSamples = reference.Famicom.Cpu.AudioDacOutput.Drain();
+        Assert.Contains(compiledSamples, sample => sample.DacLevel > 0);
+        Assert.Equal(reference.Famicom.Cpu.ApuCpuCycleCount, compiled.Famicom.Cpu.ApuCpuCycleCount);
+        Assert.Equal(reference.Famicom.Cpu.AudioDacLevel, compiled.Famicom.Cpu.AudioDacLevel);
+        Assert.Equal(referenceSamples, compiledSamples);
+    }
+
+    [Fact]
     public void Unsupported_mapper_is_rejected_before_power_is_applied()
     {
         var machine = new RegionalNesVirtualMachine();
@@ -94,6 +195,42 @@ public sealed class VirtualHardwareRegionalNesMachineTests
 
         Assert.Throws<NotSupportedException>(() => machine.InsertRom(image, "MMC1 (USA).nes"));
         Assert.False(machine.IsPowered);
+    }
+
+
+    private static VirtualHardwareNesRomImage CreatePulseAudioImage()
+    {
+        var prg = new byte[16 * 1024];
+        var program = new byte[]
+        {
+            0x78,                   // SEI
+            0xA9, 0x01,             // LDA #$01
+            0x8D, 0x15, 0x40,       // STA $4015 - enable pulse 1
+            0xA9, 0xBF,             // LDA #$BF - duty + constant volume 15
+            0x8D, 0x00, 0x40,       // STA $4000
+            0xA9, 0x20,             // LDA #$20 - timer low
+            0x8D, 0x02, 0x40,       // STA $4002
+            0xA9, 0x08,             // LDA #$08 - timer high + length reload
+            0x8D, 0x03, 0x40,       // STA $4003
+            0x4C, 0x15, 0x80        // JMP $8015
+        };
+        program.CopyTo(prg, 0);
+        prg[0x3FFA] = 0x00; prg[0x3FFB] = 0x80;
+        prg[0x3FFC] = 0x00; prg[0x3FFD] = 0x80;
+        prg[0x3FFE] = 0x00; prg[0x3FFF] = 0x80;
+
+        return new VirtualHardwareNesRomImage(
+            VirtualHardwareNesHeaderFormat.INes,
+            MapperNumber: 0,
+            SubmapperNumber: null,
+            PrgRomSizeBytes: 16 * 1024,
+            ChrRomSizeBytes: 8 * 1024,
+            HasTrainer: false,
+            HasBatteryBackedMemory: false,
+            VirtualHardwareNesMirroring.Horizontal,
+            VirtualHardwareNesHeaderTiming.Unknown,
+            prg,
+            new byte[8 * 1024]);
     }
 
     private static VirtualHardwareNesRomImage CreateImage() => new(

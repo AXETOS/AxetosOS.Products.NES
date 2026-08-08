@@ -1,6 +1,6 @@
 namespace AxetosOS.Products.NES.VirtualHardware.Electrical;
 
-public enum PinDirection
+public enum PinDirection : byte
 {
     Input,
     Output,
