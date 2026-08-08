@@ -18,6 +18,7 @@ var palCic = PalCicVariant.PalA3195;
 var profileSimulation = false;
 var ppuSplitTrace = false;
 var referenceRuntime = false;
+var compiledLabRuntime = false;
 var uncappedRuntime = false;
 for (var index = 0; index < args.Length; index++)
 {
@@ -39,6 +40,12 @@ for (var index = 0; index < args.Length; index++)
         continue;
     }
 
+    if (args[index].Equals("--compiled-lab", StringComparison.OrdinalIgnoreCase))
+    {
+        compiledLabRuntime = true;
+        continue;
+    }
+
     if (args[index].Equals("--uncapped", StringComparison.OrdinalIgnoreCase))
     {
         uncappedRuntime = true;
@@ -57,7 +64,7 @@ for (var index = 0; index < args.Length; index++)
 
     if (romArgument is not null)
     {
-        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--reference-runtime] [--uncapped] [--ppu-split-trace]");
+        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--reference-runtime|--compiled-lab] [--uncapped] [--ppu-split-trace]");
         return 2;
     }
 
@@ -90,10 +97,20 @@ catch (NotSupportedException exception)
     return 4;
 }
 
+if (referenceRuntime && compiledLabRuntime)
+{
+    Console.Error.WriteLine("--reference-runtime and --compiled-lab are mutually exclusive.");
+    return 2;
+}
+
 var referenceRuntimeActive = referenceRuntime
+    && host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom;
+var compiledLabRuntimeActive = compiledLabRuntime
     && host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom;
 if (referenceRuntimeActive)
     host.Machine.Famicom.SetCompiledPhysicalMachineEnabled(false);
+else if (compiledLabRuntimeActive)
+    host.Machine.Famicom.SetCompiledLabMotherboardEnabled(true);
 
 if (host.Machine.ActiveMotherboard == ActiveNesMotherboard.PalNes)
 {
@@ -153,15 +170,22 @@ Console.WriteLine($"PRG ROM:    {image.PrgRomSizeBytes:N0} bytes");
 Console.WriteLine($"CHR:        {(image.ChrRomSizeBytes == 0 ? "8 KiB CHR RAM" : $"{image.ChrRomSizeBytes:N0} bytes ROM")}");
 var compiledFamicom = host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom
     && host.Machine.Famicom.CompiledPhysicalMachineEnabled;
-Console.WriteLine(compiledFamicom
-    ? "Execution:   startup-compiled fused physical Famicom/NROM machine"
-    : "Execution:   physical virtual-hardware buses and master clock only");
+var compiledLab = host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom
+    && host.Machine.Famicom.CompiledLabMotherboardEnabled;
+Console.WriteLine(compiledLab
+    ? "Execution:   whole-circuit compiled motherboard + replaceable cartridge unit"
+    : compiledFamicom
+        ? "Execution:   startup-compiled fused physical Famicom/NROM machine"
+        : "Execution:   physical virtual-hardware buses and master clock only");
 Console.WriteLine("Video:       RP2C02 color output -> AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:       RP2A03 DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
 Console.WriteLine("Controls:    Esc=Exit (controller hardware adapter is the next input milestone)");
-Console.WriteLine(compiledFamicom
-    ? $"Kernel:      fused compiled circuit ({host.Machine.Famicom.CompiledRuntimeUnitCount} runtime unit; {host.Machine.Famicom.CompiledFoldedPhysicalTraceCount} fixed traces folded; no signal queue)"
-    : "Kernel:      chip-owned pin-gated direct propagation (no signal queue)");
+Console.WriteLine(compiledLab
+    ? $"Kernel:      lab whole-circuit compiler ({host.Machine.Famicom.CompiledLabRuntimeUnitCount} runtime units; {host.Machine.Famicom.CompiledLabInternalComponentCount} fixed-board components; {host.Machine.Famicom.CompiledLabFoldedInternalTraceCount} internal traces folded; {host.Machine.Famicom.CompiledLabBoundaryTraceCount} cartridge-boundary traces)"
+    : compiledFamicom
+        ? $"Kernel:      fused compiled circuit ({host.Machine.Famicom.CompiledRuntimeUnitCount} runtime unit; {host.Machine.Famicom.CompiledFoldedPhysicalTraceCount} fixed traces folded; no signal queue)"
+        : "Kernel:      chip-owned pin-gated direct propagation (no signal queue)");
+if (compiledLab) Console.WriteLine("Compiler:    topology/chip-circuit derived only; mapper + ROM remain outside motherboard unit");
 if (referenceRuntimeActive) Console.WriteLine("Reference:   legacy per-trace runtime forced for A/B comparison");
 var realTimePacing = !uncappedRuntime && !profileSimulation;
 Console.WriteLine(realTimePacing

@@ -23,6 +23,7 @@ public sealed class FamicomMotherboard
 
     private CompiledClockExecutionPlan _executionPlan = null!;
     private CompiledFamicomNromExecutionPlan? _compiledNromExecutionPlan;
+    private CompiledLabMotherboardExecutionPlan? _compiledLabMotherboardExecutionPlan;
 
     public FamicomMotherboard()
     {
@@ -92,23 +93,32 @@ public sealed class FamicomMotherboard
     {
         Board.PowerOn();
         _compiledNromExecutionPlan?.SynchronizePowerOn();
+        _compiledLabMotherboardExecutionPlan?.SynchronizePowerOn();
     }
 
     public void ReleaseReset()
     {
         ResetSource.Set(DigitalLevel.High);
         _compiledNromExecutionPlan?.SetResetAsserted(false);
+        _compiledLabMotherboardExecutionPlan?.SetResetAsserted(false);
     }
 
     public void AssertReset()
     {
         ResetSource.Set(DigitalLevel.Low);
         _compiledNromExecutionPlan?.SetResetAsserted(true);
+        _compiledLabMotherboardExecutionPlan?.SetResetAsserted(true);
     }
 
     public bool CompiledPhysicalMachineEnabled => _compiledNromExecutionPlan is not null;
     public int CompiledRuntimeUnitCount => _compiledNromExecutionPlan?.RuntimeUnits ?? 0;
     public int CompiledFoldedPhysicalTraceCount => _compiledNromExecutionPlan?.FoldedPhysicalTraces ?? 0;
+
+    public bool CompiledLabMotherboardEnabled => _compiledLabMotherboardExecutionPlan is not null;
+    public int CompiledLabRuntimeUnitCount => _compiledLabMotherboardExecutionPlan?.RuntimeUnits ?? 0;
+    public int CompiledLabInternalComponentCount => _compiledLabMotherboardExecutionPlan?.InternalComponentCount ?? 0;
+    public int CompiledLabFoldedInternalTraceCount => _compiledLabMotherboardExecutionPlan?.FoldedInternalTraceCount ?? 0;
+    public int CompiledLabBoundaryTraceCount => _compiledLabMotherboardExecutionPlan?.BoundaryTraceCount ?? 0;
 
     public void SetCompiledPhysicalMachineEnabled(bool enabled)
     {
@@ -120,13 +130,43 @@ public sealed class FamicomMotherboard
         }
 
         if (_compiledNromExecutionPlan is not null) return;
+        _compiledLabMotherboardExecutionPlan?.Dispose();
+        _compiledLabMotherboardExecutionPlan = null;
         if (!Board.Components.OfType<NromCartridge>().Any())
             throw new InvalidOperationException("A physical NROM cartridge must be attached before compiling the Famicom machine.");
         _compiledNromExecutionPlan = new CompiledFamicomNromExecutionPlan(this);
     }
 
+    public void SetCompiledLabMotherboardEnabled(bool enabled)
+    {
+        if (!enabled)
+        {
+            _compiledLabMotherboardExecutionPlan?.Dispose();
+            _compiledLabMotherboardExecutionPlan = null;
+            return;
+        }
+
+        if (_compiledLabMotherboardExecutionPlan is not null) return;
+        _compiledNromExecutionPlan?.Dispose();
+        _compiledNromExecutionPlan = null;
+
+        // Cartridge/mapper hardware remains a replaceable unit outside the
+        // motherboard compilation boundary. The factory is mapper-specific; the
+        // whole-board compiler receives only that boundary contract.
+        var cartridge = Board.Components.OfType<NromCartridge>().SingleOrDefault()
+            ?? throw new InvalidOperationException("A supported physical cartridge must be attached before compiling the motherboard.");
+        var external = CompiledExternalCartridgeFactory.Create(cartridge);
+        _compiledLabMotherboardExecutionPlan = new CompiledLabMotherboardExecutionPlan(Board, MasterClock, external);
+    }
+
     public void AdvanceMasterHalfCycle()
     {
+        var labCompiled = _compiledLabMotherboardExecutionPlan;
+        if (labCompiled is not null)
+        {
+            labCompiled.AdvanceHalfCycle();
+            return;
+        }
         var compiled = _compiledNromExecutionPlan;
         if (compiled is not null) compiled.AdvanceHalfCycle();
         else _executionPlan.AdvanceHalfCycle();
@@ -134,6 +174,12 @@ public sealed class FamicomMotherboard
 
     public void AdvanceMasterCycles(int cycles)
     {
+        var labCompiled = _compiledLabMotherboardExecutionPlan;
+        if (labCompiled is not null)
+        {
+            labCompiled.AdvanceCycles(cycles);
+            return;
+        }
         var compiled = _compiledNromExecutionPlan;
         if (compiled is not null) compiled.AdvanceCycles(cycles);
         else _executionPlan.AdvanceCycles(cycles);
@@ -143,6 +189,8 @@ public sealed class FamicomMotherboard
     {
         _compiledNromExecutionPlan?.Dispose();
         _compiledNromExecutionPlan = null;
+        _compiledLabMotherboardExecutionPlan?.Dispose();
+        _compiledLabMotherboardExecutionPlan = null;
         _executionPlan.RecompileTopology();
 
         // Cartridge insertion fixes the complete Famicom/NROM wiring. From this

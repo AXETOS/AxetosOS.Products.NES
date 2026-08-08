@@ -158,6 +158,93 @@ public sealed class VirtualHardwareRegionalNesMachineTests
     }
 
 
+
+    [Fact]
+    public void Whole_circuit_lab_compiler_keeps_replaceable_cartridge_outside_motherboard_unit()
+    {
+        var machine = new RegionalNesVirtualMachine();
+        machine.InsertRom(CreateImage(), "Game (Japan).nes");
+        var cartridge = machine.Slot.Cartridge!;
+
+        machine.Famicom.SetCompiledLabMotherboardEnabled(true);
+
+        Assert.True(machine.Famicom.CompiledLabMotherboardEnabled);
+        Assert.False(machine.Famicom.CompiledPhysicalMachineEnabled);
+        Assert.Equal(2, machine.Famicom.CompiledLabRuntimeUnitCount);
+        Assert.True(machine.Famicom.CompiledLabInternalComponentCount > 0);
+        Assert.True(machine.Famicom.CompiledLabFoldedInternalTraceCount > 0);
+        Assert.True(machine.Famicom.CompiledLabBoundaryTraceCount > 0);
+        Assert.Contains(cartridge, machine.Famicom.Board.Components);
+        Assert.Same(machine.Famicom.CpuDataNets[0], cartridge.CpuData.Pins[0].Net);
+        Assert.Same(machine.Famicom.PpuAddressDataNets[0], cartridge.PpuAddressData.Pins[0].Net);
+    }
+
+    [Fact]
+    public void Whole_circuit_lab_compiler_matches_reference_runtime_at_same_master_cycle_boundary()
+    {
+        var image = CreateImage();
+        var compiled = new RegionalNesVirtualMachine();
+        var reference = new RegionalNesVirtualMachine();
+        compiled.InsertRom(image, "Game (Japan).nes");
+        reference.InsertRom(image, "Game (Japan).nes");
+        compiled.Famicom.SetCompiledLabMotherboardEnabled(true);
+        reference.Famicom.SetCompiledPhysicalMachineEnabled(false);
+
+        compiled.PowerOn();
+        reference.PowerOn();
+        compiled.ReleaseReset();
+        reference.ReleaseReset();
+
+        const int masterCycles = 1_200;
+        compiled.AdvanceMasterCycles(masterCycles);
+        reference.AdvanceMasterCycles(masterCycles);
+
+        Assert.Equal(reference.Famicom.MasterClock.HalfCycleCount, compiled.Famicom.MasterClock.HalfCycleCount);
+        Assert.Equal(reference.Famicom.Cpu.MasterClockRisingEdgeCount, compiled.Famicom.Cpu.MasterClockRisingEdgeCount);
+        Assert.Equal(reference.Famicom.Ppu.MasterClockRisingEdgeCount, compiled.Famicom.Ppu.MasterClockRisingEdgeCount);
+        Assert.Equal(reference.Famicom.Cpu.RisingEdgeCount, compiled.Famicom.Cpu.RisingEdgeCount);
+        Assert.Equal(reference.Famicom.Cpu.CompletedInstructionCount, compiled.Famicom.Cpu.CompletedInstructionCount);
+        Assert.Equal(reference.Famicom.Cpu.ProgramCounter, compiled.Famicom.Cpu.ProgramCounter);
+        Assert.Equal(reference.Famicom.Cpu.CurrentOpcode, compiled.Famicom.Cpu.CurrentOpcode);
+        Assert.Equal(reference.Famicom.Ppu.Scanline, compiled.Famicom.Ppu.Scanline);
+        Assert.Equal(reference.Famicom.Ppu.Dot, compiled.Famicom.Ppu.Dot);
+        Assert.Equal(reference.Famicom.Ppu.Frame, compiled.Famicom.Ppu.Frame);
+        Assert.Equal(reference.Slot.Cartridge!.CpuReadCount, compiled.Slot.Cartridge!.CpuReadCount);
+        Assert.Equal(reference.Slot.Cartridge!.LastCpuReadAddress, compiled.Slot.Cartridge!.LastCpuReadAddress);
+        Assert.Equal(reference.Slot.Cartridge!.LastCpuReadData, compiled.Slot.Cartridge!.LastCpuReadData);
+        Assert.Equal(reference.Slot.Cartridge!.PpuReadCount, compiled.Slot.Cartridge!.PpuReadCount);
+    }
+
+    [Fact]
+    public void Whole_circuit_lab_compiler_preserves_apu_register_writes_and_dac_output()
+    {
+        var image = CreatePulseAudioImage();
+        var compiled = new RegionalNesVirtualMachine();
+        var reference = new RegionalNesVirtualMachine();
+        compiled.InsertRom(image, "Pulse Audio (Japan).nes");
+        reference.InsertRom(image, "Pulse Audio (Japan).nes");
+        compiled.Famicom.SetCompiledLabMotherboardEnabled(true);
+        reference.Famicom.SetCompiledPhysicalMachineEnabled(false);
+
+        compiled.Famicom.Cpu.AudioDacOutput.SetCaptureEnabled(true);
+        reference.Famicom.Cpu.AudioDacOutput.SetCaptureEnabled(true);
+        compiled.PowerOn();
+        reference.PowerOn();
+        compiled.ReleaseReset();
+        reference.ReleaseReset();
+
+        const int masterCycles = 60_000;
+        compiled.AdvanceMasterCycles(masterCycles);
+        reference.AdvanceMasterCycles(masterCycles);
+
+        var compiledSamples = compiled.Famicom.Cpu.AudioDacOutput.Drain();
+        var referenceSamples = reference.Famicom.Cpu.AudioDacOutput.Drain();
+        Assert.Contains(compiledSamples, sample => sample.DacLevel > 0);
+        Assert.Equal(reference.Famicom.Cpu.ApuCpuCycleCount, compiled.Famicom.Cpu.ApuCpuCycleCount);
+        Assert.Equal(reference.Famicom.Cpu.AudioDacLevel, compiled.Famicom.Cpu.AudioDacLevel);
+        Assert.Equal(referenceSamples, compiledSamples);
+    }
+
     [Fact]
     public void Compiled_famicom_nrom_preserves_apu_register_writes_and_dac_output()
     {

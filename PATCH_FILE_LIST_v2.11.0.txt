@@ -1,0 +1,10 @@
+Directory.Build.props
+README.md
+RELEASE_NOTES_v2.11.0.md
+PATCH_NOTES_v2.11.0.txt
+PATCH_FILE_LIST_v2.11.0.txt
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledExternalCartridgeUnit.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledLabMotherboardExecutionPlan.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Boards/Nes/FamicomMotherboard.cs
+src/Products/NES/AxetosOS.Products.NES.DesktopHost/Program.cs
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareRegionalNesMachineTests.cs

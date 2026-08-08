@@ -227,3 +227,26 @@ Unused lanes on two- and three-driver nets are compiled as strong Hi-Z, allowing
 This remains topology-only hardware simulation: the electrical layer knows physical pins, wires, driver slots, drive strength and resolved levels. It has no NES, CPU, PPU, RAM, cartridge, mapper, address-space or board-signal semantics. Arbitrary rewiring, Hi-Z, weak/strong priority and output contention remain observable physical behavior.
 
 The suite adds an exhaustive four-driver electrical conformance test over every legal Unknown/Low/High/Hi-Z × weak/strong combination, increasing the expected test total from 228 to **229**.
+
+
+## v2.11.0 whole-circuit compiled laboratory motherboard experiment
+
+v2.11.0 introduces a new `--compiled-lab` execution architecture while preserving both the v2.10 true-hardware reference runtime and the existing hand-fused Famicom/NROM runtime. The goal is to test whether the hardware laboratory itself can compile a fixed assembled motherboard into a much faster executable circuit without teaching the compiler NES address-space or game semantics.
+
+The compilation boundary deliberately stops at the cartridge connector. The fixed motherboard is compiled as one runtime unit; the inserted cartridge/mapper is represented by a second replaceable runtime unit. ROM contents and mapper-specific behavior therefore remain outside the motherboard compiler and can change without redefining the fixed board.
+
+The motherboard compiler derives optimizations from physical chip definitions and the actual assembled netlist:
+
+- it identifies the installed RP2A03, RP2C02 and SRAM packages by physical chip type, then determines the CPU-side and PPU-side SRAM roles from their real shared data traces rather than component IDs;
+- it evaluates the connected SN74LS139A and SN74LS368A combinational circuitry for all RP2A03 address/RW source patterns and emits 65,536-entry read/write dispatch tables for the exact assembled board;
+- it derives SRAM and RP2C02 register address projections from actual package-pin connectivity;
+- it traces RP2C02 AD pins through the installed SN74LS373 into the PPU-side SRAM and compiles the resulting CIRAM address projection, while requiring the externally supplied CIRAM select/address contribution to originate at the replaceable-device boundary;
+- it derives the RP2A03/RP2C02 master-clock activation periods and shared-edge ordering from their physical clock pins. When the assembled circuit proves a 6/4 repeating schedule, it emits the existing unrolled 12-master-edge execution kernel as a circuit-derived shortcut;
+- it directly fuses PPU NMI delivery only after proving that the RP2C02 and RP2A03 NMI package pins are on the same physical trace;
+- it validates direct PPU-side SRAM `/OE` and `/WE` shortcuts against the actual connected control traces before compiling them.
+
+No motherboard route contains hardcoded `$0000-$1FFF`, `$2000-$3FFF`, `$8000-$FFFF`, "CPU RAM", "PPU register", NROM, mapper, or game rules. Mapper-0 PRG/CHR and mirroring behavior lives only in the replaceable NROM cartridge runtime unit. A future MMC1/MMC3 cartridge can therefore replace that unit without changing the fixed-motherboard compiler.
+
+The existing default fused Famicom/NROM runtime remains unchanged and available as the proven ~60 FPS performance fallback. `--reference-runtime` continues to select the v2.10 physical pin/net runtime, and `--compiled-lab` selects this new whole-circuit compiler experiment. These modes are mutually exclusive so benchmark results do not include duplicate routing engines.
+
+Three new conformance tests verify the compilation boundary, exact machine-state equivalence with the physical reference at the same master-cycle boundary, and APU/DAC equivalence. The expected suite total is **232** tests.

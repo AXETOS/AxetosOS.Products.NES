@@ -1,0 +1,18 @@
+AxetosOS Products / NES v2.11.0 patch
+
+Purpose
+-------
+Test a whole-circuit hardware-lab compiler without removing the proven ~60 FPS fused runtime.
+
+Key points
+----------
+- Adds --compiled-lab as a separate execution mode.
+- Fixed motherboard compiles as one circuit-derived runtime unit.
+- Cartridge/mapper/ROM stays outside as a replaceable second unit.
+- CPU dispatch, address projection, CIRAM wiring, clock schedule and NMI shortcuts are derived from physical chip/net topology.
+- Mapper-0/NROM behavior exists only in the external cartridge unit.
+- Default fused Famicom/NROM runtime remains unchanged.
+- --reference-runtime remains the v2.10 physical oracle.
+- Adds three conformance tests; expected suite total is 232.
+
+This is an experimental performance architecture. Accept it only after local tests and uncapped benchmarks.
