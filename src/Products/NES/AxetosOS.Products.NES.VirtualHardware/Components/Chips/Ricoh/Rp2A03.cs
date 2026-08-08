@@ -304,6 +304,31 @@ public sealed class Rp2A03 : VirtualHardwareComponent
 
     protected override void OnInputChanges(ulong changedInputMask)
     {
+        if (changedInputMask == _masterClockInputMask && _packagePowered)
+        {
+            // Dominant steady-state path: the physical CLK pin has already
+            // received/stored every level and its chip-owned divider admitted
+            // this exact activation. Avoid re-decoding unrelated asynchronous
+            // package masks on every M2 half-cycle.
+            _m2Level = _m2Level == DigitalLevel.High ? DigitalLevel.Low : DigitalLevel.High;
+            M2.Drive(_m2Level);
+            if (_m2Level != DigitalLevel.High) return;
+
+            if (ResetBar.SampledLevel == DigitalLevel.Low)
+            {
+                if (!_resetAsserted) BeginResetSequence();
+                _resetAsserted = true;
+                return;
+            }
+
+            _resetAsserted = false;
+            RisingEdgeCount++;
+            SampleControllerInputs();
+            ClockApuCpuCycle();
+            ExecuteBusCycle();
+            return;
+        }
+
         // Data/IRQ/reset package pins are always electrically current, but most
         // of them are sampled only at an internal CPU clock boundary.  Avoid
         // entering the CPU/APU core at all for pin traffic that cannot cause an

@@ -67,3 +67,15 @@ The v1.4.0 profile confirmed that chip-owned wake gates reduce package evaluatio
 - common 6-, 8-, 11- and 16-bit package bus sampling plus 8-bit strong drive/release paths are specialized for the NES hot widths.
 
 No physical level transition is suppressed. Driver strength, contention, high-impedance behavior, bidirectional input history, receiver delivery, and chip-owned activation remain part of the same direct physical model.
+
+## v1.4.2 direct shared-bus resolver + steady-state chip clock path
+
+Measured Release benchmarks showed that v1.4.1's incremental multi-driver bookkeeping reduced the number of electrical operations but increased cost per hot shared-bus transition enough to regress Mario and Donkey Kong. v1.4.2 removes that duplicated driver-state bookkeeping while preserving the useful v1.4.1 pin-gating and fixed-width bus work.
+
+- three- and four-driver traces use compact unrolled electrical resolution directly from the current physical package-pin drive states; larger traces fall back to the same direct scan model;
+- package output batches remain atomic without keeping a second software copy of driver state: every changed pin already contains its final drive state before any affected trace is presented;
+- the NTSC/PAL RP2C02/RP2C07 and RP2A03/RP2A07 packages recognize their dominant exact clock-only activation mask internally and bypass unrelated power/select/asynchronous mask decoding on steady-state clock work;
+- the motherboard still resolves and delivers every physical level. Clock division, wake gating, reset/select meaning, bus sampling and all other activation semantics remain owned by the receiving physical chip/pin;
+- four-driver regression coverage now exercises the real NROM-era CPU/PPU shared-bus driver count, including weak contention, strong override and unknown-drive behavior.
+
+This is a profiler-guided rollback of the expensive v1.4.1 aggregate strategy, not a rollback of the dumb-motherboard / smart-chip architecture.

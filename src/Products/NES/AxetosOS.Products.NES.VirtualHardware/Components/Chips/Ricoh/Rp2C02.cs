@@ -318,6 +318,30 @@ public sealed class Rp2C02 : VirtualHardwareComponent
 
     protected override void OnInputChanges(ulong changedInputMask)
     {
+        if (changedInputMask == _clockInputMask && _packagePowered && !_resetAsserted)
+        {
+            // Dominant steady-state path: this exact mask can only be produced
+            // when the chip-owned divided rising-edge clock input accepts its
+            // activation. Every physical Low/High level has already been stored
+            // by the package pin before this direct PPU-dot path is entered.
+            AdvanceRaster();
+            AdvanceVramTransaction();
+            AdvanceBackgroundPipeline();
+            AdvanceSpritePipeline();
+            if (Scanline < 240 && Dot is >= 1 and <= 256)
+            {
+                VideoOutput.Drive(new RicohVideoPixelSample(
+                    Frame,
+                    Dot - 1,
+                    Scanline,
+                    OutputColorCode,
+                    ColorEmphasis));
+            }
+            DriveVramBus();
+            DriveNmi();
+            return;
+        }
+
         // Every package pin has already accepted its new electrical level before
         // this method is entered.  Keep the chip smart: if power is absent, or
         // if ordinary CPU-register pins move while /CS is definitely inactive,

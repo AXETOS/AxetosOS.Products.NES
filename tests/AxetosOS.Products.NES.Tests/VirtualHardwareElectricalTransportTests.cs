@@ -47,7 +47,7 @@ public sealed class VirtualHardwareElectricalTransportTests
 
 
     [Fact]
-    public void Multi_driver_compiled_resolver_preserves_strength_contention_and_release_semantics()
+    public void Multi_driver_resolver_preserves_strength_contention_and_release_semantics()
     {
         var board = new VirtualHardwareBoard("multi-driver-compiled-resolver");
         var first = board.Add(new OutputProbe("first"));
@@ -71,6 +71,32 @@ public sealed class VirtualHardwareElectricalTransportTests
 
         second.Release();
         Assert.Equal(DigitalLevel.High, receiver.Input.SampledLevel);
+    }
+
+    [Fact]
+    public void Four_driver_hot_bus_resolver_preserves_strength_and_unknown_semantics()
+    {
+        var board = new VirtualHardwareBoard("four-driver-hot-resolver");
+        var first = board.Add(new OutputProbe("first"));
+        var second = board.Add(new OutputProbe("second"));
+        var third = board.Add(new OutputProbe("third"));
+        var fourth = board.Add(new OutputProbe("fourth"));
+        var receiver = board.Add(new InputProbe("receiver", DigitalInputActivation.AnyChange));
+        board.Connect("shared", first.Output, second.Output, third.Output, fourth.Output, receiver.Input);
+        _ = new VirtualHardwareSimulator(board);
+
+        first.Set(DigitalLevel.High, DigitalDriveStrength.Weak);
+        second.Set(DigitalLevel.Low, DigitalDriveStrength.Weak);
+        Assert.Equal(DigitalLevel.Contention, receiver.Input.SampledLevel);
+
+        third.Set(DigitalLevel.Low);
+        Assert.Equal(DigitalLevel.Low, receiver.Input.SampledLevel);
+
+        fourth.Set(DigitalLevel.Unknown);
+        Assert.Equal(DigitalLevel.Unknown, receiver.Input.SampledLevel);
+
+        fourth.Release();
+        Assert.Equal(DigitalLevel.Low, receiver.Input.SampledLevel);
     }
 
     [Fact]

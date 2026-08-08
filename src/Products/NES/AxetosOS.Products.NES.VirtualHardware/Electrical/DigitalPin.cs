@@ -38,7 +38,6 @@ public sealed class DigitalPin
 
     internal VirtualHardwareComponent? OwnerComponent { get; set; }
     internal int OwnerComponentIndex { get; set; } = -1;
-    internal int NetDriverIndex { get; set; } = -1;
     internal ulong InputChangeMask { get; init; }
     internal DigitalInputActivation InputActivation { get; set; } = DigitalInputActivation.AnyChange;
     internal int InputActivationPeriod { get; set; } = 1;
