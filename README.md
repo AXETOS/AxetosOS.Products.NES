@@ -278,3 +278,20 @@ Expected test total: **233**.
 ## v2.12.1 generic signal-router type hotfix
 
 v2.12.1 fixes a compile-time generic type-inference issue in the product-agnostic whole-circuit compiler. `CompiledSignalRouter` now groups physical signal sinks directly by `DigitalNet`; `DigitalNet` already uses reference identity, so this preserves the intended hardware semantics while keeping the compiler contract strongly typed. No execution behavior, NES/product knowledge, mapper behavior, or optimization strategy is changed from v2.12.0.
+
+## v2.13.0 replaceable cartridge hardware units and MMC1 proof
+
+v2.13.0 makes the cartridge boundary genuinely independent from the product-agnostic fixed-motherboard compilation. In `--compiled-lab`, the Famicom motherboard and its fixed chips can now be compiled before a ROM is loaded. ROM metadata is interpreted only by the cartridge composition factory, which constructs the matching replaceable cartridge hardware and physically inserts it through the existing connector nets. Cartridge replacement binds/unbinds a separate compiled external unit without recreating the motherboard execution plan.
+
+The generic compiler now excludes every `ICompiledExternalDevice` from fixed-unit bus targets, clock/reset discovery, signal-sink discovery and bit-projection proofs. Fixed-board targets whose electrical selection or address depends on an external connector driver are retained as dynamic boundary targets and resolved from the live physical topology. This is required for cartridge-controlled CIRAM `/CE` and A10 wiring while keeping the board compiler ignorant of mapper semantics.
+
+Mapper 1 / MMC1 is added as the first bank-switched cartridge proof. The cartridge owns its serial load register, control/CHR/PRG bank state, PRG RAM, PRG/CHR banking and CIRAM A10 mirroring output. The same ROM-side factory continues to construct NROM for mapper 0. The motherboard compiler contains no mapper switch, cartridge address-map names or product-specific mapper rules.
+
+The architectural regression suite now proves that one compiled Famicom motherboard keeps the same compilation identity across NROM eject and MMC1 insertion, and adds an MMC1 execution ROM that performs real five-write serial PRG bank selection before comparing compiled execution with the physical reference path. Standard MMC1 up to the base 256 KiB PRG addressing model is the scope of this first proof; later SxROM board variants, revision-specific PRG-RAM control and consecutive-cycle write suppression remain separate cartridge-hardware refinements.
+
+
+## v2.13.1 MMC1 physical write-strobe hotfix
+
+v2.13.1 keeps the v2.13.0 replaceable-cartridge architecture unchanged and fixes the physical MMC1 reference path. MMC1 CPU transactions are now latched on the cartridge package's falling `M2` edge, when the active address, R/W and data levels are still physically present. This matches the RP2A0x package model's atomic output publication: its rising `M2` transition and next-cycle bus outputs are published together, so using the rising edge inside the cartridge could observe the newly-started cycle and miss the completed write. The compiled cartridge unit and fixed motherboard compiler remain mapper/product agnostic.
+
+The boot-host unsupported-mapper regression now uses mapper 2 because mapper 1 is intentionally supported by the new MMC1 cartridge hardware.

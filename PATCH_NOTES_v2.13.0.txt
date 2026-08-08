@@ -1,0 +1,23 @@
+v2.13.0 replaceable cartridge hardware / MMC1 proof
+
+Apply over validated v2.12.1.
+
+Core architecture:
+- compile the fixed Famicom motherboard before ROM/mapper construction in compiled-lab mode;
+- ROM-side cartridge factory constructs mapper 0 NROM or mapper 1 MMC1 hardware;
+- insert that replaceable hardware through the physical cartridge connector;
+- bind/unbind it as a separate compiled external unit;
+- do not rebuild the fixed motherboard compilation when the cartridge changes.
+
+MMC1 scope:
+- serial register and reset behavior;
+- PRG/CHR banking;
+- PRG RAM / CHR RAM;
+- cartridge-controlled CIRAM mirroring outputs;
+- physical and generic compiled hardware facets.
+
+The generic whole-circuit compiler contains no mapper/product-specific branch or address-map shortcut.
+
+Baseline: 233 validated tests on v2.12.1.
+Expected after this patch: 247 test cases.
+This environment has no .NET SDK, so run dotnet test locally before accepting v2.13.0 as validated.

@@ -84,7 +84,14 @@ if (!File.Exists(romPath))
     return 3;
 }
 
+if (referenceRuntime && compiledLabRuntime)
+{
+    Console.Error.WriteLine("--reference-runtime and --compiled-lab are mutually exclusive.");
+    return 2;
+}
+
 var host = new VirtualNesBootHost();
+if (compiledLabRuntime) host.Machine.SetCompiledLabExecutionEnabled(true);
 VirtualHardwareNesRomImage image;
 try
 {
@@ -97,20 +104,12 @@ catch (NotSupportedException exception)
     return 4;
 }
 
-if (referenceRuntime && compiledLabRuntime)
-{
-    Console.Error.WriteLine("--reference-runtime and --compiled-lab are mutually exclusive.");
-    return 2;
-}
-
 var referenceRuntimeActive = referenceRuntime
     && host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom;
 var compiledLabRuntimeActive = compiledLabRuntime
     && host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom;
 if (referenceRuntimeActive)
     host.Machine.Famicom.SetCompiledPhysicalMachineEnabled(false);
-else if (compiledLabRuntimeActive)
-    host.Machine.Famicom.SetCompiledLabMotherboardEnabled(true);
 
 if (host.Machine.ActiveMotherboard == ActiveNesMotherboard.PalNes)
 {

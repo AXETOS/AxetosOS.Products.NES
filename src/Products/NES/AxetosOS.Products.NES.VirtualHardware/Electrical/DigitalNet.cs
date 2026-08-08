@@ -165,6 +165,29 @@ public sealed class DigitalNet
     }
 
     /// <summary>
+    /// Physically disconnects one package pin from this trace. Used for
+    /// replaceable connector hardware; no component semantics are involved.
+    /// </summary>
+    public void Disconnect(DigitalPin pin)
+    {
+        ArgumentNullException.ThrowIfNull(pin);
+        if (!ReferenceEquals(pin.Net, this) || !_pins.Remove(pin)) return;
+
+        pin.Net = null;
+        pin.NetDriverIndex = -1;
+        pin.SetObservedLevel(DigitalLevel.Unknown);
+        _pinSnapshotDirty = true;
+        _compiledSingleDriverSource = null;
+        _compiledSingleDriverObservers = [];
+
+        if (_compiled)
+        {
+            CompileTopology();
+            if (ResolveAndPresent()) ReactPresentedInputs();
+        }
+    }
+
+    /// <summary>
     /// Compiles the common master-clock case once: one known strong digital
     /// source drives this trace. Runtime clock edges can then bypass the generic
     /// resolver and present the already-known 0/1 source level directly.

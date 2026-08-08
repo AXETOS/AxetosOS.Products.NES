@@ -16,7 +16,7 @@ public sealed record VirtualHardwareNesMachine(
     public ActiveNesMotherboard ActiveMotherboard => Hardware.ActiveMotherboard;
     public object ActiveBoard => Hardware.ActiveBoard
         ?? throw new InvalidOperationException("No physical motherboard is selected.");
-    public NromCartridge CartridgeBoard => Hardware.Slot.Cartridge
+    public IReplaceableCartridgeHardware CartridgeBoard => Hardware.Slot.Cartridge
         ?? throw new InvalidOperationException("No physical cartridge board is attached.");
 }
 
@@ -52,7 +52,6 @@ public static class VirtualHardwareNesMachineFactory
         NesRegionSelection regionSelection = NesRegionSelection.Auto)
     {
         ArgumentNullException.ThrowIfNull(image);
-        ValidateCurrentCartridgeSupport(image);
 
         var hardware = new RegionalNesVirtualMachine();
         hardware.InsertRom(image, fileName, regionSelection);
@@ -62,15 +61,4 @@ public static class VirtualHardwareNesMachineFactory
         return new VirtualHardwareNesMachine(image, resolved, hardware);
     }
 
-    private static void ValidateCurrentCartridgeSupport(VirtualHardwareNesRomImage image)
-    {
-        if (image.MapperNumber != 0)
-            throw new NotSupportedException($"VirtualHardware currently supports NROM mapper 0 only; ROM uses mapper {image.MapperNumber}.");
-
-        if (image.PrgRomSizeBytes is not (16 * 1024 or 32 * 1024))
-            throw new NotSupportedException($"NROM requires 16 KiB or 32 KiB PRG ROM; ROM declares {image.PrgRomSizeBytes} bytes.");
-
-        if (image.ChrRomSizeBytes is not (0 or 8 * 1024))
-            throw new NotSupportedException($"Current NROM composition supports 0 or 8 KiB CHR ROM; ROM declares {image.ChrRomSizeBytes} bytes.");
-    }
 }

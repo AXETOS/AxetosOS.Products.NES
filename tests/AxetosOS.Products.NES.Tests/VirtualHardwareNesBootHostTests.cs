@@ -41,11 +41,11 @@ public sealed class VirtualHardwareNesBootHostTests
     public void Boot_host_rejects_unsupported_mapper_before_power_is_applied()
     {
         var image = new VirtualHardwareNesRomImage(
-            VirtualHardwareNesHeaderFormat.INes, 1, null, 32 * 1024, 8 * 1024,
+            VirtualHardwareNesHeaderFormat.INes, 2, null, 32 * 1024, 8 * 1024,
             false, false, VirtualHardwareNesMirroring.Horizontal,
             VirtualHardwareNesHeaderTiming.Ntsc, new byte[32 * 1024], new byte[8 * 1024]);
         var host = new VirtualNesBootHost();
-        Assert.Throws<NotSupportedException>(() => host.LoadRom(image, "mapper1.nes"));
+        Assert.Throws<NotSupportedException>(() => host.LoadRom(image, "mapper2.nes"));
         Assert.False(host.Machine.IsPowered);
     }
 }

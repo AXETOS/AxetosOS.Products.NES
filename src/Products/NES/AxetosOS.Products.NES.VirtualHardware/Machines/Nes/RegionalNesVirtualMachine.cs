@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
+using AxetosOS.Products.NES.VirtualHardware.Simulation;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
@@ -35,6 +36,7 @@ public sealed class RegionalNesVirtualMachine
     public ActiveNesMotherboard ActiveMotherboard { get; private set; }
     public bool IsPowered { get; private set; }
     public ulong SelectionCount { get; private set; }
+    public bool CompiledLabExecutionRequested { get; private set; }
 
     public object? ActiveBoard => ActiveMotherboard switch
     {
@@ -53,8 +55,16 @@ public sealed class RegionalNesVirtualMachine
         if (IsPowered)
             throw new InvalidOperationException("Power off the virtual machine before replacing the ROM.");
 
+        var resolved = NesHardwareRegionResolver.Resolve(image, sourceName, regionSelection);
+        SelectResolvedMotherboard(resolved, palCicVariant);
+
+        // In compiled-lab mode the fixed motherboard is compiled before ROM
+        // metadata constructs mapper/cartridge hardware. Cartridge hardware is
+        // then inserted and bound as a separate replaceable unit.
+        if (CompiledLabExecutionRequested && ActiveMotherboard == ActiveNesMotherboard.Famicom)
+            Famicom.SetCompiledLabMotherboardEnabled(true);
+
         Slot.Insert(image, sourceName, regionSelection, palCicVariant);
-        SelectResolvedMotherboard();
         AttachInsertedCartridge();
     }
 
@@ -63,6 +73,7 @@ public sealed class RegionalNesVirtualMachine
         if (IsPowered)
             throw new InvalidOperationException("Power off the virtual machine before ejecting the ROM.");
 
+        DetachInsertedCartridge();
         Slot.Eject();
         ActiveMotherboard = ActiveNesMotherboard.None;
     }
@@ -122,9 +133,23 @@ public sealed class RegionalNesVirtualMachine
         }
     }
 
-    private void SelectResolvedMotherboard()
+    public void SetCompiledLabExecutionEnabled(bool enabled)
     {
-        var resolved = Slot.ResolvedRegion ?? throw new InvalidOperationException("The inserted ROM has no resolved region.");
+        if (IsPowered) throw new InvalidOperationException("Change execution mode only while powered off.");
+        CompiledLabExecutionRequested = enabled;
+
+        if (!enabled)
+        {
+            Famicom.SetCompiledLabMotherboardEnabled(false);
+            return;
+        }
+
+        if (ActiveMotherboard == ActiveNesMotherboard.Famicom)
+            Famicom.SetCompiledLabMotherboardEnabled(true);
+    }
+
+    private void SelectResolvedMotherboard(NesResolvedRegion resolved, PalCicVariant palCicVariant)
+    {
         ActiveMotherboard = resolved.Region switch
         {
             NesHardwareRegion.NtscJapan => ActiveNesMotherboard.Famicom,
@@ -133,9 +158,9 @@ public sealed class RegionalNesVirtualMachine
             _ => throw new ArgumentOutOfRangeException(nameof(resolved.Region), resolved.Region, null)
         };
 
-        if (ActiveMotherboard == ActiveNesMotherboard.PalNes && _constructedPalVariant != Slot.PalCicVariant)
+        if (ActiveMotherboard == ActiveNesMotherboard.PalNes && _constructedPalVariant != palCicVariant)
         {
-            _constructedPalVariant = Slot.PalCicVariant;
+            _constructedPalVariant = palCicVariant;
             PalNes = new PalNesMotherboard(_constructedPalVariant);
         }
 
@@ -145,11 +170,13 @@ public sealed class RegionalNesVirtualMachine
 
     private void AttachInsertedCartridge()
     {
+        var cartridge = Slot.Cartridge ?? throw new InvalidOperationException("No cartridge hardware was constructed.");
         switch (ActiveMotherboard)
         {
             case ActiveNesMotherboard.Famicom:
                 Slot.AttachTo(Famicom);
                 Famicom.RecompileTopology();
+                Famicom.AttachCompiledExternalDevice(cartridge);
                 break;
             case ActiveNesMotherboard.NtscNes:
                 Slot.AttachTo(NtscNes);
@@ -157,6 +184,28 @@ public sealed class RegionalNesVirtualMachine
                 break;
             case ActiveNesMotherboard.PalNes:
                 Slot.AttachTo(PalNes);
+                PalNes.RecompileTopology();
+                break;
+        }
+    }
+
+    private void DetachInsertedCartridge()
+    {
+        var cartridge = Slot.Cartridge;
+        if (cartridge is null) return;
+        switch (ActiveMotherboard)
+        {
+            case ActiveNesMotherboard.Famicom:
+                Famicom.DetachCompiledExternalDevice(cartridge);
+                Famicom.Board.Remove(cartridge);
+                Famicom.RecompileTopology();
+                break;
+            case ActiveNesMotherboard.NtscNes:
+                NtscNes.Board.Remove(cartridge);
+                NtscNes.RecompileTopology();
+                break;
+            case ActiveNesMotherboard.PalNes:
+                PalNes.Board.Remove(cartridge);
                 PalNes.RecompileTopology();
                 break;
         }

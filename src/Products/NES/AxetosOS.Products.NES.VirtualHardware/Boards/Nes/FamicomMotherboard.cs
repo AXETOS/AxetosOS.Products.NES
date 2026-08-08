@@ -119,6 +119,7 @@ public sealed class FamicomMotherboard
     public int CompiledLabInternalComponentCount => _compiledLabMotherboardExecutionPlan?.InternalComponentCount ?? 0;
     public int CompiledLabFoldedInternalTraceCount => _compiledLabMotherboardExecutionPlan?.FoldedInternalTraceCount ?? 0;
     public int CompiledLabBoundaryTraceCount => _compiledLabMotherboardExecutionPlan?.BoundaryTraceCount ?? 0;
+    public Guid? CompiledLabCompilationId => _compiledLabMotherboardExecutionPlan?.CompilationId;
 
     public void SetCompiledPhysicalMachineEnabled(bool enabled)
     {
@@ -150,12 +151,9 @@ public sealed class FamicomMotherboard
         _compiledNromExecutionPlan?.Dispose();
         _compiledNromExecutionPlan = null;
 
-        // Replaceable hardware stays outside the fixed-board runtime unit. The
-        // lab compiler discovers such devices only through the generic external-
-        // device marker and consumes their ordinary hardware compilation facets.
-        // It never asks what product, cartridge, mapper, or board is present.
-        if (!Board.Components.OfType<ICompiledExternalDevice>().Any(device => device.ReadyForCompiledExecution))
-            throw new InvalidOperationException("No ready replaceable hardware device is attached to the compiled board boundary.");
+        // The fixed board may be compiled with an empty connector. Replaceable
+        // hardware is bound later from its own generic facets without rebuilding
+        // this motherboard execution plan.
         _compiledLabMotherboardExecutionPlan = new CompiledLabMotherboardExecutionPlan(
             Board,
             (ICompiledClockSource)MasterClock);
@@ -191,17 +189,20 @@ public sealed class FamicomMotherboard
     {
         _compiledNromExecutionPlan?.Dispose();
         _compiledNromExecutionPlan = null;
-        _compiledLabMotherboardExecutionPlan?.Dispose();
-        _compiledLabMotherboardExecutionPlan = null;
         _executionPlan.RecompileTopology();
 
-        // Cartridge insertion fixes the complete Famicom/NROM wiring. From this
-        // point the physical description can be compiled into one fused runtime
-        // circuit; an unpopulated motherboard deliberately stays on the generic
-        // model for standalone board/chip tests.
-        if (Board.Components.OfType<NromCartridge>().Any())
+        // The legacy hand-fused NROM runtime remains available only when the
+        // product-agnostic fixed-board compiler is not active. The lab compiler
+        // itself survives cartridge topology changes unchanged.
+        if (_compiledLabMotherboardExecutionPlan is null && Board.Components.OfType<NromCartridge>().Any())
             _compiledNromExecutionPlan = new CompiledFamicomNromExecutionPlan(this);
     }
+
+    internal void AttachCompiledExternalDevice(ICompiledExternalDevice device) =>
+        _compiledLabMotherboardExecutionPlan?.AttachExternalDevice(device);
+
+    internal void DetachCompiledExternalDevice(ICompiledExternalDevice device) =>
+        _compiledLabMotherboardExecutionPlan?.DetachExternalDevice(device);
 
 
     private void TiePackagePower()

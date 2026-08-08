@@ -9,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 /// Standalone mapper-0 cartridge board. PRG and CHR devices react only to the
 /// normalized cartridge connector pins; no CPU, PPU, or motherboard calls are used.
 /// </summary>
-public sealed class NromCartridge : VirtualHardwareComponent, ICompiledBusTargetProvider, ICompiledCombinationalComponent, ICompiledExternalDevice
+public sealed class NromCartridge : VirtualHardwareComponent, IReplaceableCartridgeHardware, ICompiledBusTargetProvider, ICompiledCombinationalComponent
 {
     private byte[] _prg = [];
     private byte[] _chr = [];
@@ -111,6 +111,7 @@ public sealed class NromCartridge : VirtualHardwareComponent, ICompiledBusTarget
     public DigitalPin CiramChipEnableBar { get; }
     public DigitalPin CiramA10 { get; }
     public DigitalPin IrqBar { get; }
+    public int MapperNumber => 0;
     public bool IsChrRam => _chrRam;
     internal VirtualHardwareNesMirroring CompiledMirroring => _mirroring;
 

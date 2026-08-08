@@ -34,6 +34,14 @@ public sealed class VirtualHardwareBoard
         return component;
     }
 
+    public bool Remove(IVirtualHardwareComponent component)
+    {
+        ArgumentNullException.ThrowIfNull(component);
+        if (!_components.Contains(component)) return false;
+        foreach (var pin in component.Pins) pin.Net?.Disconnect(pin);
+        return _components.Remove(component);
+    }
+
     public DigitalNet AddNet(string name)
     {
         if (_nets.Any(existing => existing.Name == name))

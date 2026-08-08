@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
+using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 using AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
@@ -87,12 +88,25 @@ public sealed class VirtualHardwareNesRomLoadingTests
     }
 
     [Fact]
-    public void Factory_rejects_mapper_not_yet_wired_into_physical_virtual_hardware()
+    public void Factory_constructs_mmc1_hardware_from_rom_metadata_and_attaches_it_to_selected_board()
+    {
+        var machine = VirtualHardwareNesMachineFactory.Load(
+            CreateRom(mapper: 1, prgUnits: 2, chrUnits: 1),
+            "MMC1 (USA).nes");
+
+        Assert.Equal(1, machine.CartridgeBoard.MapperNumber);
+        Assert.IsType<Mmc1Cartridge>(machine.CartridgeBoard);
+        Assert.Equal(ActiveNesMotherboard.NtscNes, machine.ActiveMotherboard);
+        Assert.Contains(machine.CartridgeBoard, machine.Hardware.NtscNes.Board.Components);
+    }
+
+    [Fact]
+    public void Factory_rejects_mapper_without_physical_cartridge_hardware()
     {
         var error = Assert.Throws<NotSupportedException>(() =>
-            VirtualHardwareNesMachineFactory.Load(CreateRom(mapper: 1), "MMC1.nes"));
+            VirtualHardwareNesMachineFactory.Load(CreateRom(mapper: 2), "UxROM.nes"));
 
-        Assert.Contains("mapper 0 only", error.Message);
+        Assert.Contains("Mapper 2", error.Message);
     }
 
     [Fact]
@@ -114,15 +128,16 @@ public sealed class VirtualHardwareNesRomLoadingTests
         int timing = 0,
         int mapper = 0,
         bool hasTrainer = false,
-        int chrUnits = 0)
+        int chrUnits = 0,
+        int prgUnits = 1)
     {
         var trainerSize = hasTrainer ? 512 : 0;
-        var bytes = new byte[16 + trainerSize + (16 * 1024) + (chrUnits * 8 * 1024)];
+        var bytes = new byte[16 + trainerSize + (prgUnits * 16 * 1024) + (chrUnits * 8 * 1024)];
         bytes[0] = 0x4E;
         bytes[1] = 0x45;
         bytes[2] = 0x53;
         bytes[3] = 0x1A;
-        bytes[4] = 1;
+        bytes[4] = (byte)prgUnits;
         bytes[5] = (byte)chrUnits;
         bytes[6] = (byte)(((mapper & 0x0F) << 4) | (hasTrainer ? 0x04 : 0));
         bytes[7] = (byte)((mapper & 0xF0) | (nes20 ? 0x08 : 0));
@@ -138,10 +153,11 @@ public sealed class VirtualHardwareNesRomLoadingTests
 
         var payload = 16 + trainerSize;
         bytes[payload] = 0xA9;
-        bytes[payload + 0x3FFC] = 0x00;
-        bytes[payload + 0x3FFD] = 0x80;
+        var vectorBase = payload + (prgUnits * 16 * 1024) - 4;
+        bytes[vectorBase] = 0x00;
+        bytes[vectorBase + 1] = prgUnits == 1 ? (byte)0x80 : (byte)0xC0;
         if (chrUnits > 0)
-            bytes[payload + 16 * 1024] = 0x3C;
+            bytes[payload + (prgUnits * 16 * 1024)] = 0x3C;
         return bytes;
     }
 }

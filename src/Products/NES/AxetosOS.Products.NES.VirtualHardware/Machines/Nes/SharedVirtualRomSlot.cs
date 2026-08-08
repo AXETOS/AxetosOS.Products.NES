@@ -12,7 +12,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
 /// </summary>
 public sealed class SharedVirtualRomSlot
 {
-    private NromCartridge? _cartridge;
+    private IReplaceableCartridgeHardware? _cartridge;
     public const int CpuAddressWidth = 16;
     public const int CpuDataWidth = 8;
     public const int PpuAddressWidth = 14;
@@ -23,7 +23,7 @@ public sealed class SharedVirtualRomSlot
     public NesResolvedRegion? ResolvedRegion { get; private set; }
     public PalCicVariant PalCicVariant { get; private set; } = PalCicVariant.PalA3195;
     public bool IsOccupied => InsertedImage is not null;
-    public NromCartridge? Cartridge => _cartridge;
+    public IReplaceableCartridgeHardware? Cartridge => _cartridge;
     public ulong InsertCount { get; private set; }
     public ulong EjectCount { get; private set; }
 
@@ -34,14 +34,13 @@ public sealed class SharedVirtualRomSlot
         PalCicVariant palCicVariant = PalCicVariant.PalA3195)
     {
         ArgumentNullException.ThrowIfNull(image);
+        if (IsOccupied) throw new InvalidOperationException("Eject the current cartridge before inserting another one.");
+        var cartridge = VirtualCartridgeHardwareFactory.Create(image);
         InsertedImage = image;
         SourceName = sourceName;
         ResolvedRegion = NesHardwareRegionResolver.Resolve(image, sourceName, regionSelection);
         PalCicVariant = palCicVariant;
-        if (image.MapperNumber != 0)
-            throw new NotSupportedException($"Mapper {image.MapperNumber} is not yet implemented as virtual cartridge hardware.");
-        _cartridge ??= new NromCartridge("SLOT.NROM");
-        _cartridge.LoadImage(image);
+        _cartridge = cartridge;
         InsertCount++;
     }
 
@@ -54,6 +53,7 @@ public sealed class SharedVirtualRomSlot
         SourceName = null;
         ResolvedRegion = null;
         _cartridge?.Eject();
+        _cartridge = null;
         EjectCount++;
     }
     public void AttachTo(FamicomMotherboard board) => Attach(

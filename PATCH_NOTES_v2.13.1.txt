@@ -1,0 +1,11 @@
+v2.13.1 MMC1 physical write-strobe hotfix
+
+Apply over v2.13.0.
+
+Fixes the two failures from the first 247-test v2.13.0 run:
+1. MMC1 physical reference did not commit mapper writes because the cartridge sampled CPU transactions on rising M2 while the RP2A0x package atomically published rising M2 with next-cycle bus outputs. MMC1 now completes the physical transaction on falling M2, where the active bus cycle remains stable.
+2. The boot-host unsupported-mapper test still used mapper 1 even though MMC1 is now supported. It now uses mapper 2.
+
+No motherboard/product/mapper specialization is added to the generic compiler. Fixed motherboard compilation and replaceable cartridge binding remain unchanged.
+
+Expected test total: 247. Run dotnet test locally before accepting v2.13.1 as validated.

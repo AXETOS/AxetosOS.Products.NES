@@ -17,10 +17,13 @@ namespace AxetosOS.Products.NES.VirtualHardware.Simulation;
 /// </summary>
 public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
 {
+    private readonly VirtualHardwareBoard _board;
     private readonly ICompiledClockSource _clockSource;
+    private readonly HardwareCompiler _compiler;
     private readonly CompiledClockSchedule _clockSchedule;
     private readonly CompiledBusFabric[] _busFabrics;
     private readonly CompiledResetBinding[] _resetBindings;
+    private readonly HashSet<ICompiledExternalDevice> _externalDevices = new(ReferenceEqualityComparer.Instance);
     private ulong _clockRisingEdges;
 
     public CompiledLabMotherboardExecutionPlan(
@@ -28,21 +31,27 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         ICompiledClockSource clockSource)
     {
         ArgumentNullException.ThrowIfNull(board);
+        _board = board;
         _clockSource = clockSource ?? throw new ArgumentNullException(nameof(clockSource));
+        CompilationId = Guid.NewGuid();
 
-        var compiler = new HardwareCompiler(board);
+        // The fixed unit is compiled from motherboard-owned hardware only.
+        // Replaceable packages may already be physically connected when this
+        // constructor is called, but they are deliberately excluded from the
+        // immutable motherboard target set and bound separately below.
+        _compiler = new HardwareCompiler(board);
         var signalRouter = new CompiledSignalRouter(board);
-        _clockSchedule = compiler.CompileClockSchedule(clockSource);
-        _resetBindings = compiler.CompileResetBindings();
+        _clockSchedule = _compiler.CompileClockSchedule(clockSource);
+        _resetBindings = _compiler.CompileResetBindings();
         _clockRisingEdges =
             (clockSource.CompiledHalfCycleCount
              + (clockSource.CompiledClockLevel == DigitalLevel.High ? 1UL : 0UL)) / 2UL;
 
-        var masters = compiler.BusMasters;
+        var masters = _compiler.BusMasters;
         _busFabrics = new CompiledBusFabric[masters.Count];
         for (var index = 0; index < masters.Count; index++)
         {
-            var fabric = compiler.CompileBus(
+            var fabric = _compiler.CompileBus(
                 masters[index],
                 () => _clockRisingEdges,
                 signalRouter);
@@ -50,24 +59,49 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             masters[index].AttachFabric(fabric);
         }
 
-        var externalComponents = board.Components
-            .OfType<ICompiledExternalDevice>()
-            .Where(device => device.ReadyForCompiledExecution)
-            .Cast<IVirtualHardwareComponent>()
-            .ToHashSet(ReferenceEqualityComparer.Instance);
+        InternalComponentCount = board.Components.Count(component => component is not ICompiledExternalDevice);
 
-        RuntimeUnits = 1 + externalComponents.Count;
-        InternalComponentCount = board.Components.Count(component => !externalComponents.Contains(component));
-        BoundaryTraceCount = board.Nets.Count(net =>
-            net.Pins.Any(pin => pin.OwnerComponent is not null && externalComponents.Contains(pin.OwnerComponent)));
-        FoldedInternalTraceCount = board.Nets.Count - BoundaryTraceCount;
+        foreach (var device in board.Components.OfType<ICompiledExternalDevice>())
+        {
+            if (device.ReadyForCompiledExecution) AttachExternalDevice(device);
+        }
     }
 
+    public Guid CompilationId { get; }
     public ulong MasterClockRisingEdges => _clockRisingEdges;
-    public int RuntimeUnits { get; }
+    public int RuntimeUnits => 1 + _externalDevices.Count;
     public int InternalComponentCount { get; }
-    public int BoundaryTraceCount { get; }
-    public int FoldedInternalTraceCount { get; }
+    public int BoundaryTraceCount => _board.Nets.Count(net =>
+        net.Pins.Any(pin => pin.OwnerComponent is ICompiledExternalDevice device && _externalDevices.Contains(device)));
+    public int FoldedInternalTraceCount => _board.Nets.Count - BoundaryTraceCount;
+
+    /// <summary>
+    /// Binds one replaceable hardware package to the already-compiled fixed
+    /// circuit. Only the package's own generic facets and the live physical
+    /// connector topology are compiled here; the motherboard plan and its
+    /// CompilationId remain unchanged.
+    /// </summary>
+    public void AttachExternalDevice(ICompiledExternalDevice device)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        if (!device.ReadyForCompiledExecution)
+            throw new InvalidOperationException("The replaceable hardware device is not ready for compiled execution.");
+        if (device is not IVirtualHardwareComponent component)
+            throw new InvalidOperationException("Compiled external hardware must also be a physical virtual-hardware component.");
+        if (!_externalDevices.Add(device)) return;
+
+        for (var index = 0; index < _busFabrics.Length; index++)
+            _busFabrics[index].BindExternalDevice(component);
+    }
+
+    public void DetachExternalDevice(ICompiledExternalDevice device)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        if (!_externalDevices.Remove(device)) return;
+        if (device is not IVirtualHardwareComponent component) return;
+        for (var index = 0; index < _busFabrics.Length; index++)
+            _busFabrics[index].UnbindExternalDevice(component);
+    }
 
     public void SynchronizePowerOn()
     {
@@ -178,14 +212,17 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         {
             _board = board;
             BusMasters = board.Components
+                .Where(component => component is not ICompiledExternalDevice)
                 .OfType<ICompiledBusMasterProvider>()
                 .SelectMany(provider => provider.GetCompiledBusMasters())
                 .ToArray();
             _targets = board.Components
+                .Where(component => component is not ICompiledExternalDevice)
                 .OfType<ICompiledBusTargetProvider>()
                 .SelectMany(provider => provider.GetCompiledBusTargets())
                 .ToArray();
             _serialPeripherals = board.Components
+                .Where(component => component is not ICompiledExternalDevice)
                 .OfType<ICompiledSerialPeripheralProvider>()
                 .SelectMany(provider => provider.GetCompiledSerialPeripherals())
                 .ToArray();
@@ -195,6 +232,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
 
         public CompiledResetBinding[] CompileResetBindings() =>
             _board.Components
+                .Where(component => component is not ICompiledExternalDevice)
                 .OfType<ICompiledClockedComponent>()
                 .Where(component => component.CompiledResetInput is not null)
                 .Select(component => new CompiledResetBinding(component))
@@ -208,6 +246,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             var sinks = new List<ICompiledClockedComponent>();
             foreach (var pin in net.Pins)
             {
+                if (pin.OwnerComponent is ICompiledExternalDevice) continue;
                 if (pin.OwnerComponent is not ICompiledClockedComponent sink) continue;
                 if (!ReferenceEquals(sink.CompiledClockInput, pin)) continue;
                 sinks.Add(sink);
@@ -258,47 +297,205 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             if (master.DataPins.Count is <= 0 or > 8)
                 throw new NotSupportedException("Compiled byte-bus data widths must be between 1 and 8 bits.");
 
+            var targets = CompileTargetRuntimes(master, _targets, allowExternalProjection: false);
+            ValidateDataBusCoverage(master, targets.Runtimes);
+            var serialBindings = CompileSerialBindings(master);
+            return new CompiledBusFabric(
+                this,
+                master,
+                targets,
+                serialBindings,
+                clockEdgeProvider,
+                signalRouter);
+        }
+
+        public CompiledTargetSet CompileExternalTargets(
+            CompiledBusMasterDescriptor master,
+            IVirtualHardwareComponent component)
+        {
+            if (component is not ICompiledBusTargetProvider provider)
+                return CompiledTargetSet.Empty(master.AddressPins.Count);
+
+            return CompileTargetRuntimes(
+                master,
+                provider.GetCompiledBusTargets().ToArray(),
+                allowExternalProjection: true);
+        }
+
+        private CompiledTargetSet CompileTargetRuntimes(
+            CompiledBusMasterDescriptor master,
+            IReadOnlyList<CompiledBusTargetDescriptor> descriptors,
+            bool allowExternalProjection)
+        {
             var runtimes = new List<CompiledBusTargetRuntime>();
-            for (var index = 0; index < _targets.Length; index++)
+            for (var index = 0; index < descriptors.Count; index++)
             {
-                var target = _targets[index];
+                var target = descriptors[index];
                 if (!TryCompileDataPermutation(target.DataPins, master.DataPins, out var targetToMaster))
                     continue;
                 runtimes.Add(new CompiledBusTargetRuntime(target, targetToMaster));
             }
 
             var targetArray = runtimes.ToArray();
-            ValidateDataBusCoverage(master, targetArray);
-            var addressCount = 1 << master.AddressPins.Count;
-            var readRoutes = new CompiledBusRoute[addressCount];
-            var writeRoutes = new CompiledBusRoute[addressCount];
-
             var addressSources = new int[targetArray.Length][];
             for (var targetIndex = 0; targetIndex < targetArray.Length; targetIndex++)
             {
                 var target = targetArray[targetIndex].Descriptor;
                 var sources = new int[target.AddressPins.Count];
                 for (var bit = 0; bit < sources.Length; bit++)
-                    sources[bit] = FindRootBit(target.AddressPins[bit], master.AddressPins, master, 0);
+                    sources[bit] = FindRootBit(
+                        target.AddressPins[bit],
+                        master.AddressPins,
+                        master,
+                        0,
+                        allowExternalProjection);
                 addressSources[targetIndex] = sources;
             }
 
+            var addressCount = 1 << master.AddressPins.Count;
+            var dynamicTargets = new bool[targetArray.Length];
+            for (var targetIndex = 0; targetIndex < targetArray.Length; targetIndex++)
+                dynamicTargets[targetIndex] = !CanStaticallyCompileTarget(
+                    master, targetArray[targetIndex], addressSources[targetIndex], addressCount);
+
+            var readRoutes = new CompiledBusRoute[addressCount];
+            var writeRoutes = new CompiledBusRoute[addressCount];
             for (var raw = 0; raw < addressCount; raw++)
             {
                 var address = (uint)raw;
-                readRoutes[raw] = CompileRoute(master, targetArray, addressSources, address, readCycle: true);
-                writeRoutes[raw] = CompileRoute(master, targetArray, addressSources, address, readCycle: false);
+                readRoutes[raw] = CompileRoute(master, targetArray, addressSources, dynamicTargets, address, readCycle: true);
+                writeRoutes[raw] = CompileRoute(master, targetArray, addressSources, dynamicTargets, address, readCycle: false);
             }
 
-            var serialBindings = CompileSerialBindings(master);
-            return new CompiledBusFabric(
-                master,
+            var dynamicIndices = Enumerable.Range(0, dynamicTargets.Length)
+                .Where(index => dynamicTargets[index])
+                .ToArray();
+            return new CompiledTargetSet(
                 targetArray,
+                addressSources,
+                dynamicIndices,
                 readRoutes,
-                writeRoutes,
-                serialBindings,
-                clockEdgeProvider,
-                signalRouter);
+                writeRoutes);
+        }
+
+        private bool CanStaticallyCompileTarget(
+            CompiledBusMasterDescriptor master,
+            CompiledBusTargetRuntime target,
+            int[] addressSources,
+            int addressCount)
+        {
+            var descriptor = target.Descriptor;
+            if (descriptor.Read is not null
+                && !CanStaticallyCompileCycle(master, descriptor, addressSources, addressCount, readCycle: true))
+                return false;
+            if (descriptor.Write is not null
+                && !CanStaticallyCompileCycle(master, descriptor, addressSources, addressCount, readCycle: false))
+                return false;
+            return true;
+        }
+
+        private bool CanStaticallyCompileCycle(
+            CompiledBusMasterDescriptor master,
+            CompiledBusTargetDescriptor descriptor,
+            int[] addressSources,
+            int addressCount,
+            bool readCycle)
+        {
+            var conditions = readCycle ? descriptor.ReadConditions : descriptor.WriteConditions;
+            for (var raw = 0; raw < addressCount; raw++)
+            {
+                var address = (uint)raw;
+                var selected = true;
+                for (var conditionIndex = 0; conditionIndex < conditions.Count; conditionIndex++)
+                {
+                    DigitalLevel level;
+                    try
+                    {
+                        level = EvaluateInput(conditions[conditionIndex].Pin, address, readCycle, master, 0, allowExternalDevices: false);
+                    }
+                    catch (NotSupportedException)
+                    {
+                        return false;
+                    }
+
+                    if (level is not (DigitalLevel.Low or DigitalLevel.High)) return false;
+                    if (level != conditions[conditionIndex].RequiredLevel)
+                    {
+                        selected = false;
+                        break;
+                    }
+                }
+                if (!selected) continue;
+
+                for (var bit = 0; bit < addressSources.Length; bit++)
+                {
+                    if (addressSources[bit] >= 0) continue;
+                    DigitalLevel level;
+                    try
+                    {
+                        level = EvaluateInput(descriptor.AddressPins[bit], address, readCycle, master, 0, allowExternalDevices: false);
+                    }
+                    catch (NotSupportedException)
+                    {
+                        return false;
+                    }
+                    if (level is not (DigitalLevel.Low or DigitalLevel.High)) return false;
+                }
+            }
+            return true;
+        }
+
+        public bool TryResolveRuntimeTarget(
+            CompiledBusMasterDescriptor master,
+            CompiledBusTargetRuntime target,
+            int[] addressSources,
+            ushort masterAddress,
+            bool readCycle,
+            out int localAddress)
+        {
+            localAddress = 0;
+            var descriptor = target.Descriptor;
+            var conditions = readCycle ? descriptor.ReadConditions : descriptor.WriteConditions;
+            var address = (uint)masterAddress;
+
+            for (var conditionIndex = 0; conditionIndex < conditions.Count; conditionIndex++)
+            {
+                DigitalLevel level;
+                try
+                {
+                    level = EvaluateInput(conditions[conditionIndex].Pin, address, readCycle, master, 0);
+                }
+                catch (NotSupportedException)
+                {
+                    return false;
+                }
+                if (level != conditions[conditionIndex].RequiredLevel) return false;
+            }
+
+            for (var bit = 0; bit < addressSources.Length; bit++)
+            {
+                var root = addressSources[bit];
+                DigitalLevel level;
+                if (root >= 0)
+                {
+                    level = (address & (1u << root)) != 0 ? DigitalLevel.High : DigitalLevel.Low;
+                }
+                else
+                {
+                    try
+                    {
+                        level = EvaluateInput(descriptor.AddressPins[bit], address, readCycle, master, 0);
+                    }
+                    catch (NotSupportedException)
+                    {
+                        return false;
+                    }
+                }
+
+                if (level == DigitalLevel.High) localAddress |= 1 << bit;
+                else if (level != DigitalLevel.Low) return false;
+            }
+            return true;
         }
 
         private static void ValidateDataBusCoverage(
@@ -320,6 +517,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 foreach (var pin in net.Pins)
                 {
                     if (!pin.IsOutputCapable || ReferenceEquals(pin, masterPin)) continue;
+                    if (pin.OwnerComponent is ICompiledExternalDevice) continue;
                     if (coveredPins.Contains(pin)) continue;
                     throw new NotSupportedException(
                         $"The hardware compiler found an unmodelled physical data-bus driver on net '{net.Name}'. " +
@@ -378,6 +576,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             CompiledBusMasterDescriptor master,
             CompiledBusTargetRuntime[] targets,
             int[][] addressSources,
+            bool[] dynamicTargets,
             uint address,
             bool readCycle)
         {
@@ -386,6 +585,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
 
             for (var targetIndex = 0; targetIndex < targets.Length; targetIndex++)
             {
+                if (dynamicTargets[targetIndex]) continue;
                 var descriptor = targets[targetIndex].Descriptor;
                 if (readCycle && descriptor.Read is null) continue;
                 if (!readCycle && descriptor.Write is null) continue;
@@ -430,7 +630,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             DigitalPin target,
             IReadOnlyList<DigitalPin> roots,
             CompiledBusMasterDescriptor master,
-            int depth)
+            int depth,
+            bool allowExternalDevices)
         {
             if (depth > 16)
                 throw new InvalidOperationException("Compiled bit-projection recursion exceeded the hardware compiler limit.");
@@ -445,19 +646,29 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                     if (ReferenceEquals(driver, roots[root])) return root;
                 }
 
+                if (!allowExternalDevices && driver.OwnerComponent is ICompiledExternalDevice) continue;
                 if (driver.OwnerComponent is not ICompiledBitProjectionComponent projection) continue;
-                if (!projection.TryTraceCompiledOutput(driver, EvaluateStaticInput, out var input)) continue;
-                var projected = FindRootBit(input, roots, master, depth + 1);
+                if (!projection.TryTraceCompiledOutput(
+                    driver,
+                    pin => EvaluateStaticInput(pin, allowExternalDevices),
+                    out var input)) continue;
+                var projected = FindRootBit(input, roots, master, depth + 1, allowExternalDevices);
                 if (projected >= 0) return projected;
             }
             return -1;
         }
 
-        private DigitalLevel EvaluateStaticInput(DigitalPin input)
+        private DigitalLevel EvaluateStaticInput(DigitalPin input, bool allowExternalDevices)
         {
             try
             {
-                return EvaluateInput(input, 0, readCycle: true, master: null, depth: 0);
+                return EvaluateInput(
+                    input,
+                    0,
+                    readCycle: true,
+                    master: null,
+                    depth: 0,
+                    allowExternalDevices: allowExternalDevices);
             }
             catch (NotSupportedException)
             {
@@ -470,12 +681,15 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             uint address,
             bool readCycle,
             CompiledBusMasterDescriptor? master,
-            int depth)
+            int depth,
+            bool allowExternalDevices = true)
         {
             if (depth > 16)
                 throw new InvalidOperationException("Combinational topology recursion exceeded the hardware compiler limit.");
             var net = input.Net;
-            return net is null ? DigitalLevel.Unknown : EvaluateNet(net, address, readCycle, master, depth + 1);
+            return net is null
+                ? DigitalLevel.Unknown
+                : EvaluateNet(net, address, readCycle, master, depth + 1, allowExternalDevices);
         }
 
         private DigitalLevel EvaluateNet(
@@ -483,7 +697,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             uint address,
             bool readCycle,
             CompiledBusMasterDescriptor? master,
-            int depth)
+            int depth,
+            bool allowExternalDevices = true)
         {
             var haveStrong = false;
             var strongLow = false;
@@ -497,7 +712,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             foreach (var driver in net.Pins)
             {
                 if (!driver.IsOutputCapable) continue;
-                var drive = EvaluateDriver(driver, address, readCycle, master, depth + 1);
+                var drive = EvaluateDriver(driver, address, readCycle, master, depth + 1, allowExternalDevices);
                 if (drive.Level == DigitalLevel.HighImpedance) continue;
                 if (drive.Strength == DigitalDriveStrength.Strong)
                 {
@@ -525,8 +740,11 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             uint address,
             bool readCycle,
             CompiledBusMasterDescriptor? master,
-            int depth)
+            int depth,
+            bool allowExternalDevices = true)
         {
+            if (!allowExternalDevices && driver.OwnerComponent is ICompiledExternalDevice)
+                throw new NotSupportedException("Replaceable hardware remains outside the fixed-circuit compilation unit.");
             if (master is not null)
             {
                 var masterDrive = master.EvaluateDrivenPin(driver, address, readCycle);
@@ -536,7 +754,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             if (driver.OwnerComponent is ICompiledCombinationalComponent combinational
                 && combinational.TryEvaluateCompiledOutput(
                     driver,
-                    pin => EvaluateInput(pin, address, readCycle, master, depth + 1),
+                    pin => EvaluateInput(pin, address, readCycle, master, depth + 1, allowExternalDevices),
                     out var drive))
             {
                 return drive;
@@ -600,11 +818,57 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             checked(left / GreatestCommonDivisor(left, right) * right);
     }
 
+    private sealed class CompiledTargetSet
+    {
+        public CompiledTargetSet(
+            CompiledBusTargetRuntime[] runtimes,
+            int[][] addressSources,
+            int[] dynamicIndices,
+            CompiledBusRoute[] readRoutes,
+            CompiledBusRoute[] writeRoutes)
+        {
+            Runtimes = runtimes;
+            AddressSources = addressSources;
+            DynamicIndices = dynamicIndices;
+            ReadRoutes = readRoutes;
+            WriteRoutes = writeRoutes;
+        }
+
+        public CompiledBusTargetRuntime[] Runtimes { get; }
+        public int[][] AddressSources { get; }
+        public int[] DynamicIndices { get; }
+        public CompiledBusRoute[] ReadRoutes { get; }
+        public CompiledBusRoute[] WriteRoutes { get; }
+
+        public static CompiledTargetSet Empty(int addressWidth)
+        {
+            var count = 1 << addressWidth;
+            return new CompiledTargetSet(
+                Array.Empty<CompiledBusTargetRuntime>(),
+                Array.Empty<int[]>(),
+                Array.Empty<int>(),
+                new CompiledBusRoute[count],
+                new CompiledBusRoute[count]);
+        }
+    }
+
+    private sealed class CompiledExternalBinding
+    {
+        public CompiledExternalBinding(IVirtualHardwareComponent component, CompiledTargetSet targets)
+        {
+            Component = component;
+            Targets = targets;
+        }
+
+        public IVirtualHardwareComponent Component { get; }
+        public CompiledTargetSet Targets { get; }
+    }
+
     private sealed class CompiledBusFabric : ICompiledBusFabric
     {
-        private readonly CompiledBusTargetRuntime[] _targets;
-        private readonly CompiledBusRoute[] _readRoutes;
-        private readonly CompiledBusRoute[] _writeRoutes;
+        private readonly HardwareCompiler _compiler;
+        private readonly CompiledTargetSet _internalTargets;
+        private readonly List<CompiledExternalBinding> _externalBindings = [];
         private readonly CompiledSerialBinding[] _serialBindings;
         private readonly Func<ulong> _clockEdgeProvider;
         private readonly CompiledSignalRouter _signalRouter;
@@ -614,18 +878,16 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         private bool _latchedConflict;
 
         public CompiledBusFabric(
+            HardwareCompiler compiler,
             CompiledBusMasterDescriptor master,
-            CompiledBusTargetRuntime[] targets,
-            CompiledBusRoute[] readRoutes,
-            CompiledBusRoute[] writeRoutes,
+            CompiledTargetSet internalTargets,
             CompiledSerialBinding[] serialBindings,
             Func<ulong> clockEdgeProvider,
             CompiledSignalRouter signalRouter)
         {
+            _compiler = compiler;
             Master = master;
-            _targets = targets;
-            _readRoutes = readRoutes;
-            _writeRoutes = writeRoutes;
+            _internalTargets = internalTargets;
             _serialBindings = serialBindings;
             _clockEdgeProvider = clockEdgeProvider;
             _signalRouter = signalRouter;
@@ -636,6 +898,23 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public bool InterruptRequestLow =>
             Master.InterruptRequestPin is not null
             && _signalRouter.SampleNet(Master.InterruptRequestPin.Net) == DigitalLevel.Low;
+
+        public void BindExternalDevice(IVirtualHardwareComponent component)
+        {
+            if (_externalBindings.Any(binding => ReferenceEquals(binding.Component, component))) return;
+            var targets = _compiler.CompileExternalTargets(Master, component);
+            if (targets.Runtimes.Length == 0) return;
+            _externalBindings.Add(new CompiledExternalBinding(component, targets));
+        }
+
+        public void UnbindExternalDevice(IVirtualHardwareComponent component)
+        {
+            for (var index = _externalBindings.Count - 1; index >= 0; index--)
+            {
+                if (ReferenceEquals(_externalBindings[index].Component, component))
+                    _externalBindings.RemoveAt(index);
+            }
+        }
 
         public void ResetTransientState()
         {
@@ -651,8 +930,13 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _latchedAddress = address;
             _latchedValueValid = false;
             _latchedConflict = false;
-            var route = _readRoutes[address & (_readRoutes.Length - 1)];
-            AccumulateReads(route, CompiledBusReadPhase.Begin, ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
+            AccumulateTargetSetReads(
+                _internalTargets, address, CompiledBusReadPhase.Begin,
+                ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
+            for (var index = 0; index < _externalBindings.Count; index++)
+                AccumulateTargetSetReads(
+                    _externalBindings[index].Targets, address, CompiledBusReadPhase.Begin,
+                    ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -661,8 +945,13 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             var any = _latchedValueValid && address == _latchedAddress;
             var conflict = any && _latchedConflict;
             var result = any ? _latchedValue : (byte)0;
-            var route = _readRoutes[address & (_readRoutes.Length - 1)];
-            AccumulateReads(route, CompiledBusReadPhase.Complete, ref result, ref any, ref conflict);
+            AccumulateTargetSetReads(
+                _internalTargets, address, CompiledBusReadPhase.Complete,
+                ref result, ref any, ref conflict);
+            for (var index = 0; index < _externalBindings.Count; index++)
+                AccumulateTargetSetReads(
+                    _externalBindings[index].Targets, address, CompiledBusReadPhase.Complete,
+                    ref result, ref any, ref conflict);
             _latchedValueValid = false;
             _latchedConflict = false;
             value = result;
@@ -674,15 +963,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         {
             _latchedValueValid = false;
             _latchedConflict = false;
-            var route = _writeRoutes[address & (_writeRoutes.Length - 1)];
-            if (route.Count == 0) return;
-            _targets[route.Target0].Write(route.Address0, value);
-            if (route.Count == 1) return;
-            _targets[route.Target1].Write(route.Address1, value);
-            if (route.Count == 2) return;
-            var overflow = route.Overflow!;
-            for (var index = 0; index < overflow.Targets.Length; index++)
-                _targets[overflow.Targets[index]].Write(overflow.Addresses[index], value);
+            WriteTargetSet(_internalTargets, address, value);
+            for (var index = 0; index < _externalBindings.Count; index++)
+                WriteTargetSet(_externalBindings[index].Targets, address, value);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -719,7 +1002,65 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _signalRouter.Present(sourcePin, level);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AccumulateReads(
+        private void AccumulateTargetSetReads(
+            CompiledTargetSet set,
+            ushort address,
+            CompiledBusReadPhase phase,
+            ref byte value,
+            ref bool any,
+            ref bool conflict)
+        {
+            var route = set.ReadRoutes[address & (set.ReadRoutes.Length - 1)];
+            AccumulateRouteReads(set.Runtimes, route, phase, ref value, ref any, ref conflict);
+
+            var dynamic = set.DynamicIndices;
+            for (var index = 0; index < dynamic.Length; index++)
+            {
+                var targetIndex = dynamic[index];
+                var target = set.Runtimes[targetIndex];
+                if (target.Descriptor.Read is null || target.Descriptor.ReadPhase != phase) continue;
+                if (!_compiler.TryResolveRuntimeTarget(
+                    Master, target, set.AddressSources[targetIndex], address, readCycle: true, out var localAddress))
+                    continue;
+                AccumulateReadValue(target.Read(localAddress), ref value, ref any, ref conflict);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void WriteTargetSet(CompiledTargetSet set, ushort address, byte value)
+        {
+            var route = set.WriteRoutes[address & (set.WriteRoutes.Length - 1)];
+            WriteRoute(set.Runtimes, route, value);
+
+            var dynamic = set.DynamicIndices;
+            for (var index = 0; index < dynamic.Length; index++)
+            {
+                var targetIndex = dynamic[index];
+                var target = set.Runtimes[targetIndex];
+                if (target.Descriptor.Write is null) continue;
+                if (!_compiler.TryResolveRuntimeTarget(
+                    Master, target, set.AddressSources[targetIndex], address, readCycle: false, out var localAddress))
+                    continue;
+                target.Write(localAddress, value);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void WriteRoute(CompiledBusTargetRuntime[] targets, CompiledBusRoute route, byte value)
+        {
+            if (route.Count == 0) return;
+            targets[route.Target0].Write(route.Address0, value);
+            if (route.Count == 1) return;
+            targets[route.Target1].Write(route.Address1, value);
+            if (route.Count == 2) return;
+            var overflow = route.Overflow!;
+            for (var index = 0; index < overflow.Targets.Length; index++)
+                targets[overflow.Targets[index]].Write(overflow.Addresses[index], value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void AccumulateRouteReads(
+            CompiledBusTargetRuntime[] targets,
             CompiledBusRoute route,
             CompiledBusReadPhase phase,
             ref byte value,
@@ -727,17 +1068,18 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             ref bool conflict)
         {
             if (route.Count == 0) return;
-            AccumulateReadTarget(route.Target0, route.Address0, phase, ref value, ref any, ref conflict);
+            AccumulateReadTarget(targets, route.Target0, route.Address0, phase, ref value, ref any, ref conflict);
             if (route.Count == 1) return;
-            AccumulateReadTarget(route.Target1, route.Address1, phase, ref value, ref any, ref conflict);
+            AccumulateReadTarget(targets, route.Target1, route.Address1, phase, ref value, ref any, ref conflict);
             if (route.Count == 2) return;
             var overflow = route.Overflow!;
             for (var index = 0; index < overflow.Targets.Length; index++)
-                AccumulateReadTarget(overflow.Targets[index], overflow.Addresses[index], phase, ref value, ref any, ref conflict);
+                AccumulateReadTarget(targets, overflow.Targets[index], overflow.Addresses[index], phase, ref value, ref any, ref conflict);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AccumulateReadTarget(
+        private static void AccumulateReadTarget(
+            CompiledBusTargetRuntime[] targets,
             int targetIndex,
             int localAddress,
             CompiledBusReadPhase phase,
@@ -745,9 +1087,14 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             ref bool any,
             ref bool conflict)
         {
-            var target = _targets[targetIndex];
+            var target = targets[targetIndex];
             if (target.Descriptor.ReadPhase != phase || target.Descriptor.Read is null) return;
-            var read = target.Read(localAddress);
+            AccumulateReadValue(target.Read(localAddress), ref value, ref any, ref conflict);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void AccumulateReadValue(byte read, ref byte value, ref bool any, ref bool conflict)
+        {
             if (!any)
             {
                 value = read;
@@ -881,6 +1228,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public CompiledSignalRouter(VirtualHardwareBoard board)
         {
             var grouped = board.Components
+                .Where(component => component is not ICompiledExternalDevice)
                 .OfType<ICompiledSignalSinkProvider>()
                 .SelectMany(provider => provider.GetCompiledSignalSinks())
                 .Where(sink => sink.Pin.Net is not null)
