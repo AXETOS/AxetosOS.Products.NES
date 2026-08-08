@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using AxetosOS.Products.NES.VirtualHardware.Electrical;
 using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
@@ -16,6 +17,14 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private const int ScanlinesPerFrame = 312;
     private const int VblankStartScanline = 241;
     private const int PreRenderScanline = 311;
+    // Four 16-bit background shift-register lanes are physically clocked in
+    // parallel. Keep the same four retained hardware lanes in one 64-bit word
+    // so one host operation advances all of them without changing PPU state.
+    private const ulong BackgroundShiftLaneMask = 0xFFFEFFFEFFFEFFFEUL;
+    private const ulong BackgroundLoadHighByteMask = 0xFF00FF00FF00FF00UL;
+    private const ulong BackgroundAttributeLowFill = 0x000000FF00000000UL;
+    private const ulong BackgroundAttributeHighFill = 0x00FF000000000000UL;
+
 
     private readonly byte[] _primaryOam = new byte[256];
     private readonly byte[] _paletteRam = new byte[32];
@@ -59,12 +68,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private DigitalLevel _presentedWriteBar = DigitalLevel.Unknown;
     private byte _nextTileId;
     private byte _nextTileAttribute;
-    private byte _nextTileLow;
-    private byte _nextTileHigh;
-    private ushort _patternShiftLow;
-    private ushort _patternShiftHigh;
-    private ushort _attributeShiftLow;
-    private ushort _attributeShiftHigh;
+    private ulong _nextBackgroundLoad;
+    private ulong _backgroundShifters;
+    private byte _backgroundTapShift = 15;
     private readonly SpriteEntry[] _secondaryOam = new SpriteEntry[8];
     private readonly SpriteRenderUnit[] _activeSprites = new SpriteRenderUnit[8];
     private readonly SpriteRenderUnit[] _nextSprites = new SpriteRenderUnit[8];
@@ -177,8 +183,8 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     public byte BackgroundPixelIndex { get; private set; }
     public byte NextTileId => _nextTileId;
     public byte NextTileAttribute => _nextTileAttribute;
-    public ushort PatternShiftLow => _patternShiftLow;
-    public ushort PatternShiftHigh => _patternShiftHigh;
+    public ushort PatternShiftLow => (ushort)_backgroundShifters;
+    public ushort PatternShiftHigh => (ushort)(_backgroundShifters >> 16);
     public ulong SpriteEvaluationCount { get; private set; }
     public ulong SpritePatternFetchCount { get; private set; }
     public int EvaluatedSpriteCount => _secondarySpriteCount;
@@ -303,12 +309,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _transactionPurpose = VramTransactionPurpose.None;
         _nextTileId = 0;
         _nextTileAttribute = 0;
-        _nextTileLow = 0;
-        _nextTileHigh = 0;
-        _patternShiftLow = 0;
-        _patternShiftHigh = 0;
-        _attributeShiftLow = 0;
-        _attributeShiftHigh = 0;
+        _nextBackgroundLoad = 0;
+        _backgroundShifters = 0;
+        _backgroundTapShift = 15;
         Array.Clear(_primaryOam);
         Array.Clear(_paletteRam);
         ReleasePackageOutputs();
@@ -342,10 +345,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         Array.Clear(_secondaryOam);
         Array.Clear(_activeSprites);
         Array.Clear(_nextSprites);
-        _patternShiftLow = 0;
-        _patternShiftHigh = 0;
-        _attributeShiftLow = 0;
-        _attributeShiftHigh = 0;
+        _backgroundShifters = 0;
         ReleasePackageOutputs();
     }
 
@@ -913,6 +913,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                 if (!_writeToggle)
                 {
                     _fineX = (byte)(value & 0x07);
+                    _backgroundTapShift = (byte)(15 - _fineX);
                     _temporaryAddress = (ushort)((_temporaryAddress & ~0x001F) | (value >> 3));
                 }
                 else
@@ -985,6 +986,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _vramAddress = (ushort)((_vramAddress + (_cpuVramIncrement)) & 0x3FFF);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool AdvanceVramTransaction()
     {
         if (_transaction == VramTransaction.None) return false;
@@ -1021,6 +1023,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
     private bool IsRenderingScanline() => Scanline < 240 || Scanline == PreRenderScanline;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void BeginBackgroundRead(ushort address, VramTransactionPurpose purpose)
     {
         if (_transaction != VramTransaction.None) return;
@@ -1040,6 +1043,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         PresentVramAddressPhase();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ushort PatternAddress(bool highPlane)
     {
         var fineY = (_vramAddress >> 12) & 7;
@@ -1058,16 +1062,21 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                 BackgroundNametableFetchCount++;
                 break;
             case VramTransactionPurpose.BackgroundAttribute:
+            {
                 var shift = (byte)(((_vramAddress >> 4) & 4) | (_vramAddress & 2));
                 _nextTileAttribute = (byte)((data >> shift) & 3);
+                _nextBackgroundLoad &= 0x00000000FFFFFFFFUL;
+                if ((_nextTileAttribute & 1) != 0) _nextBackgroundLoad |= BackgroundAttributeLowFill;
+                if ((_nextTileAttribute & 2) != 0) _nextBackgroundLoad |= BackgroundAttributeHighFill;
                 BackgroundAttributeFetchCount++;
                 break;
+            }
             case VramTransactionPurpose.BackgroundPatternLow:
-                _nextTileLow = data;
+                _nextBackgroundLoad = (_nextBackgroundLoad & ~0xFFUL) | data;
                 BackgroundPatternFetchCount++;
                 break;
             case VramTransactionPurpose.BackgroundPatternHigh:
-                _nextTileHigh = data;
+                _nextBackgroundLoad = (_nextBackgroundLoad & ~(0xFFUL << 16)) | ((ulong)data << 16);
                 BackgroundPatternFetchCount++;
                 break;
             case VramTransactionPurpose.SpritePatternLow:
@@ -1091,30 +1100,27 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LoadBackgroundShifters()
     {
-        _patternShiftLow = (ushort)((_patternShiftLow & 0xFF00) | _nextTileLow);
-        _patternShiftHigh = (ushort)((_patternShiftHigh & 0xFF00) | _nextTileHigh);
-        _attributeShiftLow = (ushort)((_attributeShiftLow & 0xFF00) | ((_nextTileAttribute & 1) != 0 ? 0xFF : 0));
-        _attributeShiftHigh = (ushort)((_attributeShiftHigh & 0xFF00) | ((_nextTileAttribute & 2) != 0 ? 0xFF : 0));
+        _backgroundShifters = (_backgroundShifters & BackgroundLoadHighByteMask) | _nextBackgroundLoad;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ShiftBackgroundRegisters()
     {
-        _patternShiftLow <<= 1;
-        _patternShiftHigh <<= 1;
-        _attributeShiftLow <<= 1;
-        _attributeShiftHigh <<= 1;
+        _backgroundShifters = (_backgroundShifters << 1) & BackgroundShiftLaneMask;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateBackgroundPixel()
     {
-        // Called only from the hardwired visible-pixel decoder line (dots 1-256).
-        var selector = (ushort)(0x8000 >> _fineX);
-        var pattern = (byte)(((_patternShiftLow & selector) != 0 ? 1 : 0)
-            | ((_patternShiftHigh & selector) != 0 ? 2 : 0));
-        var palette = (byte)(((_attributeShiftLow & selector) != 0 ? 1 : 0)
-            | ((_attributeShiftHigh & selector) != 0 ? 2 : 0));
+        // Four independent physical shifter outputs are sampled by the fine-X
+        // mux. They are packed only in the host representation; lane boundaries
+        // remain masked exactly as four 16-bit shift registers.
+        var taps = _backgroundShifters >> _backgroundTapShift;
+        var pattern = (byte)((taps & 1) | ((taps >> 15) & 2));
+        var palette = (byte)(((taps >> 32) & 1) | ((taps >> 47) & 2));
         BackgroundPixelIndex = pattern == 0 ? (byte)0 : (byte)((palette << 2) | pattern);
     }
 
@@ -1276,6 +1282,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         return (byte)((value << 4) | (value >> 4));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void PresentVramAddressPhase()
     {
         PresentHighAddress((byte)(_transactionAddress >> 8));
@@ -1285,6 +1292,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         PresentWriteBar(DigitalLevel.High);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void PresentVramDataPhase()
     {
         PresentHighAddress((byte)(_transactionAddress >> 8));

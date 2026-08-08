@@ -103,3 +103,15 @@ v1.5.0 begins the chip-core redesign with the physical RP2C02/RP2C07 package. Th
 - RP2C02 and RP2C07 share the same physical dot decoder while retaining their real NTSC/PAL raster and color-emphasis differences.
 
 This is still the same physical hardware model: every master clock edge reaches the package pin, every external VRAM bus transition crosses package pins and motherboard traces, and the motherboard has no rendering, `/CS`, edge or receiver-interest semantics. The change is inside the chip: retained counters and latches directly select the circuitry that reacts.
+
+## v1.5.1 RP2C0x parallel background shifter core
+
+v1.5.1 follows the v1.5.0 profile inside the physical RP2C02/RP2C07 packages. The hardwired decoder reduced the cost of package-output, sprite, raster and video-output work, while background shifting/pixel extraction and VRAM transaction handling became the dominant named PPU sections. This release keeps the v1.5 hardwired timing architecture and reduces host work in the background circuitry without changing any externally observable package timing.
+
+- the four physical 16-bit background shift-register lanes (pattern low/high and attribute low/high) are retained in one packed 64-bit host word, with lane-boundary masking so one host shift clocks all four hardware lanes in parallel;
+- the next-tile pattern and attribute fill state is packed in the same lane layout, making the hardware load edge one masked merge instead of four independent field updates;
+- fine-X now retains the corresponding shifter tap when PPUSCROLL changes, so visible pixels sample the already-decoded tap instead of rebuilding `0x8000 >> fineX` on every pixel;
+- the hot VRAM address/data phase helpers and background shift/load/pixel helpers are explicitly inlined;
+- RP2C02 and RP2C07 remain behaviorally separate physical packages with the same external pin timing and region-specific raster/emphasis behavior.
+
+No motherboard behavior changes. Every PPU clock, VRAM address/data transition, ALE, `/RD`, `/WR`, and package-pin delivery remains physical and immediate. The packing is only an internal host representation of four independent chip-local shift registers.
