@@ -1,0 +1,9 @@
+AxetosOS/AxetosOS.Products.NES/Directory.Build.props
+AxetosOS/AxetosOS.Products.NES/README.md
+AxetosOS/AxetosOS.Products.NES/PATCH_FILE_LIST_v1.4.4.txt
+AxetosOS/AxetosOS.Products.NES/PATCH_NOTES_v1.4.4.txt
+AxetosOS/AxetosOS.Products.NES/RELEASE_NOTES_v1.4.4.md
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Memory/Hm6116.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Logic/Sn74Ls373.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C02.cs
+AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C07.cs

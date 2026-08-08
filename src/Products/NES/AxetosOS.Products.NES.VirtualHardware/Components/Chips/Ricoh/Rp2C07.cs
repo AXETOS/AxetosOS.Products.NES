@@ -27,6 +27,18 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private bool _spriteOverflow;
     private byte _control;
     private byte _mask;
+    private bool _nmiEnabled;
+    private ushort _cpuVramIncrement = 1;
+    private ushort _backgroundPatternTableBase;
+    private ushort _spritePatternTableBase;
+    private int _spriteHeight = 8;
+    private bool _backgroundRenderingEnabled;
+    private bool _spriteRenderingEnabled;
+    private bool _renderingEnabled;
+    private bool _showBackgroundLeft;
+    private bool _showSpriteLeft;
+    private bool _greyscaleEnabled;
+    private byte _decodedColorEmphasis;
     private byte _oamAddress;
     private byte _openBus;
     private byte _readBuffer;
@@ -36,6 +48,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private bool _writeToggle;
     private VramTransaction _transaction;
     private int _transactionPhase;
+    private int _transactionCompletionPhase;
     private VramTransactionPurpose _transactionPurpose;
     private bool _presentedAdDriven;
     private byte _presentedAdValue;
@@ -148,7 +161,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     public ulong CompletedVramReadCount { get; private set; }
     public ulong CompletedVramWriteCount { get; private set; }
     public bool Vblank => _vblank;
-    public bool NmiEnabled => (_control & 0x80) != 0;
+    public bool NmiEnabled => _nmiEnabled;
     public byte ControlRegister => _control;
     public byte MaskRegister => _mask;
     public byte OamAddress => _oamAddress;
@@ -179,14 +192,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     /// red and green controls are reversed relative to RP2C02. Returned bits
     /// remain R,G,B in positions 0,1,2 for board/output consumers.
     /// </summary>
-    public byte ColorEmphasis
-    {
-        get
-        {
-            var physical = (byte)((_mask >> 5) & 0x07);
-            return (byte)(((physical & 0x01) << 1) | ((physical & 0x02) >> 1) | (physical & 0x04));
-        }
-    }
+    public byte ColorEmphasis => _decodedColorEmphasis;
 
     public bool IsPalTiming => true;
     public int ScanlinesPerFrameCount => ScanlinesPerFrame;
@@ -194,6 +200,34 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     public ulong VblankSuppressionCount { get; private set; }
     public ulong RenderingOamWriteCount { get; private set; }
     public ulong ForcedBlankPaletteOutputCount { get; private set; }
+
+    private void DecodeControlRegister()
+    {
+        // These are package-internal decode lines driven by the retained PPUCTRL
+        // latch. Recompute only when that physical register changes rather than
+        // re-decoding the same bits on every PPU dot.
+        _nmiEnabled = (_control & 0x80) != 0;
+        _cpuVramIncrement = (_control & 0x04) != 0 ? (ushort)32 : (ushort)1;
+        _spritePatternTableBase = (_control & 0x08) != 0 ? (ushort)0x1000 : (ushort)0;
+        _backgroundPatternTableBase = (_control & 0x10) != 0 ? (ushort)0x1000 : (ushort)0;
+        _spriteHeight = (_control & 0x20) != 0 ? 16 : 8;
+    }
+
+    private void DecodeMaskRegister()
+    {
+        // PPUMASK likewise fans out to stable internal control lines. PAL swaps
+        // the physical red/green emphasis controls at the package level.
+        _greyscaleEnabled = (_mask & 0x01) != 0;
+        _showBackgroundLeft = (_mask & 0x02) != 0;
+        _showSpriteLeft = (_mask & 0x04) != 0;
+        _backgroundRenderingEnabled = (_mask & 0x08) != 0;
+        _spriteRenderingEnabled = (_mask & 0x10) != 0;
+        _renderingEnabled = _backgroundRenderingEnabled || _spriteRenderingEnabled;
+        var physicalEmphasis = (byte)((_mask >> 5) & 0x07);
+        _decodedColorEmphasis = (byte)(((physicalEmphasis & 0x01) << 1)
+            | ((physicalEmphasis & 0x02) >> 1)
+            | (physicalEmphasis & 0x04));
+    }
 
     private void RefreshCpuPortWakeState()
     {
@@ -253,7 +287,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _spriteZeroHit = false;
         _spriteOverflow = false;
         _control = 0;
+        DecodeControlRegister();
         _mask = 0;
+        DecodeMaskRegister();
         _oamAddress = 0;
         _openBus = 0;
         _readBuffer = 0;
@@ -263,6 +299,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _writeToggle = false;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
+        _transactionCompletionPhase = 0;
         _transactionPurpose = VramTransactionPurpose.None;
         _nextTileId = 0;
         _nextTileAttribute = 0;
@@ -285,11 +322,14 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _spriteZeroHit = false;
         _spriteOverflow = false;
         _control = 0;
+        DecodeControlRegister();
         _mask = 0;
+        DecodeMaskRegister();
         _writeToggle = false;
         _cpuSelectedLast = false;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
+        _transactionCompletionPhase = 0;
         _transactionPurpose = VramTransactionPurpose.None;
         BackgroundPixelIndex = 0;
         SpritePixelIndex = 0;
@@ -313,25 +353,10 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     {
         if (changedInputMask == _clockInputMask && _packagePowered && !_resetAsserted)
         {
-            // Dominant steady-state path: this exact mask can only be produced
-            // when the chip-owned divided rising-edge clock input accepts its
-            // activation. Every physical Low/High level has already been stored
-            // by the package pin before this direct PPU-dot path is entered.
-            AdvanceRaster();
-            AdvanceVramTransaction();
-            AdvanceBackgroundPipeline();
-            AdvanceSpritePipeline();
-            if (Scanline < 240 && Dot is >= 1 and <= 256)
-            {
-                VideoOutput.Drive(new RicohVideoPixelSample(
-                    Frame,
-                    Dot - 1,
-                    Scanline,
-                    OutputColorCode,
-                    ColorEmphasis));
-            }
-            DriveVramBus();
-            DriveNmi();
+            // The divided package clock is already a decoded internal PPU-dot
+            // enable. Execute the hardwired dot circuit directly; no generic
+            // rendering-stage polling is performed on the steady-state path.
+            ClockPpuDot();
             return;
         }
 
@@ -371,6 +396,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                 InitializePackageState();
                 _packagePowered = true;
                 newlyPowered = true;
+                PresentVramIdle();
                 RefreshCpuPortWakeState();
             }
         }
@@ -379,6 +405,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         {
             if (!resetChanged || ResetBar.SampledLevel == DigitalLevel.Low) return;
             _resetAsserted = false;
+            PresentVramIdle();
             RefreshCpuPortWakeState();
         }
         else if ((newlyPowered || resetChanged) && ResetBar.SampledLevel == DigitalLevel.Low)
@@ -389,7 +416,6 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             return;
         }
 
-        var outputsMayHaveChanged = false;
         if ((changedInputMask & _cpuPortInputMask) != 0
             && (chipSelectChanged || ChipSelectBar.SampledLevel != DigitalLevel.High)
             && (chipSelectChanged || !_cpuSelectedLast))
@@ -399,32 +425,10 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             // visible at the pins but cannot create another register access.
             HandleCpuPort();
             RefreshCpuPortWakeState();
-            outputsMayHaveChanged = true;
         }
 
         if (clockChanged && Clock.SampledLevel == DigitalLevel.High)
-        {
-            // CLK is package-owned rising-edge activated. The motherboard still
-            // presents the falling level to the pin without waking RP2C07 logic.
-            AdvanceRaster();
-            AdvanceVramTransaction();
-            AdvanceBackgroundPipeline();
-            AdvanceSpritePipeline();
-            if (Scanline < 240 && Dot is >= 1 and <= 256)
-            {
-                VideoOutput.Drive(new RicohVideoPixelSample(
-                    Frame,
-                    Dot - 1,
-                    Scanline,
-                    OutputColorCode,
-                    ColorEmphasis));
-            }
-            outputsMayHaveChanged = true;
-        }
-
-        if (!outputsMayHaveChanged) return;
-        DriveVramBus();
-        DriveNmi();
+            ClockPpuDot();
     }
 
     protected override void OnInputChangesProfiled(
@@ -467,6 +471,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                 InitializePackageState();
                 _packagePowered = true;
                 newlyPowered = true;
+                PresentVramIdle();
                 RefreshCpuPortWakeState();
             }
         }
@@ -475,6 +480,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         {
             if (!resetChanged || ResetBar.SampledLevel == DigitalLevel.Low) return;
             _resetAsserted = false;
+            PresentVramIdle();
             RefreshCpuPortWakeState();
         }
         else if ((newlyPowered || resetChanged) && ResetBar.SampledLevel == DigitalLevel.Low)
@@ -485,7 +491,6 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             return;
         }
 
-        var outputsMayHaveChanged = false;
         if ((changedInputMask & _cpuPortInputMask) != 0
             && (chipSelectChanged || ChipSelectBar.SampledLevel != DigitalLevel.High)
             && (chipSelectChanged || !_cpuSelectedLast))
@@ -497,48 +502,234 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             HandleCpuPort();
             sample.EndSection(VirtualHardwareProfileSection.Rp2C02CpuPort, cpuPortStarted);
             RefreshCpuPortWakeState();
-            outputsMayHaveChanged = true;
         }
 
         if (clockChanged && Clock.SampledLevel == DigitalLevel.High)
-        {
-            // CLK is package-owned rising-edge activated. The motherboard still
-            // presents the falling level to the pin without waking RP2C07 logic.
-            var rasterStarted = sample.BeginSection();
-            AdvanceRaster();
-            sample.EndSection(VirtualHardwareProfileSection.Rp2C02Raster, rasterStarted);
+            ClockPpuDotProfiled(sample);
+    }
 
-            var vramStarted = sample.BeginSection();
-            AdvanceVramTransaction();
-            sample.EndSection(VirtualHardwareProfileSection.Rp2C02Vram, vramStarted);
+    private void ClockPpuDot()
+    {
+        AdvanceRaster();
+        var vramTransactionCompleted = AdvanceVramTransaction();
+
+        var visibleScanline = Scanline < 240;
+        if (_renderingEnabled && (visibleScanline || Scanline == PreRenderScanline))
+        {
+            var decodeLines = (PpuDotDecoder.Lines)PpuDotDecoder.DecodeLines[Dot];
+            ExecuteDecodedBackgroundCircuit(decodeLines, visibleScanline);
+            ExecuteDecodedSpriteCircuit(decodeLines, visibleScanline);
+        }
+        else if (visibleScanline && Dot is >= 1 and <= 256)
+        {
+            // Forced blank disconnects the fetch/OAM sequencers. The color DAC
+            // remains physically active and may expose palette RAM selected by v.
+            BackgroundPixelIndex = 0;
+            SpritePixelIndex = 0;
+            PixelPaletteIndex = 0;
+            UpdateOutputColor();
+        }
+
+        if (vramTransactionCompleted && _transaction == VramTransaction.None)
+            PresentVramIdle();
+
+        if (visibleScanline && Dot is >= 1 and <= 256)
+        {
+            VideoOutput.Drive(new RicohVideoPixelSample(
+                Frame,
+                Dot - 1,
+                Scanline,
+                OutputColorCode,
+                ColorEmphasis));
+        }
+    }
+
+    private void ClockPpuDotProfiled(VirtualHardwareProfileSample sample)
+    {
+        var rasterStarted = sample.BeginSection();
+        AdvanceRaster();
+        sample.EndSection(VirtualHardwareProfileSection.Rp2C02Raster, rasterStarted);
+
+        var vramStarted = sample.BeginSection();
+        var vramTransactionCompleted = AdvanceVramTransaction();
+        sample.EndSection(VirtualHardwareProfileSection.Rp2C02Vram, vramStarted);
+
+        var visibleScanline = Scanline < 240;
+        if (_renderingEnabled && (visibleScanline || Scanline == PreRenderScanline))
+        {
+            var decodeLines = (PpuDotDecoder.Lines)PpuDotDecoder.DecodeLines[Dot];
 
             var backgroundStarted = sample.BeginSection();
-            AdvanceBackgroundPipeline();
+            ExecuteDecodedBackgroundCircuit(decodeLines, visibleScanline);
             sample.EndSection(VirtualHardwareProfileSection.Rp2C02Background, backgroundStarted);
 
             var spriteStarted = sample.BeginSection();
-            AdvanceSpritePipeline();
+            ExecuteDecodedSpriteCircuit(decodeLines, visibleScanline);
             sample.EndSection(VirtualHardwareProfileSection.Rp2C02Sprite, spriteStarted);
-
-            if (Scanline < 240 && Dot is >= 1 and <= 256)
-            {
-                var videoStarted = sample.BeginSection();
-                VideoOutput.Drive(new RicohVideoPixelSample(
-                    Frame,
-                    Dot - 1,
-                    Scanline,
-                    OutputColorCode,
-                    ColorEmphasis));
-                sample.EndSection(VirtualHardwareProfileSection.Rp2C02VideoOutput, videoStarted);
-            }
-            outputsMayHaveChanged = true;
+        }
+        else if (visibleScanline && Dot is >= 1 and <= 256)
+        {
+            BackgroundPixelIndex = 0;
+            SpritePixelIndex = 0;
+            PixelPaletteIndex = 0;
+            UpdateOutputColor();
         }
 
-        if (!outputsMayHaveChanged) return;
-        var outputsStarted = sample.BeginSection();
-        DriveVramBus();
-        DriveNmi();
-        sample.EndSection(VirtualHardwareProfileSection.Rp2C02PackageOutputs, outputsStarted);
+        if (vramTransactionCompleted && _transaction == VramTransaction.None)
+        {
+            var outputsStarted = sample.BeginSection();
+            PresentVramIdle();
+            sample.EndSection(VirtualHardwareProfileSection.Rp2C02PackageOutputs, outputsStarted);
+        }
+
+        if (visibleScanline && Dot is >= 1 and <= 256)
+        {
+            var videoStarted = sample.BeginSection();
+            VideoOutput.Drive(new RicohVideoPixelSample(
+                Frame,
+                Dot - 1,
+                Scanline,
+                OutputColorCode,
+                ColorEmphasis));
+            sample.EndSection(VirtualHardwareProfileSection.Rp2C02VideoOutput, videoStarted);
+        }
+    }
+
+    private void ExecuteDecodedBackgroundCircuit(PpuDotDecoder.Lines lines, bool visibleScanline)
+    {
+        switch (lines & PpuDotDecoder.BackgroundCircuitMask)
+        {
+            case PpuDotDecoder.Lines.BackgroundShift:
+                ShiftBackgroundRegisters();
+                break;
+
+            case PpuDotDecoder.Lines.BackgroundShift
+                | PpuDotDecoder.Lines.BackgroundLoad
+                | PpuDotDecoder.Lines.BackgroundNametable:
+                ShiftBackgroundRegisters();
+                LoadBackgroundShifters();
+                BeginBackgroundRead(
+                    (ushort)(0x2000 | (_vramAddress & 0x0FFF)),
+                    VramTransactionPurpose.BackgroundNametable);
+                break;
+
+            case PpuDotDecoder.Lines.BackgroundShift
+                | PpuDotDecoder.Lines.BackgroundAttribute:
+            {
+                ShiftBackgroundRegisters();
+                var attributeAddress = (ushort)(0x23C0
+                    | (_vramAddress & 0x0C00)
+                    | ((_vramAddress >> 4) & 0x38)
+                    | ((_vramAddress >> 2) & 0x07));
+                BeginBackgroundRead(attributeAddress, VramTransactionPurpose.BackgroundAttribute);
+                break;
+            }
+
+            case PpuDotDecoder.Lines.BackgroundShift
+                | PpuDotDecoder.Lines.BackgroundPatternLow:
+                ShiftBackgroundRegisters();
+                BeginBackgroundRead(
+                    PatternAddress(highPlane: false),
+                    VramTransactionPurpose.BackgroundPatternLow);
+                break;
+
+            case PpuDotDecoder.Lines.BackgroundShift
+                | PpuDotDecoder.Lines.BackgroundPatternHigh:
+                ShiftBackgroundRegisters();
+                BeginBackgroundRead(
+                    PatternAddress(highPlane: true),
+                    VramTransactionPurpose.BackgroundPatternHigh);
+                break;
+
+            case PpuDotDecoder.Lines.BackgroundShift
+                | PpuDotDecoder.Lines.IncrementCoarseX:
+                ShiftBackgroundRegisters();
+                IncrementCoarseX();
+                break;
+        }
+
+        if ((lines & PpuDotDecoder.Lines.IncrementY) != 0)
+            IncrementY();
+        if ((lines & PpuDotDecoder.Lines.CopyHorizontal) != 0)
+            CopyHorizontalScrollBits();
+        if (Scanline == PreRenderScanline
+            && (lines & PpuDotDecoder.Lines.CopyVertical) != 0)
+        {
+            CopyVerticalScrollBits();
+        }
+
+        if (!visibleScanline || (lines & PpuDotDecoder.Lines.VisiblePixel) == 0)
+            return;
+
+        if (_backgroundRenderingEnabled) UpdateBackgroundPixel();
+        else BackgroundPixelIndex = 0;
+    }
+
+    private void ExecuteDecodedSpriteCircuit(PpuDotDecoder.Lines lines, bool visibleScanline)
+    {
+        if ((lines & PpuDotDecoder.Lines.SpriteActivate) != 0)
+        {
+            _activeSpriteCount = _nextSpriteCount;
+            Array.Copy(_nextSprites, _activeSprites, _activeSpriteCount);
+        }
+
+        if (visibleScanline
+            && (lines & PpuDotDecoder.Lines.SpriteEvaluationReset) != 0)
+        {
+            _secondarySpriteCount = 0;
+            _spriteEvaluationIndex = 0;
+            _spriteOverflowByteOffset = 0;
+            Array.Clear(_secondaryOam);
+        }
+
+        if (visibleScanline
+            && (lines & PpuDotDecoder.Lines.SpriteEvaluate) != 0
+            && _spriteEvaluationIndex < 64)
+        {
+            EvaluateOneSpriteForNextScanline(_spriteEvaluationIndex++);
+        }
+
+        if ((lines & PpuDotDecoder.Lines.SpriteLoad) != 0)
+        {
+            _nextSpriteCount = _secondarySpriteCount;
+            for (var index = 0; index < _nextSpriteCount; index++)
+            {
+                var entry = _secondaryOam[index];
+                _nextSprites[index] = new SpriteRenderUnit
+                {
+                    XCounter = entry.X,
+                    Attributes = entry.Attributes,
+                    SpriteZero = entry.SpriteIndex == 0,
+                    Tile = entry.Tile,
+                    Row = entry.Row
+                };
+            }
+            for (var index = _nextSpriteCount; index < 8; index++)
+                _nextSprites[index] = default;
+        }
+
+        if ((lines & (PpuDotDecoder.Lines.SpritePatternLow | PpuDotDecoder.Lines.SpritePatternHigh)) != 0)
+        {
+            _spriteFetchSlot = PpuDotDecoder.SpriteFetchSlot[Dot];
+            if (_spriteFetchSlot < _nextSpriteCount)
+            {
+                if ((lines & PpuDotDecoder.Lines.SpritePatternLow) != 0)
+                {
+                    BeginBackgroundRead(
+                        SpritePatternAddress(_nextSprites[_spriteFetchSlot], false),
+                        VramTransactionPurpose.SpritePatternLow);
+                }
+                else
+                {
+                    BeginBackgroundRead(
+                        SpritePatternAddress(_nextSprites[_spriteFetchSlot], true),
+                        VramTransactionPurpose.SpritePatternHigh);
+                }
+            }
+        }
+
+        if (visibleScanline && (lines & PpuDotDecoder.Lines.SpriteVisibleClock) != 0)
+            UpdateSpritePixelCompositionAndAdvance();
     }
 
     private void AdvanceRaster()
@@ -561,15 +752,15 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         {
             if (_suppressVblankSet)
             {
-                _vblank = false;
+                SetVblankState(false);
                 _suppressVblankSet = false;
                 VblankSuppressionCount++;
             }
-            else _vblank = true;
+            else SetVblankState(true);
         }
         else if (Scanline == PreRenderScanline && Dot == 1)
         {
-            _vblank = false;
+            SetVblankState(false);
             _spriteZeroHit = false;
             _spriteOverflow = false;
         }
@@ -645,7 +836,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                     {
                         _suppressVblankSet = true;
                     }
-                    _vblank = false;
+                    SetVblankState(false);
                     _writeToggle = false;
                 }
                 break;
@@ -696,10 +887,13 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         {
             case 0: // PPUCTRL
                 _control = value;
+                DecodeControlRegister();
+                UpdateNmiOutput();
                 _temporaryAddress = (ushort)((_temporaryAddress & ~0x0C00) | ((value & 0x03) << 10));
                 break;
             case 1: // PPUMASK
                 _mask = value;
+                DecodeMaskRegister();
                 break;
             case 3: // OAMADDR
                 _oamAddress = value;
@@ -766,9 +960,11 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     {
         _transaction = transaction;
         _transactionPhase = 0;
+        _transactionCompletionPhase = purpose is VramTransactionPurpose.CpuRead or VramTransactionPurpose.CpuWrite ? 3 : 2;
         _transactionAddress = (ushort)(address & 0x3FFF);
         _transactionWriteData = writeData;
         _transactionPurpose = purpose;
+        PresentVramAddressPhase();
     }
 
     private ushort _transactionAddress;
@@ -786,16 +982,16 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             return;
         }
 
-        _vramAddress = (ushort)((_vramAddress + (((_control & 0x04) != 0) ? 32 : 1)) & 0x3FFF);
+        _vramAddress = (ushort)((_vramAddress + (_cpuVramIncrement)) & 0x3FFF);
     }
 
-    private void AdvanceVramTransaction()
+    private bool AdvanceVramTransaction()
     {
-        if (_transaction == VramTransaction.None) return;
+        if (_transaction == VramTransaction.None) return false;
 
-        _transactionPhase++;
-        var completionPhase = _transactionPurpose is VramTransactionPurpose.CpuRead or VramTransactionPurpose.CpuWrite ? 3 : 2;
-        if (_transactionPhase < completionPhase) return;
+        var phase = ++_transactionPhase;
+        if (phase == 1) PresentVramDataPhase();
+        if (phase < _transactionCompletionPhase) return false;
 
         if (_transaction == VramTransaction.Read)
         {
@@ -812,75 +1008,42 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
+        _transactionCompletionPhase = 0;
         _transactionPurpose = VramTransactionPurpose.None;
+        return true;
     }
 
-    private bool BackgroundRenderingEnabled => (_mask & 0x08) != 0;
-    private bool RenderingEnabled => BackgroundRenderingEnabled || SpriteRenderingEnabled;
+    private bool BackgroundRenderingEnabled => _backgroundRenderingEnabled;
+    private bool RenderingEnabled => _renderingEnabled;
     private bool RenderingBusActive => RenderingEnabled
         && IsRenderingScanline()
         && ((Dot >= 1 && Dot <= 256) || (Dot >= 321 && Dot <= 340));
-
-    private void AdvanceBackgroundPipeline()
-    {
-        if (!BackgroundRenderingEnabled || !IsRenderingScanline())
-        {
-            BackgroundPixelIndex = 0;
-            return;
-        }
-
-        if ((Dot >= 1 && Dot <= 256) || (Dot >= 321 && Dot <= 336))
-        {
-            ShiftBackgroundRegisters();
-            UpdateBackgroundPixel();
-
-            switch ((Dot - 1) & 7)
-            {
-                case 0:
-                    LoadBackgroundShifters();
-                    BeginBackgroundRead((ushort)(0x2000 | (_vramAddress & 0x0FFF)), VramTransactionPurpose.BackgroundNametable);
-                    break;
-                case 2:
-                    var attributeAddress = (ushort)(0x23C0
-                        | (_vramAddress & 0x0C00)
-                        | ((_vramAddress >> 4) & 0x38)
-                        | ((_vramAddress >> 2) & 0x07));
-                    BeginBackgroundRead(attributeAddress, VramTransactionPurpose.BackgroundAttribute);
-                    break;
-                case 4:
-                    BeginBackgroundRead(PatternAddress(highPlane: false), VramTransactionPurpose.BackgroundPatternLow);
-                    break;
-                case 6:
-                    BeginBackgroundRead(PatternAddress(highPlane: true), VramTransactionPurpose.BackgroundPatternHigh);
-                    break;
-                case 7:
-                    IncrementCoarseX();
-                    break;
-            }
-        }
-
-        if (Dot == 256) IncrementY();
-        if (Dot == 257) CopyHorizontalScrollBits();
-        if (Scanline == PreRenderScanline && Dot >= 280 && Dot <= 304) CopyVerticalScrollBits();
-    }
 
     private bool IsRenderingScanline() => Scanline < 240 || Scanline == PreRenderScanline;
 
     private void BeginBackgroundRead(ushort address, VramTransactionPurpose purpose)
     {
         if (_transaction != VramTransaction.None) return;
+
+        // The internal fetch decoder starts a real package-level VRAM cycle at
+        // this dot. Present the multiplexed address/ALE phase immediately; the
+        // following PPU dot advances to the data-/RD phase and the next one
+        // samples/completes the read. This is the same physical two-dot fetch
+        // cadence the previous continuously-driven output stage exposed, but
+        // without polling all package outputs on unrelated dots.
         _transaction = VramTransaction.Read;
         _transactionPhase = 0;
+        _transactionCompletionPhase = 2;
         _transactionAddress = (ushort)(address & 0x3FFF);
         _transactionWriteData = 0;
         _transactionPurpose = purpose;
+        PresentVramAddressPhase();
     }
 
     private ushort PatternAddress(bool highPlane)
     {
-        var table = (_control & 0x10) != 0 ? 0x1000 : 0;
         var fineY = (_vramAddress >> 12) & 7;
-        return (ushort)(table | (_nextTileId << 4) | fineY | (highPlane ? 8 : 0));
+        return (ushort)(_backgroundPatternTableBase | (_nextTileId << 4) | fineY | (highPlane ? 8 : 0));
     }
 
     private void CompleteRead(byte data)
@@ -946,12 +1109,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
     private void UpdateBackgroundPixel()
     {
-        if (Dot > 256)
-        {
-            BackgroundPixelIndex = 0;
-            return;
-        }
-
+        // Called only from the hardwired visible-pixel decoder line (dots 1-256).
         var selector = (ushort)(0x8000 >> _fineX);
         var pattern = (byte)(((_patternShiftLow & selector) != 0 ? 1 : 0)
             | ((_patternShiftHigh & selector) != 0 ? 2 : 0));
@@ -1001,85 +1159,14 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     }
 
 
-    private bool SpriteRenderingEnabled => (_mask & 0x10) != 0;
-
-    private void AdvanceSpritePipeline()
-    {
-        if (!IsRenderingScanline())
-        {
-            SpritePixelIndex = 0;
-            PixelPaletteIndex = BackgroundPixelIndex;
-            UpdateOutputColor();
-            return;
-        }
-
-        if (Dot == 1)
-        {
-            _activeSpriteCount = _nextSpriteCount;
-            Array.Copy(_nextSprites, _activeSprites, _activeSprites.Length);
-        }
-
-        if (Dot == 65)
-        {
-            _secondarySpriteCount = 0;
-            _spriteEvaluationIndex = 0;
-            _spriteOverflowByteOffset = 0;
-            Array.Clear(_secondaryOam);
-        }
-
-        if (Dot >= 65 && Dot <= 256 && ((Dot - 65) % 3) == 0 && _spriteEvaluationIndex < 64)
-        {
-            EvaluateOneSpriteForNextScanline(_spriteEvaluationIndex++);
-        }
-
-        if (Dot == 257)
-        {
-            _nextSpriteCount = _secondarySpriteCount;
-            for (var index = 0; index < _nextSpriteCount; index++)
-            {
-                var entry = _secondaryOam[index];
-                _nextSprites[index] = new SpriteRenderUnit
-                {
-                    XCounter = entry.X,
-                    Attributes = entry.Attributes,
-                    SpriteZero = entry.SpriteIndex == 0,
-                    Tile = entry.Tile,
-                    Row = entry.Row
-                };
-            }
-            for (var index = _nextSpriteCount; index < 8; index++) _nextSprites[index] = default;
-        }
-
-        if (Dot >= 257 && Dot <= 320)
-        {
-            _spriteFetchSlot = (Dot - 257) >> 3;
-            var phase = (Dot - 257) & 7;
-            if (_spriteFetchSlot < _nextSpriteCount)
-            {
-                if (phase == 4) BeginBackgroundRead(SpritePatternAddress(_nextSprites[_spriteFetchSlot], false), VramTransactionPurpose.SpritePatternLow);
-                else if (phase == 6) BeginBackgroundRead(SpritePatternAddress(_nextSprites[_spriteFetchSlot], true), VramTransactionPurpose.SpritePatternHigh);
-            }
-        }
-
-        if (Dot >= 1 && Dot <= 256)
-        {
-            UpdateSpritePixelAndComposition();
-            AdvanceActiveSpriteUnits();
-        }
-        else
-        {
-            SpritePixelIndex = 0;
-            PixelPaletteIndex = BackgroundPixelIndex;
-            UpdateOutputColor();
-        }
-    }
+    private bool SpriteRenderingEnabled => _spriteRenderingEnabled;
 
     private void EvaluateOneSpriteForNextScanline(int spriteIndex)
     {
         SpriteEvaluationCount++;
         var baseAddress = spriteIndex * 4;
         var targetScanline = Scanline == PreRenderScanline ? 0 : Scanline + 1;
-        var height = (_control & 0x20) != 0 ? 16 : 8;
+        var height = _spriteHeight;
 
         if (_secondarySpriteCount >= 8)
         {
@@ -1113,10 +1200,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
     private ushort SpritePatternAddress(SpriteRenderUnit sprite, bool highPlane)
     {
-        if ((_control & 0x20) == 0)
+        if (_spriteHeight == 8)
         {
-            var table = (_control & 0x08) != 0 ? 0x1000 : 0;
-            return (ushort)(table | (sprite.Tile << 4) | sprite.Row | (highPlane ? 8 : 0));
+            return (ushort)(_spritePatternTableBase | (sprite.Tile << 4) | sprite.Row | (highPlane ? 8 : 0));
         }
 
         var tableBase = (sprite.Tile & 1) << 12;
@@ -1130,32 +1216,47 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         return (ushort)(tableBase | (tile << 4) | row | (highPlane ? 8 : 0));
     }
 
-    private void UpdateSpritePixelAndComposition()
+    private void UpdateSpritePixelCompositionAndAdvance()
     {
         byte spritePattern = 0;
         byte spritePalette = 0;
         bool spriteBehindBackground = false;
         bool spriteZero = false;
+        var spriteOutputEnabled = _spriteRenderingEnabled && (Dot > 8 || _showSpriteLeft);
+        var haveOpaqueSprite = false;
 
-        if (SpriteRenderingEnabled && (Dot > 8 || (_mask & 0x04) != 0))
+        // The eight RP2C0x sprite output units operate in parallel in silicon.
+        // Model their current pixel selection and their counter/shifter clock in
+        // one pass instead of reading/writing the same eight software units twice.
+        for (var index = 0; index < _activeSpriteCount; index++)
         {
-            for (var index = 0; index < _activeSpriteCount; index++)
+            var sprite = _activeSprites[index];
+
+            if (spriteOutputEnabled && !haveOpaqueSprite && sprite.XCounter == 0)
             {
-                var sprite = _activeSprites[index];
-                if (sprite.XCounter != 0) continue;
-                var pattern = (byte)(((sprite.PatternLow & 0x80) != 0 ? 1 : 0)
+                var patternValue = (byte)(((sprite.PatternLow & 0x80) != 0 ? 1 : 0)
                     | ((sprite.PatternHigh & 0x80) != 0 ? 2 : 0));
-                if (pattern == 0) continue;
-                spritePattern = pattern;
-                spritePalette = (byte)(sprite.Attributes & 3);
-                spriteBehindBackground = (sprite.Attributes & 0x20) != 0;
-                spriteZero = sprite.SpriteZero;
-                break;
+                if (patternValue != 0)
+                {
+                    spritePattern = patternValue;
+                    spritePalette = (byte)(sprite.Attributes & 3);
+                    spriteBehindBackground = (sprite.Attributes & 0x20) != 0;
+                    spriteZero = sprite.SpriteZero;
+                    haveOpaqueSprite = true;
+                }
             }
+
+            if (sprite.XCounter > 0) sprite.XCounter--;
+            else
+            {
+                sprite.PatternLow <<= 1;
+                sprite.PatternHigh <<= 1;
+            }
+            _activeSprites[index] = sprite;
         }
 
         var background = BackgroundPixelIndex;
-        if (Dot <= 8 && (_mask & 0x02) == 0) background = 0;
+        if (Dot <= 8 && !_showBackgroundLeft) background = 0;
         var backgroundOpaque = (background & 3) != 0;
         var spriteOpaque = spritePattern != 0;
         SpritePixelIndex = spriteOpaque ? (byte)(0x10 | (spritePalette << 2) | spritePattern) : (byte)0;
@@ -1168,21 +1269,6 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         UpdateOutputColor();
     }
 
-    private void AdvanceActiveSpriteUnits()
-    {
-        for (var index = 0; index < _activeSpriteCount; index++)
-        {
-            var sprite = _activeSprites[index];
-            if (sprite.XCounter > 0) sprite.XCounter--;
-            else
-            {
-                sprite.PatternLow <<= 1;
-                sprite.PatternHigh <<= 1;
-            }
-            _activeSprites[index] = sprite;
-        }
-    }
-
     private static byte ReverseBits(byte value)
     {
         value = (byte)(((value & 0x55) << 1) | ((value >> 1) & 0x55));
@@ -1190,28 +1276,18 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         return (byte)((value << 4) | (value >> 4));
     }
 
-    private void DriveVramBus()
+    private void PresentVramAddressPhase()
     {
-        if (_transaction == VramTransaction.None)
-        {
-            PresentAdReleased();
-            PresentHighAddressReleased();
-            PresentAle(DigitalLevel.Low);
-            PresentReadBar(DigitalLevel.High);
-            PresentWriteBar(DigitalLevel.High);
-            return;
-        }
-
         PresentHighAddress((byte)(_transactionAddress >> 8));
-        if (_transactionPhase == 0)
-        {
-            PresentAd((byte)_transactionAddress);
-            PresentAle(DigitalLevel.High);
-            PresentReadBar(DigitalLevel.High);
-            PresentWriteBar(DigitalLevel.High);
-            return;
-        }
+        PresentAd((byte)_transactionAddress);
+        PresentAle(DigitalLevel.High);
+        PresentReadBar(DigitalLevel.High);
+        PresentWriteBar(DigitalLevel.High);
+    }
 
+    private void PresentVramDataPhase()
+    {
+        PresentHighAddress((byte)(_transactionAddress >> 8));
         PresentAle(DigitalLevel.Low);
         if (_transaction == VramTransaction.Read)
         {
@@ -1225,6 +1301,15 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             PresentReadBar(DigitalLevel.High);
             PresentWriteBar(DigitalLevel.Low);
         }
+    }
+
+    private void PresentVramIdle()
+    {
+        PresentAdReleased();
+        PresentHighAddressReleased();
+        PresentAle(DigitalLevel.Low);
+        PresentReadBar(DigitalLevel.High);
+        PresentWriteBar(DigitalLevel.High);
     }
 
     private void PresentAd(byte value)
@@ -1279,9 +1364,16 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _presentedWriteBar = level;
     }
 
-    private void DriveNmi()
+    private void SetVblankState(bool value)
     {
-        var assert = _vblank && NmiEnabled;
+        if (_vblank == value) return;
+        _vblank = value;
+        UpdateNmiOutput();
+    }
+
+    private void UpdateNmiOutput()
+    {
+        var assert = _vblank && _nmiEnabled;
         if (assert == _nmiAsserted) return;
 
         if (assert)
@@ -1307,7 +1399,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private void UpdateOutputColor()
     {
         ushort paletteAddress;
-        if (!RenderingEnabled && (_vramAddress & 0x3F00) == 0x3F00)
+        if (!_renderingEnabled && (_vramAddress & 0x3F00) == 0x3F00)
         {
             // During forced blank the external pixel pipeline is disconnected;
             // when v points into palette space, that palette entry appears at
@@ -1315,11 +1407,18 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             paletteAddress = (ushort)(_vramAddress & 0x3FFF);
             ForcedBlankPaletteOutputCount++;
         }
-        else paletteAddress = (ushort)(0x3F00 | (PixelPaletteIndex & 0x1F));
+        else
+        {
+            var paletteIndex = PpuDotDecoder.PaletteIndex[PixelPaletteIndex & 0x1F];
+            var paletteColor = _paletteRam[paletteIndex];
+            if (_greyscaleEnabled) paletteColor &= 0x30;
+            OutputColorCode = paletteColor;
+            return;
+        }
 
-        var color = ReadPalette(paletteAddress);
-        if ((_mask & 0x01) != 0) color &= 0x30;
-        OutputColorCode = color;
+        var forcedBlankColor = ReadPalette(paletteAddress);
+        if (_greyscaleEnabled) forcedBlankColor &= 0x30;
+        OutputColorCode = forcedBlankColor;
     }
 
     private void ReleasePackageOutputs()

@@ -308,7 +308,7 @@ public sealed class Rp2A07 : VirtualHardwareComponent
 
             _resetAsserted = false;
             RisingEdgeCount++;
-            SampleControllerInputs();
+            if (ControllerReadActive) SampleControllerInputs();
             ClockApuCpuCycle();
             ExecuteBusCycle();
             return;
@@ -376,9 +376,9 @@ public sealed class Rp2A07 : VirtualHardwareComponent
         _resetAsserted = false;
         RisingEdgeCount++;
         // Controller data can legitimately remain at the same electrical level
-        // for consecutive reads, so sample once at the CPU cycle boundary as
-        // well as on actual IN0/IN1 transitions.
-        SampleControllerInputs();
+        // for consecutive selected reads. Sample at the CPU boundary only while
+        // one of the package's controller input stages is actually enabled.
+        if (ControllerReadActive) SampleControllerInputs();
         ClockApuCpuCycle();
         ExecuteBusCycle();
     }
@@ -454,11 +454,14 @@ public sealed class Rp2A07 : VirtualHardwareComponent
         _resetAsserted = false;
         RisingEdgeCount++;
         // Controller data can legitimately remain at the same electrical level
-        // for consecutive reads, so sample once at the CPU cycle boundary as
-        // well as on actual IN0/IN1 transitions.
-        var controllerStartedAtCpuBoundary = sample.BeginSection();
-        SampleControllerInputs();
-        sample.EndSection(VirtualHardwareProfileSection.Rp2A03ControllerIo, controllerStartedAtCpuBoundary);
+        // for consecutive selected reads. Do not enter/timestamp controller IO
+        // on ordinary CPU cycles while both package read-enable outputs are High.
+        if (ControllerReadActive)
+        {
+            var controllerStartedAtCpuBoundary = sample.BeginSection();
+            SampleControllerInputs();
+            sample.EndSection(VirtualHardwareProfileSection.Rp2A03ControllerIo, controllerStartedAtCpuBoundary);
+        }
 
         var apuStarted = sample.BeginSection();
         ClockApuCpuCycle();
@@ -471,6 +474,10 @@ public sealed class Rp2A07 : VirtualHardwareComponent
             dmaPath ? VirtualHardwareProfileSection.Rp2A03Dma : VirtualHardwareProfileSection.Rp2A03CpuCore,
             busStarted);
     }
+
+    private bool ControllerReadActive =>
+        ControllerRead1Bar.DriveLevel == DigitalLevel.Low
+        || ControllerRead2Bar.DriveLevel == DigitalLevel.Low;
 
     private void RefreshControllerInputWakeState()
     {

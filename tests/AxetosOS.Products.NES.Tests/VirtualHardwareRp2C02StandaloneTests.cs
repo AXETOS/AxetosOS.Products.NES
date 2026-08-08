@@ -117,6 +117,12 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.False(fixture.Chip.VramTransactionActive);
         Assert.Equal(1UL, fixture.Chip.CompletedVramWriteCount);
         Assert.Equal((ushort)0x2346, fixture.Chip.VramAddress);
+        Assert.Equal(DigitalLevel.Low, fixture.Chip.AddressLatchEnable.DriveLevel);
+        Assert.Equal(DigitalLevel.High, fixture.Chip.VramReadBar.DriveLevel);
+        Assert.Equal(DigitalLevel.High, fixture.Chip.VramWriteBar.DriveLevel);
+        Assert.All(
+            fixture.Chip.MultiplexedAddressData.Pins,
+            pin => Assert.Equal(DigitalLevel.HighImpedance, pin.DriveLevel));
     }
 
     [Fact]
@@ -165,6 +171,45 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.Equal((byte)0x12, fixture.Chip.NextTileId);
         Assert.Equal((byte)0x03, fixture.Chip.NextTileAttribute);
         Assert.NotEqual((ushort)0, (ushort)(fixture.Chip.PatternShiftLow | fixture.Chip.PatternShiftHigh));
+    }
+
+    [Fact]
+    public void Sprite_only_rendering_still_clocks_the_shared_background_fetch_circuit()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(1, 0x10); // sprites on, background output hidden
+
+        var addresses = fixture.PulseClockWithVram(16, _ => 0x00);
+
+        Assert.Contains((ushort)0x2000, addresses);
+        Assert.True(fixture.Chip.BackgroundNametableFetchCount > 0);
+        Assert.True(fixture.Chip.BackgroundPatternFetchCount > 0);
+        Assert.Equal((byte)0, fixture.Chip.BackgroundPixelIndex);
+    }
+
+    [Fact]
+    public void Background_only_rendering_still_clocks_sprite_evaluation_circuit()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(1, 0x08); // background on, sprite output hidden
+
+        fixture.PulseClockWithVram(257, _ => 0x00);
+
+        Assert.True(fixture.Chip.SpriteEvaluationCount >= 64);
+    }
+
+    [Fact]
+    public void Forced_blank_disconnects_render_fetch_and_sprite_evaluation_circuits()
+    {
+        var fixture = new Fixture();
+
+        fixture.PulseClockWithVram(256, _ => 0x00);
+
+        Assert.Equal(0UL, fixture.Chip.BackgroundNametableFetchCount);
+        Assert.Equal(0UL, fixture.Chip.BackgroundAttributeFetchCount);
+        Assert.Equal(0UL, fixture.Chip.BackgroundPatternFetchCount);
+        Assert.Equal(0UL, fixture.Chip.SpriteEvaluationCount);
+        Assert.Equal(0UL, fixture.Chip.SpritePatternFetchCount);
     }
 
     [Fact]

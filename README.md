@@ -79,3 +79,27 @@ Measured Release benchmarks showed that v1.4.1's incremental multi-driver bookke
 - four-driver regression coverage now exercises the real NROM-era CPU/PPU shared-bus driver count, including weak contention, strong override and unknown-drive behavior.
 
 This is a profiler-guided rollback of the expensive v1.4.1 aggregate strategy, not a rollback of the dumb-motherboard / smart-chip architecture.
+
+## v1.4.3 chip-local direct reaction experiment
+
+v1.4.3 tested additional branch-heavy chip-local shortcuts. The architecture remained correct, but measured normal Release performance regressed from the v1.4.2 baseline: Mario 22.55 -> 21.83 FPS and Donkey Kong 21.04 -> 20.86 FPS. Those losing SRAM/latch/PPU hot-path branches are not carried forward as the performance strategy. The useful RP2A03/RP2A07 controller-input enable gating remains chip-owned.
+
+## v1.4.4 RP2C0x internal phase/decode hot path
+
+v1.4.4 moves the performance focus inside the physical PPU package. PPUCTRL and PPUMASK are retained package registers whose decoded internal control lines now update only when those registers change, rather than re-decoding the same bits on every dot. Post-render/vblank dots bypass the rendering pipelines, non-visible fetch phases no longer recompute the pixel-color mux, and the eight sprite output units select the current sprite pixel and advance their counters/shifters in one pass instead of two.
+
+The external architecture is unchanged: every physical clock and trace transition still reaches the package, the motherboard remains topology/electrical-only, and all rendering/fetch/scroll/NMI/VRAM behavior remains owned by RP2C02/RP2C07.
+
+## v1.5.0 RP2C0x hardwired chip core
+
+v1.5.0 begins the chip-core redesign with the physical RP2C02/RP2C07 package. The external package and motherboard boundary is unchanged, but the PPU no longer treats each dot as a broad software-style rendering evaluation. Its horizontal counter now feeds an immutable package-local decoder table representing the fixed internal enable lines for background fetch/shift, sprite evaluation/fetch, scroll transfers and visible pixel clocks.
+
+- the 341-dot horizontal schedule is decoded once into immutable chip-local timing lines; normal execution indexes that retained decoder rather than rebuilding dot ranges/modulo phases on every PPU clock;
+- rendering circuitry runs when either background or sprite rendering is enabled, matching the physical PPU where disabling one layer hides that layer but does not stop the shared rendering sequencer; forced blank disconnects both fetch and OAM evaluation circuits;
+- sprite evaluation is active only on visible scanlines; the pre-render scanline retains the prior secondary-OAM result for its sprite-fetch phase;
+- VRAM package outputs are driven by transaction-state transitions themselves: address/ALE phase when a transaction begins, data `/RD` or `/WR` phase on the next internal phase, and idle only when the transaction actually completes without an immediately following fetch;
+- the vblank latch directly drives the package-local NMI gate when the latch or PPUCTRL NMI-enable line changes, removing the old per-dot NMI polling call;
+- the visible palette path uses a predecoded physical palette-mirror index and no longer re-runs the palette mirror test for every rendered pixel;
+- RP2C02 and RP2C07 share the same physical dot decoder while retaining their real NTSC/PAL raster and color-emphasis differences.
+
+This is still the same physical hardware model: every master clock edge reaches the package pin, every external VRAM bus transition crosses package pins and motherboard traces, and the motherboard has no rendering, `/CS`, edge or receiver-interest semantics. The change is inside the chip: retained counters and latches directly select the circuitry that reacts.
