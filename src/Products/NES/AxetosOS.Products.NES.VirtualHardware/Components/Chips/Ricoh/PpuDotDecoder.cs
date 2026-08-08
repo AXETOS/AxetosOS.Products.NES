@@ -4,117 +4,96 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 /// Chip-local RP2C0x horizontal timing decoder. The real PPU does not ask a
 /// software scheduler what should happen on a dot: horizontal counter outputs
 /// feed fixed decode gates which enable background, OAM, scroll and pixel
-/// circuits. This table is the package-internal equivalent of those hardwired
-/// decoder lines and is immutable for the lifetime of the process.
+/// circuits. The immutable execution words below are the package-internal
+/// equivalent of those hardwired decoder outputs, packed so the host can read
+/// one word per PPU dot instead of repeatedly interpreting a flag graph.
 /// </summary>
 internal static class PpuDotDecoder
 {
     internal const int DotsPerScanline = 341;
 
-    [Flags]
-    internal enum Lines : uint
-    {
-        None = 0,
-        VisiblePixel = 1u << 0,
-        BackgroundShift = 1u << 1,
-        BackgroundLoad = 1u << 2,
-        BackgroundNametable = 1u << 3,
-        BackgroundAttribute = 1u << 4,
-        BackgroundPatternLow = 1u << 5,
-        BackgroundPatternHigh = 1u << 6,
-        IncrementCoarseX = 1u << 7,
-        IncrementY = 1u << 8,
-        CopyHorizontal = 1u << 9,
-        CopyVertical = 1u << 10,
-        SpriteActivate = 1u << 11,
-        SpriteEvaluationReset = 1u << 12,
-        SpriteEvaluate = 1u << 13,
-        SpriteLoad = 1u << 14,
-        SpritePatternLow = 1u << 15,
-        SpritePatternHigh = 1u << 16,
-        SpriteVisibleClock = 1u << 17
-    }
+    // Bits 0-2 select the mutually-exclusive background circuit enabled on the
+    // current dot. Every non-zero background action includes the physical shift
+    // clock; the specialised values additionally assert the corresponding load,
+    // fetch or coarse-X decoder line.
+    internal const uint BackgroundActionMask = 0x07u;
+    internal const uint BackgroundNone = 0u;
+    internal const uint BackgroundShift = 1u;
+    internal const uint BackgroundNametable = 2u;
+    internal const uint BackgroundAttribute = 3u;
+    internal const uint BackgroundPatternLow = 4u;
+    internal const uint BackgroundPatternHigh = 5u;
+    internal const uint BackgroundIncrementCoarseX = 6u;
 
-    internal const Lines BackgroundCircuitMask = Lines.BackgroundShift
-        | Lines.BackgroundLoad
-        | Lines.BackgroundNametable
-        | Lines.BackgroundAttribute
-        | Lines.BackgroundPatternLow
-        | Lines.BackgroundPatternHigh
-        | Lines.IncrementCoarseX;
+    internal const uint VisibleDot = 1u << 3;
+    internal const uint IncrementY = 1u << 4;
+    internal const uint CopyHorizontal = 1u << 5;
+    internal const uint CopyVertical = 1u << 6;
+    internal const uint SpriteActivate = 1u << 7;
+    internal const uint SpriteEvaluationReset = 1u << 8;
+    internal const uint SpriteEvaluate = 1u << 9;
+    internal const uint SpriteLoad = 1u << 10;
 
-    internal static readonly uint[] DecodeLines = BuildDecodeLines();
-    internal static readonly byte[] SpriteFetchSlot = BuildSpriteFetchSlots();
+    internal const int SpriteFetchShift = 11;
+    internal const uint SpriteFetchMask = 0x03u << SpriteFetchShift;
+    internal const uint SpriteFetchNone = 0u << SpriteFetchShift;
+    internal const uint SpriteFetchPatternLow = 1u << SpriteFetchShift;
+    internal const uint SpriteFetchPatternHigh = 2u << SpriteFetchShift;
+
+    internal const int SpriteSlotShift = 13;
+    internal const uint SpriteSlotMask = 0x07u << SpriteSlotShift;
+
+    internal static readonly uint[] ExecutionPlan = BuildExecutionPlan();
     internal static readonly byte[] PaletteIndex = BuildPaletteIndex();
+    internal static readonly byte[] ReverseByte = BuildReverseByte();
 
-    private static uint[] BuildDecodeLines()
+    private static uint[] BuildExecutionPlan()
     {
-        var lines = new uint[DotsPerScanline];
+        var plan = new uint[DotsPerScanline];
         for (var dot = 0; dot < DotsPerScanline; dot++)
         {
-            Lines decoded = Lines.None;
+            uint word = 0;
 
             if (dot is >= 1 and <= 256)
-            {
-                decoded |= Lines.VisiblePixel | Lines.SpriteVisibleClock;
-            }
+                word |= VisibleDot;
 
             if (dot is >= 1 and <= 256 || dot is >= 321 and <= 336)
             {
-                decoded |= Lines.BackgroundShift;
-                switch ((dot - 1) & 7)
+                word |= ((dot - 1) & 7) switch
                 {
-                    case 0:
-                        decoded |= Lines.BackgroundLoad | Lines.BackgroundNametable;
-                        break;
-                    case 2:
-                        decoded |= Lines.BackgroundAttribute;
-                        break;
-                    case 4:
-                        decoded |= Lines.BackgroundPatternLow;
-                        break;
-                    case 6:
-                        decoded |= Lines.BackgroundPatternHigh;
-                        break;
-                    case 7:
-                        decoded |= Lines.IncrementCoarseX;
-                        break;
-                }
+                    0 => BackgroundNametable,
+                    2 => BackgroundAttribute,
+                    4 => BackgroundPatternLow,
+                    6 => BackgroundPatternHigh,
+                    7 => BackgroundIncrementCoarseX,
+                    _ => BackgroundShift
+                };
             }
 
-            if (dot == 1) decoded |= Lines.SpriteActivate;
-            if (dot == 65) decoded |= Lines.SpriteEvaluationReset;
+            if (dot == 1) word |= SpriteActivate;
+            if (dot == 65) word |= SpriteEvaluationReset;
             if (dot is >= 65 and <= 256 && ((dot - 65) % 3) == 0)
-                decoded |= Lines.SpriteEvaluate;
-            if (dot == 256) decoded |= Lines.IncrementY;
-            if (dot == 257) decoded |= Lines.CopyHorizontal | Lines.SpriteLoad;
-            if (dot is >= 280 and <= 304) decoded |= Lines.CopyVertical;
+                word |= SpriteEvaluate;
+            if (dot == 256) word |= IncrementY;
+            if (dot == 257) word |= CopyHorizontal | SpriteLoad;
+            if (dot is >= 280 and <= 304) word |= CopyVertical;
 
             if (dot is >= 257 and <= 320)
             {
-                switch ((dot - 257) & 7)
-                {
-                    case 4:
-                        decoded |= Lines.SpritePatternLow;
-                        break;
-                    case 6:
-                        decoded |= Lines.SpritePatternHigh;
-                        break;
-                }
+                var fetchPhase = (dot - 257) & 7;
+                if (fetchPhase == 4)
+                    word |= SpriteFetchPatternLow;
+                else if (fetchPhase == 6)
+                    word |= SpriteFetchPatternHigh;
+
+                if (fetchPhase is 4 or 6)
+                    word |= (uint)(((dot - 257) >> 3) << SpriteSlotShift);
             }
 
-            lines[dot] = (uint)decoded;
+            plan[dot] = word;
         }
 
-        return lines;
-    }
-
-    private static byte[] BuildSpriteFetchSlots()
-    {
-        var slots = new byte[DotsPerScanline];
-        for (var dot = 257; dot <= 320; dot++)
-            slots[dot] = (byte)((dot - 257) >> 3);
-        return slots;
+        return plan;
     }
 
     private static byte[] BuildPaletteIndex()
@@ -125,6 +104,19 @@ internal static class PpuDotDecoder
             var physicalIndex = index;
             if ((physicalIndex & 0x13) == 0x10) physicalIndex &= 0x0F;
             map[index] = (byte)physicalIndex;
+        }
+        return map;
+    }
+
+    private static byte[] BuildReverseByte()
+    {
+        var map = new byte[256];
+        for (var index = 0; index < map.Length; index++)
+        {
+            var value = (byte)index;
+            value = (byte)(((value & 0x55) << 1) | ((value >> 1) & 0x55));
+            value = (byte)(((value & 0x33) << 2) | ((value >> 2) & 0x33));
+            map[index] = (byte)((value << 4) | (value >> 4));
         }
         return map;
     }

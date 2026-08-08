@@ -24,6 +24,16 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private const ulong BackgroundLoadHighByteMask = 0xFF00FF00FF00FF00UL;
     private const ulong BackgroundAttributeLowFill = 0x000000FF00000000UL;
     private const ulong BackgroundAttributeHighFill = 0x00FF000000000000UL;
+    private const ulong SpriteTileMask = 0x00000000000000FFUL;
+    private const ulong SpriteXMask = 0x0000000000FF0000UL;
+    private const ulong SpriteRowMask = 0x00000000FF000000UL;
+    private const ulong SpritePatternLowMask = 0x000000FF00000000UL;
+    private const ulong SpritePatternHighMask = 0x0000FF0000000000UL;
+    private const ulong SpritePatternMask = SpritePatternLowMask | SpritePatternHighMask;
+    private const ulong SpritePatternShiftLaneMask = 0x0000FEFE00000000UL;
+    private const ulong SpriteZeroMask = 1UL << 48;
+    private const ulong SpriteHorizontalFlipMask = 1UL << 14;
+    private const ulong SpriteBehindBackgroundMask = 1UL << 13;
 
 
     private readonly byte[] _primaryOam = new byte[256];
@@ -72,9 +82,12 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private ulong _nextBackgroundLoad;
     private ulong _backgroundShifters;
     private byte _backgroundTapShift = 15;
-    private readonly SpriteEntry[] _secondaryOam = new SpriteEntry[8];
-    private readonly SpriteRenderUnit[] _activeSprites = new SpriteRenderUnit[8];
-    private readonly SpriteRenderUnit[] _nextSprites = new SpriteRenderUnit[8];
+    // Eight sprite circuits are retained as eight packed 64-bit state words.
+    // Packing changes only the host representation: each word still contains
+    // one sprite unit's independent tile/attribute/X/row/pattern/zero state.
+    private readonly ulong[] _secondaryOam = new ulong[8];
+    private readonly ulong[] _activeSprites = new ulong[8];
+    private readonly ulong[] _nextSprites = new ulong[8];
     private int _secondarySpriteCount;
     private int _activeSpriteCount;
     private int _nextSpriteCount;
@@ -517,13 +530,14 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         var vramTransactionCompleted = AdvanceVramTransaction();
 
         var visibleScanline = Scanline < 240;
+        var executionPlan = PpuDotDecoder.ExecutionPlan[Dot];
+        var visibleDot = visibleScanline && (executionPlan & PpuDotDecoder.VisibleDot) != 0;
         if (_renderingEnabled && (visibleScanline || Scanline == PreRenderScanline))
         {
-            var decodeLines = (PpuDotDecoder.Lines)PpuDotDecoder.DecodeLines[Dot];
-            ExecuteDecodedBackgroundCircuit(decodeLines, visibleScanline);
-            ExecuteDecodedSpriteCircuit(decodeLines, visibleScanline);
+            ExecuteDecodedBackgroundCircuit(executionPlan, visibleScanline);
+            ExecuteDecodedSpriteCircuit(executionPlan, visibleScanline);
         }
-        else if (visibleScanline && Dot is >= 1 and <= 256)
+        else if (visibleDot)
         {
             // Forced blank disconnects the fetch/OAM sequencers. The color DAC
             // remains physically active and may expose palette RAM selected by v.
@@ -536,7 +550,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         if (vramTransactionCompleted && !VramBusBusy)
             PresentVramIdle();
 
-        if (visibleScanline && Dot is >= 1 and <= 256)
+        if (visibleDot)
         {
             VideoOutput.Drive(new RicohVideoPixelSample(
                 Frame,
@@ -558,19 +572,20 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         sample.EndSection(VirtualHardwareProfileSection.Rp2C02Vram, vramStarted);
 
         var visibleScanline = Scanline < 240;
+        var executionPlan = PpuDotDecoder.ExecutionPlan[Dot];
+        var visibleDot = visibleScanline && (executionPlan & PpuDotDecoder.VisibleDot) != 0;
         if (_renderingEnabled && (visibleScanline || Scanline == PreRenderScanline))
         {
-            var decodeLines = (PpuDotDecoder.Lines)PpuDotDecoder.DecodeLines[Dot];
 
             var backgroundStarted = sample.BeginSection();
-            ExecuteDecodedBackgroundCircuit(decodeLines, visibleScanline);
+            ExecuteDecodedBackgroundCircuit(executionPlan, visibleScanline);
             sample.EndSection(VirtualHardwareProfileSection.Rp2C02Background, backgroundStarted);
 
             var spriteStarted = sample.BeginSection();
-            ExecuteDecodedSpriteCircuit(decodeLines, visibleScanline);
+            ExecuteDecodedSpriteCircuit(executionPlan, visibleScanline);
             sample.EndSection(VirtualHardwareProfileSection.Rp2C02Sprite, spriteStarted);
         }
-        else if (visibleScanline && Dot is >= 1 and <= 256)
+        else if (visibleDot)
         {
             BackgroundPixelIndex = 0;
             SpritePixelIndex = 0;
@@ -585,7 +600,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             sample.EndSection(VirtualHardwareProfileSection.Rp2C02PackageOutputs, outputsStarted);
         }
 
-        if (visibleScanline && Dot is >= 1 and <= 256)
+        if (visibleDot)
         {
             var videoStarted = sample.BeginSection();
             VideoOutput.Drive(new RicohVideoPixelSample(
@@ -598,17 +613,16 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         }
     }
 
-    private void ExecuteDecodedBackgroundCircuit(PpuDotDecoder.Lines lines, bool visibleScanline)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ExecuteDecodedBackgroundCircuit(uint executionPlan, bool visibleScanline)
     {
-        switch (lines & PpuDotDecoder.BackgroundCircuitMask)
+        switch (executionPlan & PpuDotDecoder.BackgroundActionMask)
         {
-            case PpuDotDecoder.Lines.BackgroundShift:
+            case PpuDotDecoder.BackgroundShift:
                 ShiftBackgroundRegisters();
                 break;
 
-            case PpuDotDecoder.Lines.BackgroundShift
-                | PpuDotDecoder.Lines.BackgroundLoad
-                | PpuDotDecoder.Lines.BackgroundNametable:
+            case PpuDotDecoder.BackgroundNametable:
                 ShiftBackgroundRegisters();
                 LoadBackgroundShifters();
                 BeginBackgroundRead(
@@ -616,8 +630,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                     VramTransactionPurpose.BackgroundNametable);
                 break;
 
-            case PpuDotDecoder.Lines.BackgroundShift
-                | PpuDotDecoder.Lines.BackgroundAttribute:
+            case PpuDotDecoder.BackgroundAttribute:
             {
                 ShiftBackgroundRegisters();
                 var attributeAddress = (ushort)(0x23C0
@@ -628,56 +641,54 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                 break;
             }
 
-            case PpuDotDecoder.Lines.BackgroundShift
-                | PpuDotDecoder.Lines.BackgroundPatternLow:
+            case PpuDotDecoder.BackgroundPatternLow:
                 ShiftBackgroundRegisters();
                 BeginBackgroundRead(
                     PatternAddress(highPlane: false),
                     VramTransactionPurpose.BackgroundPatternLow);
                 break;
 
-            case PpuDotDecoder.Lines.BackgroundShift
-                | PpuDotDecoder.Lines.BackgroundPatternHigh:
+            case PpuDotDecoder.BackgroundPatternHigh:
                 ShiftBackgroundRegisters();
                 BeginBackgroundRead(
                     PatternAddress(highPlane: true),
                     VramTransactionPurpose.BackgroundPatternHigh);
                 break;
 
-            case PpuDotDecoder.Lines.BackgroundShift
-                | PpuDotDecoder.Lines.IncrementCoarseX:
+            case PpuDotDecoder.BackgroundIncrementCoarseX:
                 ShiftBackgroundRegisters();
                 IncrementCoarseX();
                 break;
         }
 
-        if ((lines & PpuDotDecoder.Lines.IncrementY) != 0)
+        if ((executionPlan & PpuDotDecoder.IncrementY) != 0)
             IncrementY();
-        if ((lines & PpuDotDecoder.Lines.CopyHorizontal) != 0)
+        if ((executionPlan & PpuDotDecoder.CopyHorizontal) != 0)
             CopyHorizontalScrollBits();
         if (Scanline == PreRenderScanline
-            && (lines & PpuDotDecoder.Lines.CopyVertical) != 0)
+            && (executionPlan & PpuDotDecoder.CopyVertical) != 0)
         {
             CopyVerticalScrollBits();
         }
 
-        if (!visibleScanline || (lines & PpuDotDecoder.Lines.VisiblePixel) == 0)
+        if (!visibleScanline || (executionPlan & PpuDotDecoder.VisibleDot) == 0)
             return;
 
         if (_backgroundRenderingEnabled) UpdateBackgroundPixel();
         else BackgroundPixelIndex = 0;
     }
 
-    private void ExecuteDecodedSpriteCircuit(PpuDotDecoder.Lines lines, bool visibleScanline)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ExecuteDecodedSpriteCircuit(uint executionPlan, bool visibleScanline)
     {
-        if ((lines & PpuDotDecoder.Lines.SpriteActivate) != 0)
+        if ((executionPlan & PpuDotDecoder.SpriteActivate) != 0)
         {
             _activeSpriteCount = _nextSpriteCount;
             Array.Copy(_nextSprites, _activeSprites, _activeSpriteCount);
         }
 
         if (visibleScanline
-            && (lines & PpuDotDecoder.Lines.SpriteEvaluationReset) != 0)
+            && (executionPlan & PpuDotDecoder.SpriteEvaluationReset) != 0)
         {
             _secondarySpriteCount = 0;
             _spriteEvaluationIndex = 0;
@@ -686,72 +697,70 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         }
 
         if (visibleScanline
-            && (lines & PpuDotDecoder.Lines.SpriteEvaluate) != 0
+            && (executionPlan & PpuDotDecoder.SpriteEvaluate) != 0
             && _spriteEvaluationIndex < 64)
         {
             EvaluateOneSpriteForNextScanline(_spriteEvaluationIndex++);
         }
 
-        if ((lines & PpuDotDecoder.Lines.SpriteLoad) != 0)
+        if ((executionPlan & PpuDotDecoder.SpriteLoad) != 0)
         {
             _nextSpriteCount = _secondarySpriteCount;
             for (var index = 0; index < _nextSpriteCount; index++)
             {
                 var entry = _secondaryOam[index];
-                _nextSprites[index] = new SpriteRenderUnit
-                {
-                    XCounter = entry.X,
-                    Attributes = entry.Attributes,
-                    SpriteZero = entry.SpriteIndex == 0,
-                    Tile = entry.Tile,
-                    Row = entry.Row
-                };
+                var sprite = entry & 0x00000000FFFFFFFFUL;
+                if (((entry >> 32) & 0xFF) == 0) sprite |= SpriteZeroMask;
+                _nextSprites[index] = sprite;
             }
             for (var index = _nextSpriteCount; index < 8; index++)
-                _nextSprites[index] = default;
+                _nextSprites[index] = 0;
         }
 
-        if ((lines & (PpuDotDecoder.Lines.SpritePatternLow | PpuDotDecoder.Lines.SpritePatternHigh)) != 0)
+        var spriteFetch = executionPlan & PpuDotDecoder.SpriteFetchMask;
+        if (spriteFetch != PpuDotDecoder.SpriteFetchNone)
         {
-            _spriteFetchSlot = PpuDotDecoder.SpriteFetchSlot[Dot];
+            _spriteFetchSlot = (int)((executionPlan & PpuDotDecoder.SpriteSlotMask) >> PpuDotDecoder.SpriteSlotShift);
             if (_spriteFetchSlot < _nextSpriteCount)
             {
-                if ((lines & PpuDotDecoder.Lines.SpritePatternLow) != 0)
-                {
-                    BeginBackgroundRead(
-                        SpritePatternAddress(_nextSprites[_spriteFetchSlot], false),
-                        VramTransactionPurpose.SpritePatternLow);
-                }
-                else
-                {
-                    BeginBackgroundRead(
-                        SpritePatternAddress(_nextSprites[_spriteFetchSlot], true),
-                        VramTransactionPurpose.SpritePatternHigh);
-                }
+                var highPlane = spriteFetch == PpuDotDecoder.SpriteFetchPatternHigh;
+                BeginBackgroundRead(
+                    SpritePatternAddress(_nextSprites[_spriteFetchSlot], highPlane),
+                    highPlane
+                        ? VramTransactionPurpose.SpritePatternHigh
+                        : VramTransactionPurpose.SpritePatternLow);
             }
         }
 
-        if (visibleScanline && (lines & PpuDotDecoder.Lines.SpriteVisibleClock) != 0)
+        if (visibleScanline && (executionPlan & PpuDotDecoder.VisibleDot) != 0)
             UpdateSpritePixelCompositionAndAdvance();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AdvanceRaster()
     {
-        // PAL RP2C07 always emits the complete 341 x 312 raster. Unlike the
-        // NTSC RP2C02 it never skips a pre-render dot on alternate frames.
-        Dot++;
-        if (Dot >= DotsPerScanline)
+        var dot = Dot + 1;
+        if (dot != DotsPerScanline)
         {
-            Dot = 0;
-            Scanline++;
-            if (Scanline >= ScanlinesPerFrame)
-            {
-                Scanline = 0;
-                Frame++;
-            }
+            Dot = dot;
+            if (dot == 1) HandleRasterDotOne();
+            return;
         }
 
-        if (Scanline == VblankStartScanline && Dot == 1)
+        Dot = 0;
+        var scanline = Scanline + 1;
+        if (scanline == ScanlinesPerFrame)
+        {
+            Scanline = 0;
+            Frame++;
+        }
+        else Scanline = scanline;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void HandleRasterDotOne()
+    {
+        if (Scanline == VblankStartScanline)
         {
             if (_suppressVblankSet)
             {
@@ -761,7 +770,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             }
             else SetVblankState(true);
         }
-        else if (Scanline == PreRenderScanline && Dot == 1)
+        else if (Scanline == PreRenderScanline)
         {
             SetVblankState(false);
             _spriteZeroHit = false;
@@ -1110,18 +1119,24 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             case VramTransactionPurpose.SpritePatternLow:
                 if (_spriteFetchSlot < _nextSpriteCount)
                 {
-                    var unit = _nextSprites[_spriteFetchSlot];
-                    unit.PatternLow = unit.HorizontalFlip ? ReverseBits(data) : data;
-                    _nextSprites[_spriteFetchSlot] = unit;
+                    var sprite = _nextSprites[_spriteFetchSlot];
+                    var pattern = (sprite & SpriteHorizontalFlipMask) != 0
+                        ? PpuDotDecoder.ReverseByte[data]
+                        : data;
+                    _nextSprites[_spriteFetchSlot] = (sprite & ~SpritePatternLowMask)
+                        | ((ulong)pattern << 32);
                     SpritePatternFetchCount++;
                 }
                 break;
             case VramTransactionPurpose.SpritePatternHigh:
                 if (_spriteFetchSlot < _nextSpriteCount)
                 {
-                    var unit = _nextSprites[_spriteFetchSlot];
-                    unit.PatternHigh = unit.HorizontalFlip ? ReverseBits(data) : data;
-                    _nextSprites[_spriteFetchSlot] = unit;
+                    var sprite = _nextSprites[_spriteFetchSlot];
+                    var pattern = (sprite & SpriteHorizontalFlipMask) != 0
+                        ? PpuDotDecoder.ReverseByte[data]
+                        : data;
+                    _nextSprites[_spriteFetchSlot] = (sprite & ~SpritePatternHighMask)
+                        | ((ulong)pattern << 40);
                     SpritePatternFetchCount++;
                 }
                 break;
@@ -1204,7 +1219,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
         if (_secondarySpriteCount >= 8)
         {
-            // Once secondary OAM is full, the RP2C02's broken evaluation logic
+            // Once secondary OAM is full, the RP2C0x's broken evaluation logic
             // advances diagonally through primary OAM. Non-Y bytes can therefore
             // be interpreted as Y coordinates and create false-positive overflow.
             var candidate = _primaryOam[baseAddress + _spriteOverflowByteOffset];
@@ -1222,26 +1237,26 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
         var attributes = _primaryOam[baseAddress + 2];
         if ((attributes & 0x80) != 0) row = height - 1 - row;
-        _secondaryOam[_secondarySpriteCount++] = new SpriteEntry
-        {
-            Tile = _primaryOam[baseAddress + 1],
-            Attributes = attributes,
-            X = _primaryOam[baseAddress + 3],
-            Row = (byte)row,
-            SpriteIndex = (byte)spriteIndex
-        };
+        _secondaryOam[_secondarySpriteCount++] =
+            (ulong)_primaryOam[baseAddress + 1]
+            | ((ulong)attributes << 8)
+            | ((ulong)_primaryOam[baseAddress + 3] << 16)
+            | ((ulong)(byte)row << 24)
+            | ((ulong)(byte)spriteIndex << 32);
     }
 
-    private ushort SpritePatternAddress(SpriteRenderUnit sprite, bool highPlane)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ushort SpritePatternAddress(ulong sprite, bool highPlane)
     {
+        var tile = (byte)(sprite & SpriteTileMask);
+        var row = (byte)((sprite & SpriteRowMask) >> 24);
         if (_spriteHeight == 8)
         {
-            return (ushort)(_spritePatternTableBase | (sprite.Tile << 4) | sprite.Row | (highPlane ? 8 : 0));
+            return (ushort)(_spritePatternTableBase | (tile << 4) | row | (highPlane ? 8 : 0));
         }
 
-        var tableBase = (sprite.Tile & 1) << 12;
-        var tile = sprite.Tile & 0xFE;
-        var row = sprite.Row;
+        var tableBase = (tile & 1) << 12;
+        tile &= 0xFE;
         if (row >= 8)
         {
             tile++;
@@ -1250,42 +1265,38 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         return (ushort)(tableBase | (tile << 4) | row | (highPlane ? 8 : 0));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateSpritePixelCompositionAndAdvance()
     {
         byte spritePattern = 0;
         byte spritePalette = 0;
-        bool spriteBehindBackground = false;
-        bool spriteZero = false;
+        var spriteBehindBackground = false;
+        var spriteZero = false;
         var spriteOutputEnabled = _spriteRenderingEnabled && (Dot > 8 || _showSpriteLeft);
         var haveOpaqueSprite = false;
 
-        // The eight RP2C0x sprite output units operate in parallel in silicon.
-        // Model their current pixel selection and their counter/shifter clock in
-        // one pass instead of reading/writing the same eight software units twice.
         for (var index = 0; index < _activeSpriteCount; index++)
         {
             var sprite = _activeSprites[index];
+            var xCounter = (byte)((sprite & SpriteXMask) >> 16);
 
-            if (spriteOutputEnabled && !haveOpaqueSprite && sprite.XCounter == 0)
+            if (spriteOutputEnabled && !haveOpaqueSprite && xCounter == 0)
             {
-                var patternValue = (byte)(((sprite.PatternLow & 0x80) != 0 ? 1 : 0)
-                    | ((sprite.PatternHigh & 0x80) != 0 ? 2 : 0));
+                var patternValue = (byte)(((sprite >> 39) & 1) | ((sprite >> 46) & 2));
                 if (patternValue != 0)
                 {
                     spritePattern = patternValue;
-                    spritePalette = (byte)(sprite.Attributes & 3);
-                    spriteBehindBackground = (sprite.Attributes & 0x20) != 0;
-                    spriteZero = sprite.SpriteZero;
+                    spritePalette = (byte)((sprite >> 8) & 3);
+                    spriteBehindBackground = (sprite & SpriteBehindBackgroundMask) != 0;
+                    spriteZero = (sprite & SpriteZeroMask) != 0;
                     haveOpaqueSprite = true;
                 }
             }
 
-            if (sprite.XCounter > 0) sprite.XCounter--;
+            if (xCounter != 0)
+                sprite -= 1UL << 16;
             else
-            {
-                sprite.PatternLow <<= 1;
-                sprite.PatternHigh <<= 1;
-            }
+                sprite = (sprite & ~SpritePatternMask) | ((sprite << 1) & SpritePatternShiftLaneMask);
             _activeSprites[index] = sprite;
         }
 
@@ -1301,13 +1312,6 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         else if (!backgroundOpaque || !spriteBehindBackground) PixelPaletteIndex = SpritePixelIndex;
         else PixelPaletteIndex = background;
         UpdateOutputColor();
-    }
-
-    private static byte ReverseBits(byte value)
-    {
-        value = (byte)(((value & 0x55) << 1) | ((value >> 1) & 0x55));
-        value = (byte)(((value & 0x33) << 2) | ((value >> 2) & 0x33));
-        return (byte)((value << 4) | (value >> 4));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1515,24 +1519,5 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         SpritePatternHigh
     }
 
-    private struct SpriteEntry
-    {
-        public byte Tile;
-        public byte Attributes;
-        public byte X;
-        public byte Row;
-        public byte SpriteIndex;
-    }
 
-    private struct SpriteRenderUnit
-    {
-        public byte Tile;
-        public byte Attributes;
-        public byte XCounter;
-        public byte Row;
-        public byte PatternLow;
-        public byte PatternHigh;
-        public bool SpriteZero;
-        public bool HorizontalFlip => (Attributes & 0x40) != 0;
-    }
 }

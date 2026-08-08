@@ -203,3 +203,16 @@ The architecture remains lab-safe: chips know only themselves, boards know only 
 
 The previously validated v2.2 suite contained 226 tests. v2.5.0 adds two tests, so the expected total is **228**.
 
+## v2.6.0 RP2C0x packed internal execution sweep
+
+v2.6.0 keeps the v2.5.0 true-hardware electrical/package baseline and aggressively optimizes only the RP2C02/RP2C07 package-internal execution representation. The motherboard, physical package pins, external VRAM bus, CPU register bus, NMI output and clock ownership are unchanged.
+
+- Replaces broad per-dot flag interpretation with one immutable packed 341-dot internal decoder word per PPU dot.
+- Packs each of the eight retained sprite output units into one 64-bit state word while preserving independent tile, attribute, X counter, row, pattern and sprite-zero state.
+- Uses byte-reversal lookup for horizontally flipped sprite pattern fetches.
+- Moves rare vblank/pre-render raster decoding off the ordinary horizontal-counter path.
+- Uses the same RP2C0x core in both the true-hardware and fused compiled execution modes, so any measured core gain benefits both.
+- No chip learns what board, memory, cartridge or other chip is attached to it. All external communication remains package-pin electrical behavior.
+
+The standalone/conformance suite remains 228 tests; runtime performance must be validated locally before this experiment is accepted as a new baseline.
+
