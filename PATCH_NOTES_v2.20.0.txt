@@ -1,9 +1,0 @@
-AxetosOS.Products.NES v2.20.0
-
-- Extends the host-only MMC1 raster trace with physical PPUSTATUS/$2002 polling provenance.
-- Reports PPUSTATUS reads since NMI as total/sprite-zero-clear/sprite-zero-set.
-- Reports the last status read plus the last clear and first sprite-zero-set observations.
-- Adds a sixteen-entry physical opcode-fetch tail leading into every visible MMC1 commit.
-- Renames the OAM field to oam-dma-bytes-from-nmi; the counter measures completed 256-byte OAM transfers, not total DMA stall cycles.
-- Changes no CPU, PPU, MMC1, motherboard or compiler execution behavior.
-- Expected suite total remains 266.

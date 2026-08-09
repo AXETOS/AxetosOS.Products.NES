@@ -1,8 +1,0 @@
-AxetosOS.Products.NES v2.21.0
-
-- Confirms v2.20.1 reduced the raster-family decision to the retained sprite-zero latch.
-- Adds capture-only RP2C02 sprite-zero activation, pattern-fetch and pixel-overlap provenance.
-- Adds OAM0/PPUCTRL/PPUMASK and categorized sprite-zero frame summaries to CART FRAME output.
-- Distinguishes evaluation/range, transparent sprite pattern, transparent background, mask/x255 and sprite-selection causes.
-- Changes no CPU, PPU, MMC1, motherboard or compiler execution behavior outside explicit diagnostic capture.
-- Expected suite total remains 266.

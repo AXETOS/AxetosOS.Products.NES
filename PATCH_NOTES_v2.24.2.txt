@@ -1,8 +1,0 @@
-AxetosOS Products / NES v2.24.2 M2 read-phase integration hotfix
-
-Fixes the physical CPU external-read sampling phase exposed by the v2.24.0 M2-qualified motherboard decoder. RP2A03/RP2A07 now latch external D0-D7 before M2 falls; compiled RP2A03 completes the read at the same boundary.
-
-Also corrects two stale test expectations and separates current PPU evaluation count from the prepared sprite set.
-
-Expected local test total: 276.
-Do not Git-push until local dotnet test passes.

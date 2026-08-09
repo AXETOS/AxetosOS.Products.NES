@@ -1,8 +1,0 @@
-AxetosOS.Products.NES v2.19.0
-
-- Adds host-side CPU provenance to MMC1 cartridge/video raster traces.
-- Records CPU cycle, cycles since NMI, PC/opcode/microcycle and live CPU bus state at mapper-visible commits.
-- Records same-frame sprite-zero timing plus DMC/OAM-DMA activity since NMI.
-- Uses only existing public chip diagnostics; no chip/package peer or callback references.
-- Changes no CPU, PPU, MMC1, motherboard or compiler execution behavior.
-- Expected suite total remains 266.

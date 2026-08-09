@@ -1,1 +1,0 @@
-v2.26.1 fixes the v2.26.0 patch archive layout. The complete intended v2.26 startup-compilation and compiled-dispatch changes are republished under AxetosOS/AxetosOS.Products.NES so they overwrite the active repository files. No additional NES hardware semantics are changed.

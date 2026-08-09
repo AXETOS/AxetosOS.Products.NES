@@ -35,3 +35,11 @@ Thumbs.db
 # Repository-owned legal smoke-test ROMs
 !samples/
 !samples/**/*.nes
+
+# Local diagnostics / patch-packaging metadata
+/PATCH_FILE_LIST_v*.txt
+/PATCH_NOTES_v*.txt
+/*-provenance*.txt
+/*-diagnostics*.txt
+/*-trace*.txt
+/*.log

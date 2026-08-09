@@ -1,9 +1,0 @@
-AxetosOS.Products.NES v2.20.1
-
-- Hotfixes the v2.20.0 `v=??` PPUSTATUS provenance blind spot.
-- Consumes RP2C02's existing exact `PPUSTATUS read` split-trace event from DesktopHost.
-- Reports exact sprite-zero bit-6 and vblank bit-7 state for every observed status poll.
-- Adds `s0-at-nmi` so the prior visible frame's retained sprite-zero latch is explicit.
-- Preserves CPU-side `$81C1` polling provenance separately from the exact PPU-returned byte.
-- Changes no CPU, PPU, MMC1, motherboard or compiler execution behavior.
-- Expected suite total remains 266.

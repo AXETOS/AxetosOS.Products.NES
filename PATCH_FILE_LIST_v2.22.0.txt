@@ -1,8 +1,0 @@
-AxetosOS/AxetosOS.Products.NES/Directory.Build.props
-AxetosOS/AxetosOS.Products.NES/README.md
-AxetosOS/AxetosOS.Products.NES/RELEASE_NOTES_v2.22.0.md
-AxetosOS/AxetosOS.Products.NES/PATCH_NOTES_v2.22.0.txt
-AxetosOS/AxetosOS.Products.NES/PATCH_FILE_LIST_v2.22.0.txt
-AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Cartridges/Mmc1Cartridge.cs
-AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.DesktopHost/CartridgeVideoTraceCollector.cs
-AxetosOS/AxetosOS.Products.NES/src/Products/NES/AxetosOS.Products.NES.DesktopHost/Program.cs

@@ -1,9 +1,0 @@
-AxetosOS Products / NES v2.24.0 hardware conformance patch
-
-This patch is based on the exact v2.23.0 state validated locally at 266/266 tests.
-It corrects CPU external cycles/open bus/interrupt polling, PPU OAM evaluation and sprite-fetch bus cadence, selected APU timing/state behavior, motherboard M2-qualified LS139 decoding, and the physical 15-bit cartridge CPU address + /ROMSEL interface used by NROM/MMC1.
-
-No Alien Syndrome-specific timing constant or rendering workaround is included.
-CIC lock/key behavior and silicon-unstable NMOS opcode results remain explicitly unresolved rather than guessed.
-
-Expected local test total after this patch: 276.
