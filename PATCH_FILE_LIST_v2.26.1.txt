@@ -1,0 +1,9 @@
+Directory.Build.props
+README.md
+RELEASE_NOTES_v2.26.1.md
+PATCH_NOTES_v2.26.1.txt
+PATCH_FILE_LIST_v2.26.1.txt
+src/Products/NES/AxetosOS.Products.NES.DesktopHost/Program.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Machines/Nes/VirtualNesBootHost.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledLabMotherboardExecutionPlan.cs
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareNesBootHostTests.cs

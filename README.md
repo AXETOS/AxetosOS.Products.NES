@@ -493,6 +493,11 @@ Regression coverage now proves that PPU data and latched low-address nets are ph
 Expected test total remains **266**. Local `dotnet test` remains the acceptance gate.
 
 
+
+## v2.25.0 hardware-preserving performance sweep
+
+v2.25.0 keeps the corrected v2.24 CPU/PPU/APU/motherboard/cartridge behavior intact while reducing host work on the now-heavier real bus stream. MMC1 predecodes its PRG/CHR address-mux bases only when registers change, and the whole-circuit compiler builds phase-specialized read-begin/read-complete/read-observer routes so a target is not revisited during a bus phase it cannot participate in. No physical fetch, dummy cycle, mapper access or package transition is suppressed. Expected discovered test total is 277; Release FPS must be measured locally before any performance gain is claimed.
+
 ## v2.24.1 compile hotfix
 
 v2.24.1 fixes the Famicom decoder regression test added by v2.24.0 to reference the existing `DigitalPowerRail.Output` pin instead of the nonexistent `DigitalPowerRail.Rail` member. No CPU, PPU, APU, motherboard, cartridge, mapper, compiler, or runtime behavior changes from v2.24.0. Expected discovered test total remains 276.
@@ -506,17 +511,23 @@ The release also records unresolved hardware honestly: the current CIC lock mode
 Expected local test total: **276**. Local `dotnet test` remains the acceptance gate.
 
 
-## v2.24.2 M2 read-phase integration hotfix
+## v2.26.0 automatic production startup compilation
 
-v2.24.2 addresses the integration regressions exposed by the first complete v2.24.1 test run. The v2.24.0 motherboard decoder correctly made RAM/PPU/cartridge selection M2-qualified, but RP2A03/RP2A07 still consumed external D0-D7 at the following M2-high CPU boundary. By that point the newly-correct board decode had already released the selected device at M2 falling, so the physical runtime could consume retained/open-bus data while compiled execution resolved the intended byte directly.
+v2.26.0 makes compilation the production execution policy for the Famicom desktop/boot host instead of a mapper-specific accident of the NROM path. The physical machine is still assembled first, and no motherboard or compiler code learns mapper semantics.
 
-Both regional CPU packages now capture external read data at the end of the active M2-high window, before driving M2 Low, and consume that retained cycle result on the following internal CPU boundary. Compiled execution resolves the same read at its M2-falling completion point, eliminating duplicate complete-phase reads and aligning physical/compiled bus-cycle semantics. Internal `$4015/$4016/$4017` reads remain chip-local.
+- If topology has already selected a validated specialized compiled runtime, such as the existing fused Famicom/NROM runtime, the host preserves it.
+- If the assembled Famicom machine has no specialized compiled runtime, the host enables the product-agnostic whole-circuit compiler before power is applied. MMC1 therefore enters normal execution through the compiled motherboard plus replaceable cartridge runtime instead of silently falling back to raw per-trace propagation.
+- The cartridge remains a separate external hardware unit. Mapper/ROM behavior is still owned by cartridge hardware facets and the physical connector topology.
+- `--raw-hardware` explicitly selects the uncompiled diagnostic/reference path. The older `--reference-runtime` spelling remains accepted as an alias.
+- `--compiled-lab` remains available to force the generic whole-circuit compiler for A/B work, including NROM.
+- The generic compiled bus now flattens fixed-board and currently attached cartridge static routes into direct dispatch tables once at cartridge bind time. This removes repeated per-transaction motherboard-set/external-set route walking while preserving the cartridge as a separately owned runtime unit; replacement rebuilds only the dispatch cache.
+- Static write routes are also split into begin/complete dispatch tables, so the hot path no longer rechecks a target's write phase after topology has already proven it. Dynamic package-local select gates retain their runtime evaluation path.
 
-Two stale conformance assertions are also corrected: the MMC1 connector test now accepts component-qualified physical pin names, and the controller-read test expects the RP2A03 internal open-bus upper bits retained from the preceding `$40` operand-high cycle. The sprite-pipeline tests now distinguish the in-progress secondary-OAM count from the prepared sprite count retained after dot 257.
-
-Expected local test total remains **276**. Local `dotnet test` is the acceptance gate; do not Git-push this release until the suite passes.
+This release changes the default execution policy and performs a hardware-preserving generic-dispatch optimization; it does **not** claim that the generic compiler has reached 60 FPS. Local uncapped Release benchmarking remains the acceptance test for throughput. The existing NROM fused path is deliberately retained so Super Mario keeps its validated 60+ FPS headroom while MMC1 no longer defaults to the ~19 FPS raw runtime.
 
 
-## v2.24.3 xUnit analyzer hotfix
+## v2.26.1 patch-layout hotfix
 
-v2.24.3 changes no hardware behavior. It replaces the three MMC1 cartridge connector assertions that used `Assert.True(...EndsWith(...))` with xUnit's dedicated `Assert.EndsWith(...)` assertion so the repository's analyzer-as-error policy can compile the v2.24.2 test suite. Expected discovered test total remains **276**.
+v2.26.1 republishes the v2.26.0 automatic startup-compilation change under the actual repository layout `AxetosOS/AxetosOS.Products.NES/...`. The v2.26.0 archive placed its changed project files one directory too high, so extracting it alongside the repository did not overwrite the active DesktopHost/VirtualHardware sources. The unchanged legacy runtime banner in the local Alien Syndrome run confirmed that the old `Program.cs` was still executing.
+
+No NES hardware semantics are changed relative to the intended v2.26.0 implementation. Normal Famicom MMC1 launch still selects the generic whole-circuit compiler automatically; NROM retains the specialized fused compiler; `--raw-hardware` remains the explicit diagnostic raw path. This hotfix includes the complete intended v2.26 source delta so it is safe to apply even when v2.26.0 never touched the repository.

@@ -19,7 +19,7 @@ var palCic = PalCicVariant.PalA3195;
 var profileSimulation = false;
 var ppuSplitTrace = false;
 (ulong Start, ulong End)? cartridgeVideoTrace = null;
-var referenceRuntime = false;
+var rawHardwareRuntime = false;
 var compiledLabRuntime = false;
 var uncappedRuntime = false;
 ulong? stopFrame = null;
@@ -48,9 +48,10 @@ for (var index = 0; index < args.Length; index++)
         continue;
     }
 
-    if (args[index].Equals("--reference-runtime", StringComparison.OrdinalIgnoreCase))
+    if (args[index].Equals("--raw-hardware", StringComparison.OrdinalIgnoreCase)
+        || args[index].Equals("--reference-runtime", StringComparison.OrdinalIgnoreCase))
     {
-        referenceRuntime = true;
+        rawHardwareRuntime = true;
         continue;
     }
 
@@ -89,7 +90,7 @@ for (var index = 0; index < args.Length; index++)
 
     if (romArgument is not null)
     {
-        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--reference-runtime|--compiled-lab] [--uncapped] [--stop-frame N] [--ppu-split-trace] [--cartridge-video-trace START:END]");
+        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--raw-hardware|--reference-runtime|--compiled-lab] [--uncapped] [--stop-frame N] [--ppu-split-trace] [--cartridge-video-trace START:END]");
         return 2;
     }
 
@@ -112,13 +113,16 @@ if (!File.Exists(romPath))
     return 3;
 }
 
-if (referenceRuntime && compiledLabRuntime)
+if (rawHardwareRuntime && compiledLabRuntime)
 {
-    Console.Error.WriteLine("--reference-runtime and --compiled-lab are mutually exclusive.");
+    Console.Error.WriteLine("--raw-hardware/--reference-runtime and --compiled-lab are mutually exclusive.");
     return 2;
 }
 
-var host = new VirtualNesBootHost();
+var host = new VirtualNesBootHost
+{
+    AutomaticCompiledExecutionEnabled = !rawHardwareRuntime
+};
 if (compiledLabRuntime) host.Machine.SetCompiledLabExecutionEnabled(true);
 VirtualHardwareNesRomImage image;
 try
@@ -132,12 +136,13 @@ catch (NotSupportedException exception)
     return 4;
 }
 
-var referenceRuntimeActive = referenceRuntime
+var rawHardwareRuntimeActive = rawHardwareRuntime
     && host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom;
-var compiledLabRuntimeActive = compiledLabRuntime
-    && host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom;
-if (referenceRuntimeActive)
+if (rawHardwareRuntimeActive)
+{
+    host.Machine.SetCompiledLabExecutionEnabled(false);
     host.Machine.Famicom.SetCompiledPhysicalMachineEnabled(false);
+}
 
 if (host.Machine.ActiveMotherboard == ActiveNesMotherboard.PalNes)
 {
@@ -226,15 +231,15 @@ var compiledFamicom = host.Machine.ActiveMotherboard == ActiveNesMotherboard.Fam
 var compiledLab = host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom
     && host.Machine.Famicom.CompiledLabMotherboardEnabled;
 Console.WriteLine(compiledLab
-    ? "Execution:   whole-circuit compiled motherboard + replaceable cartridge unit"
+    ? "Execution:   startup-compiled physical Famicom motherboard + replaceable cartridge unit"
     : compiledFamicom
         ? "Execution:   startup-compiled fused physical Famicom/NROM machine"
-        : "Execution:   physical virtual-hardware buses and master clock only");
+        : "Execution:   diagnostic raw physical virtual-hardware buses and master clock only");
 Console.WriteLine("Video:       RP2C02 color output -> AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:       RP2A03 DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
 Console.WriteLine("Controls:    Esc=Exit (controller hardware adapter is the next input milestone)");
 Console.WriteLine(compiledLab
-    ? $"Kernel:      lab whole-circuit compiler ({host.Machine.Famicom.CompiledLabRuntimeUnitCount} runtime units; {host.Machine.Famicom.CompiledLabInternalComponentCount} fixed-board components; {host.Machine.Famicom.CompiledLabFoldedInternalTraceCount} internal traces folded; {host.Machine.Famicom.CompiledLabBoundaryTraceCount} cartridge-boundary traces)"
+    ? $"Kernel:      whole-circuit compiler ({host.Machine.Famicom.CompiledLabRuntimeUnitCount} runtime units; {host.Machine.Famicom.CompiledLabInternalComponentCount} fixed-board components; {host.Machine.Famicom.CompiledLabFoldedInternalTraceCount} internal traces folded; {host.Machine.Famicom.CompiledLabBoundaryTraceCount} cartridge-boundary traces)"
     : compiledFamicom
         ? $"Kernel:      fused compiled circuit ({host.Machine.Famicom.CompiledRuntimeUnitCount} runtime unit; {host.Machine.Famicom.CompiledFoldedPhysicalTraceCount} fixed traces folded; no signal queue)"
         : "Kernel:      chip-owned pin-gated direct propagation (no signal queue)");
@@ -242,8 +247,9 @@ if (compiledLab)
 {
     Console.WriteLine("Compiler:    component hardware facets + physical topology only; zero board/product semantics");
     Console.WriteLine("Boundary:    mapper + ROM remain replaceable external hardware");
+    if (compiledLabRuntime) Console.WriteLine("Compiler mode: generic whole-circuit compiler explicitly forced for A/B comparison");
 }
-if (referenceRuntimeActive) Console.WriteLine("Reference:   legacy per-trace runtime forced for A/B comparison");
+if (rawHardwareRuntimeActive) Console.WriteLine("Diagnostic:  raw per-trace physical runtime explicitly forced");
 var realTimePacing = !uncappedRuntime && !profileSimulation;
 Console.WriteLine(realTimePacing
     ? $"Timing:      hardware real-time ({masterClockHz:N0} Hz master clock)"

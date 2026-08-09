@@ -358,13 +358,29 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 dynamicTargets[targetIndex] = !CanStaticallyCompileTarget(
                     master, targetArray[targetIndex], addressSources[targetIndex], addressCount);
 
-            var readRoutes = new CompiledBusRoute[addressCount];
+            // Read routes are phase-specialized once at compile time. The hot
+            // runtime path no longer walks a selected target only to discover
+            // that it belongs to the other half of the bus transaction. This
+            // is especially important for the RP2C0x, which performs tens of
+            // thousands of real VRAM reads per frame.
+            var readBeginRoutes = new CompiledBusRoute[addressCount];
+            var readCompleteRoutes = new CompiledBusRoute[addressCount];
+            var readObserverRoutes = new CompiledBusRoute[addressCount];
             var writeRoutes = new CompiledBusRoute[addressCount];
             for (var raw = 0; raw < addressCount; raw++)
             {
                 var address = (uint)raw;
-                readRoutes[raw] = CompileRoute(master, targetArray, addressSources, dynamicTargets, address, readCycle: true);
-                writeRoutes[raw] = CompileRoute(master, targetArray, addressSources, dynamicTargets, address, readCycle: false);
+                readBeginRoutes[raw] = CompileRoute(
+                    master, targetArray, addressSources, dynamicTargets, address, readCycle: true,
+                    readPhase: CompiledBusReadPhase.Begin);
+                readCompleteRoutes[raw] = CompileRoute(
+                    master, targetArray, addressSources, dynamicTargets, address, readCycle: true,
+                    readPhase: CompiledBusReadPhase.Complete);
+                readObserverRoutes[raw] = CompileRoute(
+                    master, targetArray, addressSources, dynamicTargets, address, readCycle: true,
+                    observeReadBeginOnly: true);
+                writeRoutes[raw] = CompileRoute(
+                    master, targetArray, addressSources, dynamicTargets, address, readCycle: false);
             }
 
             var dynamicIndices = Enumerable.Range(0, dynamicTargets.Length)
@@ -388,7 +404,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 targetArray,
                 addressSources,
                 dynamicIndices,
-                readRoutes,
+                readBeginRoutes,
+                readCompleteRoutes,
+                readObserverRoutes,
                 writeRoutes,
                 busCycleObservers.ToArray());
         }
@@ -595,7 +613,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             int[][] addressSources,
             bool[] dynamicTargets,
             uint address,
-            bool readCycle)
+            bool readCycle,
+            CompiledBusReadPhase? readPhase = null,
+            bool observeReadBeginOnly = false)
         {
             var selectedTargets = new List<int>(2);
             var localAddresses = new List<int>(2);
@@ -604,8 +624,13 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             {
                 if (dynamicTargets[targetIndex]) continue;
                 var descriptor = targets[targetIndex].Descriptor;
-                if (readCycle && descriptor.Read is null) continue;
-                if (!readCycle && descriptor.Write is null) continue;
+                if (readCycle)
+                {
+                    if (descriptor.Read is null) continue;
+                    if (readPhase.HasValue && descriptor.ReadPhase != readPhase.Value) continue;
+                    if (observeReadBeginOnly && descriptor.ObserveReadBegin is null) continue;
+                }
+                else if (descriptor.Write is null) continue;
 
                 var conditions = readCycle ? descriptor.ReadConditions : descriptor.WriteConditions;
                 var selected = true;
@@ -841,14 +866,18 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             CompiledBusTargetRuntime[] runtimes,
             int[][] addressSources,
             int[] dynamicIndices,
-            CompiledBusRoute[] readRoutes,
+            CompiledBusRoute[] readBeginRoutes,
+            CompiledBusRoute[] readCompleteRoutes,
+            CompiledBusRoute[] readObserverRoutes,
             CompiledBusRoute[] writeRoutes,
             Action<bool>[] busCycleObservers)
         {
             Runtimes = runtimes;
             AddressSources = addressSources;
             DynamicIndices = dynamicIndices;
-            ReadRoutes = readRoutes;
+            ReadBeginRoutes = readBeginRoutes;
+            ReadCompleteRoutes = readCompleteRoutes;
+            ReadObserverRoutes = readObserverRoutes;
             WriteRoutes = writeRoutes;
             BusCycleObservers = busCycleObservers;
         }
@@ -856,7 +885,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public CompiledBusTargetRuntime[] Runtimes { get; }
         public int[][] AddressSources { get; }
         public int[] DynamicIndices { get; }
-        public CompiledBusRoute[] ReadRoutes { get; }
+        public CompiledBusRoute[] ReadBeginRoutes { get; }
+        public CompiledBusRoute[] ReadCompleteRoutes { get; }
+        public CompiledBusRoute[] ReadObserverRoutes { get; }
         public CompiledBusRoute[] WriteRoutes { get; }
         public Action<bool>[] BusCycleObservers { get; }
 
@@ -867,6 +898,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 Array.Empty<CompiledBusTargetRuntime>(),
                 Array.Empty<int[]>(),
                 Array.Empty<int>(),
+                new CompiledBusRoute[count],
+                new CompiledBusRoute[count],
                 new CompiledBusRoute[count],
                 new CompiledBusRoute[count],
                 Array.Empty<Action<bool>>());
@@ -894,6 +927,12 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         private readonly Func<ulong> _clockEdgeProvider;
         private readonly CompiledSignalRouter _signalRouter;
         private Action<bool>[] _busCycleObservers;
+        private CompiledTargetSet[] _dynamicTargetSets = [];
+        private CompiledDirectRoute[] _readBeginRoutes = [];
+        private CompiledDirectRoute[] _readCompleteRoutes = [];
+        private CompiledDirectRoute[] _readObserverRoutes = [];
+        private CompiledDirectRoute[] _writeBeginRoutes = [];
+        private CompiledDirectRoute[] _writeCompleteRoutes = [];
         private ushort _latchedAddress;
         private byte _latchedValue;
         private bool _latchedValueValid;
@@ -917,6 +956,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _clockEdgeProvider = clockEdgeProvider;
             _signalRouter = signalRouter;
             _busCycleObservers = internalTargets.BusCycleObservers;
+            RebuildCompiledDispatch();
         }
 
         public CompiledBusMasterDescriptor Master { get; }
@@ -931,7 +971,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             var targets = _compiler.CompileExternalTargets(Master, component);
             if (targets.Runtimes.Length == 0) return;
             _externalBindings.Add(new CompiledExternalBinding(component, targets));
-            RebuildBusCycleObservers();
+            RebuildCompiledDispatch();
         }
 
         public void UnbindExternalDevice(IVirtualHardwareComponent component)
@@ -943,7 +983,99 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 _externalBindings.RemoveAt(index);
                 removed = true;
             }
-            if (removed) RebuildBusCycleObservers();
+            if (removed) RebuildCompiledDispatch();
+        }
+
+        /// <summary>
+        /// Flattens the immutable motherboard routes and the currently attached
+        /// replaceable-device routes into direct runtime references. This is a
+        /// dispatch cache only: the external target runtimes remain owned by the
+        /// separate cartridge binding and this table is rebuilt on replacement.
+        /// No mapper, address-map, board or product meaning enters the compiler.
+        /// </summary>
+        private void RebuildCompiledDispatch()
+        {
+            var sets = new CompiledTargetSet[1 + _externalBindings.Count];
+            sets[0] = _internalTargets;
+            for (var index = 0; index < _externalBindings.Count; index++)
+                sets[index + 1] = _externalBindings[index].Targets;
+
+            var dynamicSets = new List<CompiledTargetSet>(sets.Length);
+            for (var index = 0; index < sets.Length; index++)
+            {
+                if (sets[index].DynamicIndices.Length != 0)
+                    dynamicSets.Add(sets[index]);
+            }
+            _dynamicTargetSets = dynamicSets.ToArray();
+
+            _readBeginRoutes = CompileDirectRoutes(sets, static set => set.ReadBeginRoutes);
+            _readCompleteRoutes = CompileDirectRoutes(sets, static set => set.ReadCompleteRoutes);
+            _readObserverRoutes = CompileDirectRoutes(sets, static set => set.ReadObserverRoutes);
+            _writeBeginRoutes = CompileDirectRoutes(
+                sets,
+                static set => set.WriteRoutes,
+                CompiledBusWritePhase.Begin);
+            _writeCompleteRoutes = CompileDirectRoutes(
+                sets,
+                static set => set.WriteRoutes,
+                CompiledBusWritePhase.Complete);
+            RebuildBusCycleObservers();
+        }
+
+        private static CompiledDirectRoute[] CompileDirectRoutes(
+            IReadOnlyList<CompiledTargetSet> sets,
+            Func<CompiledTargetSet, CompiledBusRoute[]> routeSelector,
+            CompiledBusWritePhase? writePhase = null)
+        {
+            var addressCount = routeSelector(sets[0]).Length;
+            var result = new CompiledDirectRoute[addressCount];
+            var targets = new List<CompiledBusTargetRuntime>(4);
+            var addresses = new List<int>(4);
+
+            for (var raw = 0; raw < addressCount; raw++)
+            {
+                targets.Clear();
+                addresses.Clear();
+                for (var setIndex = 0; setIndex < sets.Count; setIndex++)
+                {
+                    var set = sets[setIndex];
+                    var routes = routeSelector(set);
+                    var route = routes[raw & (routes.Length - 1)];
+                    AppendDirectRoute(set.Runtimes, route, writePhase, targets, addresses);
+                }
+                result[raw] = CompiledDirectRoute.Create(targets, addresses);
+            }
+
+            return result;
+        }
+
+        private static void AppendDirectRoute(
+            CompiledBusTargetRuntime[] runtimes,
+            CompiledBusRoute route,
+            CompiledBusWritePhase? writePhase,
+            List<CompiledBusTargetRuntime> targets,
+            List<int> addresses)
+        {
+            if (route.Count == 0) return;
+            AppendDirectTarget(runtimes[route.Target0], route.Address0, writePhase, targets, addresses);
+            if (route.Count == 1) return;
+            AppendDirectTarget(runtimes[route.Target1], route.Address1, writePhase, targets, addresses);
+            if (route.Count == 2) return;
+            var overflow = route.Overflow!;
+            for (var index = 0; index < overflow.Targets.Length; index++)
+                AppendDirectTarget(runtimes[overflow.Targets[index]], overflow.Addresses[index], writePhase, targets, addresses);
+        }
+
+        private static void AppendDirectTarget(
+            CompiledBusTargetRuntime target,
+            int address,
+            CompiledBusWritePhase? writePhase,
+            List<CompiledBusTargetRuntime> targets,
+            List<int> addresses)
+        {
+            if (writePhase.HasValue && target.Descriptor.WritePhase != writePhase.Value) return;
+            targets.Add(target);
+            addresses.Add(address);
         }
 
         private void RebuildBusCycleObservers()
@@ -979,16 +1111,15 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _latchedAddress = address;
             _latchedValueValid = false;
             _latchedConflict = false;
-            ObserveTargetSetReadBegins(_internalTargets, address);
-            for (var index = 0; index < _externalBindings.Count; index++)
-                ObserveTargetSetReadBegins(_externalBindings[index].Targets, address);
-            AccumulateTargetSetReads(
-                _internalTargets, address, CompiledBusReadPhase.Begin,
+            var routeIndex = address & (_readBeginRoutes.Length - 1);
+            ObserveDirectReadBeginRoute(_readObserverRoutes[routeIndex]);
+            ObserveDynamicReadBegins(address);
+            AccumulateDirectRouteReads(
+                _readBeginRoutes[routeIndex],
                 ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
-            for (var index = 0; index < _externalBindings.Count; index++)
-                AccumulateTargetSetReads(
-                    _externalBindings[index].Targets, address, CompiledBusReadPhase.Begin,
-                    ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
+            AccumulateDynamicReads(
+                address, CompiledBusReadPhase.Begin,
+                ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -997,13 +1128,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             var any = _latchedValueValid && address == _latchedAddress;
             var conflict = any && _latchedConflict;
             var result = any ? _latchedValue : (byte)0;
-            AccumulateTargetSetReads(
-                _internalTargets, address, CompiledBusReadPhase.Complete,
-                ref result, ref any, ref conflict);
-            for (var index = 0; index < _externalBindings.Count; index++)
-                AccumulateTargetSetReads(
-                    _externalBindings[index].Targets, address, CompiledBusReadPhase.Complete,
-                    ref result, ref any, ref conflict);
+            var routeIndex = address & (_readCompleteRoutes.Length - 1);
+            AccumulateDirectRouteReads(_readCompleteRoutes[routeIndex], ref result, ref any, ref conflict);
+            AccumulateDynamicReads(address, CompiledBusReadPhase.Complete, ref result, ref any, ref conflict);
             _latchedValueValid = false;
             _latchedConflict = false;
             value = result;
@@ -1019,9 +1146,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _pendingWriteAddress = address;
             _pendingWriteValue = value;
             _pendingWriteCompletion = true;
-            WriteTargetSet(_internalTargets, address, value, CompiledBusWritePhase.Begin);
-            for (var index = 0; index < _externalBindings.Count; index++)
-                WriteTargetSet(_externalBindings[index].Targets, address, value, CompiledBusWritePhase.Begin);
+            var routeIndex = address & (_writeBeginRoutes.Length - 1);
+            WriteDirectRoute(_writeBeginRoutes[routeIndex], value);
+            WriteDynamicTargets(address, value, CompiledBusWritePhase.Begin);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1031,9 +1158,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             var address = _pendingWriteAddress;
             var value = _pendingWriteValue;
             _pendingWriteCompletion = false;
-            WriteTargetSet(_internalTargets, address, value, CompiledBusWritePhase.Complete);
-            for (var index = 0; index < _externalBindings.Count; index++)
-                WriteTargetSet(_externalBindings[index].Targets, address, value, CompiledBusWritePhase.Complete);
+            var routeIndex = address & (_writeCompleteRoutes.Length - 1);
+            WriteDirectRoute(_writeCompleteRoutes[routeIndex], value);
+            WriteDynamicTargets(address, value, CompiledBusWritePhase.Complete);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1078,157 +1205,115 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _signalRouter.Present(sourcePin, level);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ObserveTargetSetReadBegins(CompiledTargetSet set, ushort address)
+        private void ObserveDynamicReadBegins(ushort address)
         {
-            var route = set.ReadRoutes[address & (set.ReadRoutes.Length - 1)];
-            ObserveReadBeginRoute(set.Runtimes, route);
-
-            var dynamic = set.DynamicIndices;
-            for (var index = 0; index < dynamic.Length; index++)
+            var sets = _dynamicTargetSets;
+            for (var setIndex = 0; setIndex < sets.Length; setIndex++)
             {
-                var targetIndex = dynamic[index];
-                var target = set.Runtimes[targetIndex];
-                var observer = target.Descriptor.ObserveReadBegin;
-                if (observer is null) continue;
-                if (!_compiler.TryResolveRuntimeTarget(
-                    Master, target, set.AddressSources[targetIndex], address, readCycle: true, out var localAddress))
-                    continue;
-                observer(localAddress);
+                var set = sets[setIndex];
+                var dynamic = set.DynamicIndices;
+                for (var index = 0; index < dynamic.Length; index++)
+                {
+                    var targetIndex = dynamic[index];
+                    var target = set.Runtimes[targetIndex];
+                    var observer = target.Descriptor.ObserveReadBegin;
+                    if (observer is null) continue;
+                    if (!_compiler.TryResolveRuntimeTarget(
+                        Master, target, set.AddressSources[targetIndex], address, readCycle: true, out var localAddress))
+                        continue;
+                    observer(localAddress);
+                }
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void ObserveReadBeginRoute(CompiledBusTargetRuntime[] targets, CompiledBusRoute route)
-        {
-            if (route.Count == 0) return;
-            ObserveReadBeginTarget(targets, route.Target0, route.Address0);
-            if (route.Count == 1) return;
-            ObserveReadBeginTarget(targets, route.Target1, route.Address1);
-            if (route.Count == 2) return;
-            var overflow = route.Overflow!;
-            for (var index = 0; index < overflow.Targets.Length; index++)
-                ObserveReadBeginTarget(targets, overflow.Targets[index], overflow.Addresses[index]);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void ObserveReadBeginTarget(
-            CompiledBusTargetRuntime[] targets,
-            int targetIndex,
-            int localAddress)
-        {
-            targets[targetIndex].Descriptor.ObserveReadBegin?.Invoke(localAddress);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AccumulateTargetSetReads(
-            CompiledTargetSet set,
+        private void AccumulateDynamicReads(
             ushort address,
             CompiledBusReadPhase phase,
             ref byte value,
             ref bool any,
             ref bool conflict)
         {
-            var route = set.ReadRoutes[address & (set.ReadRoutes.Length - 1)];
-            AccumulateRouteReads(set.Runtimes, route, phase, ref value, ref any, ref conflict);
-
-            var dynamic = set.DynamicIndices;
-            for (var index = 0; index < dynamic.Length; index++)
+            var sets = _dynamicTargetSets;
+            for (var setIndex = 0; setIndex < sets.Length; setIndex++)
             {
-                var targetIndex = dynamic[index];
-                var target = set.Runtimes[targetIndex];
-                if (target.Descriptor.Read is null || target.Descriptor.ReadPhase != phase) continue;
-                if (!_compiler.TryResolveRuntimeTarget(
-                    Master, target, set.AddressSources[targetIndex], address, readCycle: true, out var localAddress))
-                    continue;
-                AccumulateReadValue(target.Read(localAddress), ref value, ref any, ref conflict);
+                var set = sets[setIndex];
+                var dynamic = set.DynamicIndices;
+                for (var index = 0; index < dynamic.Length; index++)
+                {
+                    var targetIndex = dynamic[index];
+                    var target = set.Runtimes[targetIndex];
+                    if (target.Descriptor.Read is null || target.Descriptor.ReadPhase != phase) continue;
+                    if (!_compiler.TryResolveRuntimeTarget(
+                        Master, target, set.AddressSources[targetIndex], address, readCycle: true, out var localAddress))
+                        continue;
+                    AccumulateReadValue(target.Read(localAddress), ref value, ref any, ref conflict);
+                }
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void WriteTargetSet(
-            CompiledTargetSet set,
-            ushort address,
-            byte value,
-            CompiledBusWritePhase phase)
+        private void WriteDynamicTargets(ushort address, byte value, CompiledBusWritePhase phase)
         {
-            var route = set.WriteRoutes[address & (set.WriteRoutes.Length - 1)];
-            WriteRoute(set.Runtimes, route, value, phase);
-
-            var dynamic = set.DynamicIndices;
-            for (var index = 0; index < dynamic.Length; index++)
+            var sets = _dynamicTargetSets;
+            for (var setIndex = 0; setIndex < sets.Length; setIndex++)
             {
-                var targetIndex = dynamic[index];
-                var target = set.Runtimes[targetIndex];
-                if (target.Descriptor.Write is null || target.Descriptor.WritePhase != phase) continue;
-                if (!_compiler.TryResolveRuntimeTarget(
-                    Master, target, set.AddressSources[targetIndex], address, readCycle: false, out var localAddress))
-                    continue;
-                target.Write(localAddress, value);
+                var set = sets[setIndex];
+                var dynamic = set.DynamicIndices;
+                for (var index = 0; index < dynamic.Length; index++)
+                {
+                    var targetIndex = dynamic[index];
+                    var target = set.Runtimes[targetIndex];
+                    if (target.Descriptor.Write is null || target.Descriptor.WritePhase != phase) continue;
+                    if (!_compiler.TryResolveRuntimeTarget(
+                        Master, target, set.AddressSources[targetIndex], address, readCycle: false, out var localAddress))
+                        continue;
+                    target.Write(localAddress, value);
+                }
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void WriteRoute(
-            CompiledBusTargetRuntime[] targets,
-            CompiledBusRoute route,
-            byte value,
-            CompiledBusWritePhase phase)
+        private static void ObserveDirectReadBeginRoute(CompiledDirectRoute route)
         {
             if (route.Count == 0) return;
-            WriteTarget(targets, route.Target0, route.Address0, value, phase);
+            route.Target0!.Descriptor.ObserveReadBegin?.Invoke(route.Address0);
             if (route.Count == 1) return;
-            WriteTarget(targets, route.Target1, route.Address1, value, phase);
+            route.Target1!.Descriptor.ObserveReadBegin?.Invoke(route.Address1);
             if (route.Count == 2) return;
             var overflow = route.Overflow!;
             for (var index = 0; index < overflow.Targets.Length; index++)
-                WriteTarget(targets, overflow.Targets[index], overflow.Addresses[index], value, phase);
+                overflow.Targets[index].Descriptor.ObserveReadBegin?.Invoke(overflow.Addresses[index]);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void WriteTarget(
-            CompiledBusTargetRuntime[] targets,
-            int targetIndex,
-            int localAddress,
-            byte value,
-            CompiledBusWritePhase phase)
-        {
-            var target = targets[targetIndex];
-            if (target.Descriptor.Write is null || target.Descriptor.WritePhase != phase) return;
-            target.Write(localAddress, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void AccumulateRouteReads(
-            CompiledBusTargetRuntime[] targets,
-            CompiledBusRoute route,
-            CompiledBusReadPhase phase,
+        private static void AccumulateDirectRouteReads(
+            CompiledDirectRoute route,
             ref byte value,
             ref bool any,
             ref bool conflict)
         {
             if (route.Count == 0) return;
-            AccumulateReadTarget(targets, route.Target0, route.Address0, phase, ref value, ref any, ref conflict);
+            AccumulateReadValue(route.Target0!.Read(route.Address0), ref value, ref any, ref conflict);
             if (route.Count == 1) return;
-            AccumulateReadTarget(targets, route.Target1, route.Address1, phase, ref value, ref any, ref conflict);
+            AccumulateReadValue(route.Target1!.Read(route.Address1), ref value, ref any, ref conflict);
             if (route.Count == 2) return;
             var overflow = route.Overflow!;
             for (var index = 0; index < overflow.Targets.Length; index++)
-                AccumulateReadTarget(targets, overflow.Targets[index], overflow.Addresses[index], phase, ref value, ref any, ref conflict);
+                AccumulateReadValue(overflow.Targets[index].Read(overflow.Addresses[index]), ref value, ref any, ref conflict);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void AccumulateReadTarget(
-            CompiledBusTargetRuntime[] targets,
-            int targetIndex,
-            int localAddress,
-            CompiledBusReadPhase phase,
-            ref byte value,
-            ref bool any,
-            ref bool conflict)
+        private static void WriteDirectRoute(CompiledDirectRoute route, byte value)
         {
-            var target = targets[targetIndex];
-            if (target.Descriptor.ReadPhase != phase || target.Descriptor.Read is null) return;
-            AccumulateReadValue(target.Read(localAddress), ref value, ref any, ref conflict);
+            if (route.Count == 0) return;
+            route.Target0!.Write(route.Address0, value);
+            if (route.Count == 1) return;
+            route.Target1!.Write(route.Address1, value);
+            if (route.Count == 2) return;
+            var overflow = route.Overflow!;
+            for (var index = 0; index < overflow.Targets.Length; index++)
+                overflow.Targets[index].Write(overflow.Addresses[index], value);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1302,6 +1387,63 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             return table;
         }
     }
+
+    private readonly struct CompiledDirectRoute
+    {
+        private readonly CompiledBusTargetRuntime? _target0;
+        private readonly ushort _address0;
+        private readonly CompiledBusTargetRuntime? _target1;
+        private readonly ushort _address1;
+        private readonly CompiledDirectRouteOverflow? _overflow;
+
+        private CompiledDirectRoute(
+            int count,
+            CompiledBusTargetRuntime? target0,
+            int address0,
+            CompiledBusTargetRuntime? target1,
+            int address1,
+            CompiledDirectRouteOverflow? overflow)
+        {
+            Count = (byte)count;
+            _target0 = target0;
+            _address0 = (ushort)address0;
+            _target1 = target1;
+            _address1 = (ushort)address1;
+            _overflow = overflow;
+        }
+
+        public byte Count { get; }
+
+        public static CompiledDirectRoute Create(
+            IReadOnlyList<CompiledBusTargetRuntime> targets,
+            IReadOnlyList<int> addresses)
+        {
+            if (targets.Count != addresses.Count) throw new ArgumentException("Route target/address counts differ.");
+            return targets.Count switch
+            {
+                0 => default,
+                1 => new CompiledDirectRoute(1, targets[0], addresses[0], null, 0, null),
+                2 => new CompiledDirectRoute(2, targets[0], addresses[0], targets[1], addresses[1], null),
+                _ => new CompiledDirectRoute(
+                    targets.Count,
+                    targets[0],
+                    addresses[0],
+                    targets[1],
+                    addresses[1],
+                    new CompiledDirectRouteOverflow(targets.Skip(2).ToArray(), addresses.Skip(2).ToArray()))
+            };
+        }
+
+        public CompiledBusTargetRuntime? Target0 => _target0;
+        public int Address0 => _address0;
+        public CompiledBusTargetRuntime? Target1 => _target1;
+        public int Address1 => _address1;
+        public CompiledDirectRouteOverflow? Overflow => _overflow;
+    }
+
+    private sealed record CompiledDirectRouteOverflow(
+        CompiledBusTargetRuntime[] Targets,
+        int[] Addresses);
 
     private readonly struct CompiledBusRoute
     {

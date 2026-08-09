@@ -48,4 +48,55 @@ public sealed class VirtualHardwareNesBootHostTests
         Assert.Throws<NotSupportedException>(() => host.LoadRom(image, "mapper2.nes"));
         Assert.False(host.Machine.IsPowered);
     }
+
+    [Fact]
+    public void Boot_host_preserves_specialized_nrom_compiler_as_the_default_production_runtime()
+    {
+        var image = CreateImage(0);
+        var host = new VirtualNesBootHost();
+
+        host.LoadRom(image, "NROM Production (Japan).nes", NesRegionSelection.NtscJapan);
+
+        Assert.False(host.Machine.IsPowered);
+        Assert.True(host.Machine.Famicom.CompiledPhysicalMachineEnabled);
+        Assert.False(host.Machine.Famicom.CompiledLabMotherboardEnabled);
+    }
+
+    [Fact]
+    public void Boot_host_automatically_compiles_mmc1_before_power_is_applied()
+    {
+        var image = CreateImage(1);
+        var host = new VirtualNesBootHost();
+
+        host.LoadRom(image, "MMC1 Production (Japan).nes", NesRegionSelection.NtscJapan);
+
+        Assert.False(host.Machine.IsPowered);
+        Assert.False(host.Machine.Famicom.CompiledPhysicalMachineEnabled);
+        Assert.True(host.Machine.Famicom.CompiledLabMotherboardEnabled);
+        Assert.Equal(2, host.Machine.Famicom.CompiledLabRuntimeUnitCount);
+    }
+
+    [Fact]
+    public void Boot_host_can_explicitly_leave_mmc1_on_the_raw_physical_runtime_for_diagnostics()
+    {
+        var image = CreateImage(1);
+        var host = new VirtualNesBootHost { AutomaticCompiledExecutionEnabled = false };
+
+        host.LoadRom(image, "MMC1 Raw Diagnostic (Japan).nes", NesRegionSelection.NtscJapan);
+
+        Assert.False(host.Machine.IsPowered);
+        Assert.False(host.Machine.Famicom.CompiledPhysicalMachineEnabled);
+        Assert.False(host.Machine.Famicom.CompiledLabMotherboardEnabled);
+    }
+
+    private static VirtualHardwareNesRomImage CreateImage(int mapper)
+    {
+        var prg = new byte[32 * 1024];
+        prg[^4] = 0x00;
+        prg[^3] = 0x80;
+        return new VirtualHardwareNesRomImage(
+            VirtualHardwareNesHeaderFormat.INes, mapper, null, prg.Length, 8 * 1024,
+            false, false, VirtualHardwareNesMirroring.Horizontal,
+            VirtualHardwareNesHeaderTiming.Ntsc, prg, new byte[8 * 1024]);
+    }
 }

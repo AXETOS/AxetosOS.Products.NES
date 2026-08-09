@@ -143,6 +143,17 @@ public sealed class VirtualNesBootHost
     private readonly RicohAudioDacSample[] _audioTransfer = new RicohAudioDacSample[1024];
 
     public RegionalNesVirtualMachine Machine => _machine;
+
+    /// <summary>
+    /// Production hosts compile the assembled Famicom machine before power-on.
+    /// If a specialized compiled runtime was already selected by topology (for
+    /// example the existing NROM fused runtime), it is preserved. Otherwise the
+    /// product-agnostic whole-circuit compiler is enabled and the replaceable
+    /// cartridge remains a separate external runtime unit. Diagnostic callers
+    /// may disable this before loading a ROM to exercise the raw pin/net path.
+    /// </summary>
+    public bool AutomaticCompiledExecutionEnabled { get; set; } = true;
+
     public IVirtualNesVideoSink? VideoSink
     {
         get => _videoSink;
@@ -189,7 +200,24 @@ public sealed class VirtualNesBootHost
     {
         ResetDiagnostics();
         _machine.InsertRom(image, sourceName, regionSelection, palCicVariant);
+        PrepareAutomaticCompiledExecution();
         AttachOutputPins();
+    }
+
+    private void PrepareAutomaticCompiledExecution()
+    {
+        if (!AutomaticCompiledExecutionEnabled) return;
+        if (_machine.ActiveMotherboard != ActiveNesMotherboard.Famicom) return;
+
+        // RecompileTopology() already installs any topology-specific compiled
+        // runtime that can be proven for this assembled machine. Keep that fast
+        // path. If no such runtime exists, compile the fixed motherboard now and
+        // bind the inserted cartridge through its generic physical facets.
+        if (_machine.Famicom.CompiledPhysicalMachineEnabled
+            || _machine.Famicom.CompiledLabMotherboardEnabled)
+            return;
+
+        _machine.Famicom.SetCompiledLabMotherboardEnabled(true);
     }
 
     public void PowerAndReleaseReset(int resetMasterCycles = 32)
