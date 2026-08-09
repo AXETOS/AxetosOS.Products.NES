@@ -342,11 +342,48 @@ public sealed class VirtualHardwareRegionalNesMachineTests
         Assert.Equal((byte)0x42, compiled.Famicom.Cpu.Accumulator);
         Assert.Equal(referenceCartridge.PrgBankRegister, compiledCartridge.PrgBankRegister);
         Assert.Equal(referenceCartridge.MapperWriteCount, compiledCartridge.MapperWriteCount);
+        Assert.Equal(referenceCartridge.MapperCommitCount, compiledCartridge.MapperCommitCount);
+        Assert.Equal(referenceCartridge.MapperResetWriteCount, compiledCartridge.MapperResetWriteCount);
+        Assert.Equal(referenceCartridge.MapperWriteHash, compiledCartridge.MapperWriteHash);
         Assert.Equal(reference.Famicom.Cpu.Accumulator, compiled.Famicom.Cpu.Accumulator);
         Assert.Equal(reference.Famicom.Cpu.ProgramCounter, compiled.Famicom.Cpu.ProgramCounter);
         Assert.Equal(reference.Famicom.Cpu.CompletedInstructionCount, compiled.Famicom.Cpu.CompletedInstructionCount);
         Assert.Equal(reference.Famicom.Ppu.Scanline, compiled.Famicom.Ppu.Scanline);
         Assert.Equal(reference.Famicom.Ppu.Dot, compiled.Famicom.Ppu.Dot);
+    }
+
+
+    [Fact]
+    public void Compiled_and_physical_mmc1_ignore_second_rmw_serial_write_cycle()
+    {
+        var image = CreateMmc1RmwExecutionImage();
+        var compiled = new RegionalNesVirtualMachine();
+        var reference = new RegionalNesVirtualMachine();
+
+        compiled.SetCompiledLabExecutionEnabled(true);
+        compiled.InsertRom(image, "MMC1 RMW (Japan).nes");
+        reference.InsertRom(image, "MMC1 RMW (Japan).nes");
+        reference.Famicom.SetCompiledPhysicalMachineEnabled(false);
+
+        compiled.PowerOn();
+        reference.PowerOn();
+        compiled.ReleaseReset();
+        reference.ReleaseReset();
+
+        const int masterCycles = 6_000;
+        compiled.AdvanceMasterCycles(masterCycles);
+        reference.AdvanceMasterCycles(masterCycles);
+
+        var compiledCartridge = Assert.IsType<Mmc1Cartridge>(compiled.Slot.Cartridge);
+        var referenceCartridge = Assert.IsType<Mmc1Cartridge>(reference.Slot.Cartridge);
+        Assert.Equal((byte)0x10, compiledCartridge.SerialShiftRegister);
+        Assert.Equal((byte)0x10, referenceCartridge.SerialShiftRegister);
+        Assert.True(compiledCartridge.IgnoredConsecutiveMapperWriteCount > 0);
+        Assert.Equal(referenceCartridge.IgnoredConsecutiveMapperWriteCount, compiledCartridge.IgnoredConsecutiveMapperWriteCount);
+        Assert.Equal(referenceCartridge.MapperWriteCount, compiledCartridge.MapperWriteCount);
+        Assert.Equal(referenceCartridge.MapperWriteHash, compiledCartridge.MapperWriteHash);
+        Assert.Equal(reference.Famicom.Cpu.ProgramCounter, compiled.Famicom.Cpu.ProgramCounter);
+        Assert.Equal(reference.Famicom.Cpu.CompletedInstructionCount, compiled.Famicom.Cpu.CompletedInstructionCount);
     }
 
     [Fact]
@@ -360,6 +397,40 @@ public sealed class VirtualHardwareRegionalNesMachineTests
     }
 
 
+
+
+    private static VirtualHardwareNesRomImage CreateMmc1RmwExecutionImage()
+    {
+        var prg = new byte[4 * 16 * 1024];
+        for (var bank = 0; bank < 3; bank++)
+            Array.Fill(prg, (byte)(0x40 + bank), bank * 16 * 1024, 16 * 1024);
+
+        var fixedBank = 3 * 16 * 1024;
+        var program = new byte[]
+        {
+            0x78,                   // SEI
+            0xEE, 0x00, 0xE1,       // INC $E100 -> writes $FF then $00 on consecutive cycles
+            0x4C, 0x04, 0xC0        // JMP $C004
+        };
+        program.CopyTo(prg, fixedBank);
+        prg[fixedBank + 0x2100] = 0xFF;
+        prg[fixedBank + 0x3FFA] = 0x00; prg[fixedBank + 0x3FFB] = 0xC0;
+        prg[fixedBank + 0x3FFC] = 0x00; prg[fixedBank + 0x3FFD] = 0xC0;
+        prg[fixedBank + 0x3FFE] = 0x00; prg[fixedBank + 0x3FFF] = 0xC0;
+
+        return new VirtualHardwareNesRomImage(
+            VirtualHardwareNesHeaderFormat.INes,
+            MapperNumber: 1,
+            SubmapperNumber: null,
+            PrgRomSizeBytes: prg.Length,
+            ChrRomSizeBytes: 8 * 1024,
+            HasTrainer: false,
+            HasBatteryBackedMemory: false,
+            VirtualHardwareNesMirroring.Horizontal,
+            VirtualHardwareNesHeaderTiming.Unknown,
+            prg,
+            new byte[8 * 1024]);
+    }
 
     private static VirtualHardwareNesRomImage CreateMmc1ExecutionImage()
     {

@@ -1,0 +1,10 @@
+v2.13.3 changed-file patch contents
+Base: v2.13.2 test candidate (249/250 tests; sole failure was uncompiled synthetic test topology)
+Expected v2.13.3 suite: 250 tests
+
+AxetosOS/AxetosOS.Products.NES/Directory.Build.props
+AxetosOS/AxetosOS.Products.NES/README.md
+AxetosOS/AxetosOS.Products.NES/RELEASE_NOTES_v2.13.3.md
+AxetosOS/AxetosOS.Products.NES/PATCH_NOTES_v2.13.3.txt
+AxetosOS/AxetosOS.Products.NES/PATCH_FILE_LIST_v2.13.3.txt
+AxetosOS/AxetosOS.Products.NES/tests/AxetosOS.Products.NES.Tests/VirtualHardwareMmc1CartridgeTests.cs

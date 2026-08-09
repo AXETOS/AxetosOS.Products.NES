@@ -1,0 +1,19 @@
+v2.13.4 cartridge RAM topology and deterministic MMC1 A/B diagnostics
+
+Apply over validated v2.13.3 (250/250).
+
+Changes:
+- parse NES 2.0 PRG-RAM, PRG-NVRAM, CHR-RAM and CHR-NVRAM capacities;
+- stop assuming every MMC1 cartridge physically contains an 8 KiB PRG-RAM chip;
+- omit the $6000-$7FFF cartridge target when NES 2.0 explicitly declares no PRG RAM/NVRAM;
+- retain the legacy 8 KiB inference only for legacy/unknown cartridge descriptions;
+- expose MMC1 PRG-RAM enable as a generic component-owned dynamic target gate;
+- reject unsupported non-8-KiB MMC1 PRG-RAM topologies instead of inventing wiring;
+- add --stop-frame N for same-frame reference/compiled diagnostics;
+- add MMC1 write-stream hash, commit/reset counts, last mapper write and RAM state to final diagnostics;
+- add NES 2.0 RAM parsing and MMC1 no-RAM/RAM-enable conformance coverage.
+
+No mapper/product logic is added to the fixed motherboard compiler. Mapper construction remains ROM/cartridge-side and the compiled motherboard remains unchanged when cartridges are replaced.
+
+Expected test total: 253.
+Local dotnet test is the acceptance gate.

@@ -89,7 +89,9 @@ public sealed class CompiledBusTargetDescriptor
         IReadOnlyList<CompiledPinCondition> writeConditions,
         CompiledBusReadPhase readPhase,
         Func<int, byte>? read,
-        Action<int, byte>? write)
+        Action<int, byte>? write,
+        Action<bool>? observeBusCycle = null,
+        Func<int, bool, bool>? isSelected = null)
     {
         Component = component;
         AddressPins = addressPins;
@@ -99,6 +101,8 @@ public sealed class CompiledBusTargetDescriptor
         ReadPhase = readPhase;
         Read = read;
         Write = write;
+        ObserveBusCycle = observeBusCycle;
+        IsSelected = isSelected;
     }
 
     public VirtualHardwareComponent Component { get; }
@@ -109,6 +113,25 @@ public sealed class CompiledBusTargetDescriptor
     public CompiledBusReadPhase ReadPhase { get; }
     public Func<int, byte>? Read { get; }
     public Action<int, byte>? Write { get; }
+
+    /// <summary>
+    /// Optional package-local observation of each bus cycle on the physical bus
+    /// to which this target descriptor resolves. The compiler invokes it even
+    /// when this target is not selected for that cycle, preserving hardware that
+    /// clocks internal state from bus activity rather than from chip-select alone.
+    /// The bool is true for a write cycle and false for a read cycle.
+    /// </summary>
+    public Action<bool>? ObserveBusCycle { get; }
+
+    /// <summary>
+    /// Optional package-local dynamic select gate evaluated after physical pin
+    /// conditions and address projection have selected this target. This is for
+    /// circuitry such as a state-controlled RAM chip-enable whose state lives
+    /// inside the component rather than on another package pin. The compiler
+    /// treats such a target as dynamic and never interprets what the gate means.
+    /// The bool is true for a write cycle and false for a read cycle.
+    /// </summary>
+    public Func<int, bool, bool>? IsSelected { get; }
 }
 
 public interface ICompiledBusTargetProvider

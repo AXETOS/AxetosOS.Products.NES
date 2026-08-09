@@ -17,11 +17,14 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
 {
     private const int PrgBankSize = 16 * 1024;
     private const int ChrBankSize = 4 * 1024;
-    private const int PrgRamSize = 8 * 1024;
+    private const int StandardPrgRamWindowSize = 8 * 1024;
+    private const int LegacyChrRamSize = 8 * 1024;
+    private const ulong MapperWriteHashOffset = 14_695_981_039_346_656_037UL;
+    private const ulong MapperWriteHashPrime = 1_099_511_628_211UL;
 
     private byte[] _prg = [];
     private byte[] _chr = [];
-    private readonly byte[] _prgRam = new byte[PrgRamSize];
+    private byte[] _prgRam = [];
     private bool _chrRam;
     private byte _shiftRegister = 0x10;
     private byte _control = 0x0C;
@@ -34,6 +37,9 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     private byte _cpuSelectedData;
     private bool _ppuReadActive;
     private bool _ppuWriteActive;
+    private bool _previousCpuCycleWasWrite;
+    private bool _suppressCurrentSerialDataWrite;
+    private ulong _mapperWriteHash = MapperWriteHashOffset;
     private readonly ulong _powerInputMask;
     private readonly ulong _cpuAddressControlInputMask;
     private readonly ulong _cpuM2InputMask;
@@ -98,6 +104,9 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     public DigitalPin IrqBar { get; }
     public bool IsInserted { get; private set; }
     public bool IsChrRam => _chrRam;
+    public int PrgRamSizeBytes => _prgRam.Length;
+    public int ChrRamSizeBytes => _chrRam ? _chr.Length : 0;
+    public bool PrgRamEnabled => _prgRam.Length != 0 && (_prgBank & 0x10) == 0;
     public byte ControlRegister => _control;
     public byte ChrBank0Register => _chrBank0;
     public byte ChrBank1Register => _chrBank1;
@@ -109,6 +118,12 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     public ulong PpuReadCount { get; private set; }
     public ulong PpuWriteCount { get; private set; }
     public ulong MapperWriteCount { get; private set; }
+    public ulong MapperResetWriteCount { get; private set; }
+    public ulong MapperCommitCount { get; private set; }
+    public ulong IgnoredConsecutiveMapperWriteCount { get; private set; }
+    public ushort LastMapperWriteAddress { get; private set; }
+    public byte LastMapperWriteData { get; private set; }
+    public ulong MapperWriteHash => _mapperWriteHash;
 
     public void LoadImage(VirtualHardwareNesRomImage image)
     {
@@ -124,9 +139,31 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             throw new NotSupportedException("MMC1 four-screen cartridge boards require additional cartridge nametable RAM hardware.");
 
         _prg = image.PrgRom.ToArray();
+
+        var prgRamSize = ResolvePrgRamSize(image);
+        if (prgRamSize is not (0 or StandardPrgRamWindowSize))
+            throw new NotSupportedException(
+                $"This MMC1 cartridge declares {prgRamSize:N0} bytes of PRG RAM/NVRAM. " +
+                "The current cartridge hardware supports either no PRG RAM chip or one 8 KiB RAM chip; " +
+                "other SxROM RAM wiring will be added as distinct cartridge hardware.");
+        _prgRam = prgRamSize == 0 ? [] : new byte[StandardPrgRamWindowSize];
+
         _chrRam = image.ChrRom.Length == 0;
-        _chr = _chrRam ? new byte[8 * 1024] : image.ChrRom.ToArray();
-        Array.Clear(_prgRam);
+        if (_chrRam)
+        {
+            var chrRamSize = ResolveChrRamSize(image);
+            if (chrRamSize == 0)
+                throw new NotSupportedException(
+                    "This MMC1 cartridge has no CHR ROM and its NES 2.0 header declares no CHR RAM/NVRAM hardware.");
+            if (chrRamSize % ChrBankSize != 0)
+                throw new NotSupportedException("MMC1 CHR RAM/NVRAM must be composed of whole 4 KiB banks.");
+            _chr = new byte[chrRamSize];
+        }
+        else
+        {
+            _chr = image.ChrRom.ToArray();
+        }
+
         IsInserted = true;
         ApplyResetState();
         RefreshPpuDataWakeState();
@@ -137,9 +174,13 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         IsInserted = false;
         _prg = [];
         _chr = [];
+        _prgRam = [];
         _cpuReadAddressSelected = false;
         _ppuReadActive = false;
         _ppuWriteActive = false;
+        _previousCpuCycleWasWrite = false;
+        _suppressCurrentSerialDataWrite = false;
+        IgnoredConsecutiveMapperWriteCount = 0;
         RefreshPpuDataWakeState();
         ReleaseOutputs();
     }
@@ -157,8 +198,35 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         _cpuSelectedData = 0;
         _ppuReadActive = false;
         _ppuWriteActive = false;
+        _previousCpuCycleWasWrite = false;
+        _suppressCurrentSerialDataWrite = false;
+        MapperWriteCount = 0;
+        MapperResetWriteCount = 0;
+        MapperCommitCount = 0;
+        IgnoredConsecutiveMapperWriteCount = 0;
+        LastMapperWriteAddress = 0;
+        LastMapperWriteData = 0;
+        _mapperWriteHash = MapperWriteHashOffset;
         RefreshPpuDataWakeState();
         ReleaseOutputs();
+    }
+
+    private static int ResolvePrgRamSize(VirtualHardwareNesRomImage image)
+    {
+        if (image.PrgRamSizeBytes >= 0 || image.PrgNvRamSizeBytes >= 0)
+            return checked(Math.Max(0, image.PrgRamSizeBytes) + Math.Max(0, image.PrgNvRamSizeBytes));
+
+        // Directly constructed legacy test images predate explicit RAM metadata.
+        // Preserve the historical MMC1 8 KiB compatibility assumption only for
+        // those unknown legacy descriptions; NES 2.0 zero means physically absent.
+        return image.HasExplicitRamSizes ? 0 : StandardPrgRamWindowSize;
+    }
+
+    private static int ResolveChrRamSize(VirtualHardwareNesRomImage image)
+    {
+        if (image.ChrRamSizeBytes >= 0 || image.ChrNvRamSizeBytes >= 0)
+            return checked(Math.Max(0, image.ChrRamSizeBytes) + Math.Max(0, image.ChrNvRamSizeBytes));
+        return image.HasExplicitRamSizes ? 0 : LegacyChrRamSize;
     }
 
     private bool IsPowered() =>
@@ -220,7 +288,9 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         }
 
         var address = (ushort)rawAddress;
-        _cpuReadAddressSelected = CpuReadWrite.SampledLevel == DigitalLevel.High && address >= 0x6000;
+        var romSelected = address >= 0x8000;
+        var prgRamSelected = address is >= 0x6000 and < 0x8000 && PrgRamEnabled;
+        _cpuReadAddressSelected = CpuReadWrite.SampledLevel == DigitalLevel.High && (romSelected || prgRamSelected);
         if (!_cpuReadAddressSelected)
         {
             CpuData.Release();
@@ -236,9 +306,13 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
 
     private void CompleteCpuTransaction()
     {
+        var writeCycle = CpuReadWrite.SampledLevel == DigitalLevel.Low;
+        var suppressSerialDataWrite = writeCycle && _previousCpuCycleWasWrite;
+        _previousCpuCycleWasWrite = writeCycle;
+
         if (!CpuAddress.TrySample(out var rawAddress)) return;
         var address = (ushort)rawAddress;
-        if (CpuReadWrite.SampledLevel == DigitalLevel.High)
+        if (!writeCycle)
         {
             if (!_cpuReadAddressSelected) return;
             CpuReadCount++;
@@ -251,17 +325,22 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         var data = (byte)rawData;
         if (address < 0x8000)
         {
-            _prgRam[address & 0x1FFF] = data;
+            if (PrgRamEnabled) _prgRam[address & 0x1FFF] = data;
             return;
         }
 
-        WriteMapperRegister(address, data);
+        WriteMapperRegister(address, data, suppressSerialDataWrite);
     }
 
     private void ProcessPpuPort()
     {
         if (PpuAle.SampledLevel == DigitalLevel.High)
         {
+            // AD0-AD7 are multiplexed address/data pins. During ALE the RP2C0x
+            // owns them and presents the low PPU address byte. The cartridge
+            // must drop its CHR data drivers before sampling that address or it
+            // physically contends with the PPU and can latch its own old data.
+            PpuAddressData.Release();
             _ppuReadActive = false;
             _ppuWriteActive = false;
             if (PpuAddressData.TrySample(out var low)) _ppuLowAddressLatch = (byte)low;
@@ -373,13 +452,26 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         if (_chrRam) _chr[ChrIndex(address)] = value;
     }
 
-    private void WriteMapperRegister(ushort address, byte value)
+    private void WriteMapperRegister(ushort address, byte value, bool suppressSerialDataWrite = false)
     {
-        MapperWriteCount++;
+        RecordMapperWrite(address, value);
+
+        // MMC1's serial input ignores D0 writes on CPU write cycles that
+        // immediately follow another write cycle. This is package-internal
+        // M2/RW state and is what prevents a 6502 read-modify-write instruction
+        // from shifting twice. Bit 7 reset is asynchronous to that suppression
+        // and must always be honored, including on the second RMW write.
         if ((value & 0x80) != 0)
         {
+            MapperResetWriteCount++;
             _shiftRegister = 0x10;
             _control |= 0x0C;
+            return;
+        }
+
+        if (suppressSerialDataWrite)
+        {
+            IgnoredConsecutiveMapperWriteCount++;
             return;
         }
 
@@ -393,13 +485,36 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         else if (address <= 0xBFFF) _chrBank0 = registerValue;
         else if (address <= 0xDFFF) _chrBank1 = registerValue;
         else _prgBank = registerValue;
+        MapperCommitCount++;
         _shiftRegister = 0x10;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RecordMapperWrite(ushort address, byte value)
+    {
+        MapperWriteCount++;
+        LastMapperWriteAddress = address;
+        LastMapperWriteData = value;
+
+        // FNV-1a over the physical mapper write stream. This is diagnostic
+        // state only: it lets reference and compiled execution prove that they
+        // delivered the same address/data transaction sequence at a fixed frame.
+        _mapperWriteHash ^= (byte)address;
+        _mapperWriteHash *= MapperWriteHashPrime;
+        _mapperWriteHash ^= (byte)(address >> 8);
+        _mapperWriteHash *= MapperWriteHashPrime;
+        _mapperWriteHash ^= value;
+        _mapperWriteHash *= MapperWriteHashPrime;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal byte ReadCpuCompiled(ushort address)
     {
-        var value = address >= 0x8000 ? ReadPrg(address) : _prgRam[address & 0x1FFF];
+        var value = address >= 0x8000
+            ? ReadPrg(address)
+            : PrgRamEnabled
+                ? _prgRam[address & 0x1FFF]
+                : (byte)0;
         CpuReadCount++;
         LastCpuReadAddress = address;
         LastCpuReadData = value;
@@ -409,8 +524,21 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void WriteCpuCompiled(ushort address, byte value)
     {
-        if (address < 0x8000) _prgRam[address & 0x1FFF] = value;
-        else WriteMapperRegister(address, value);
+        if (address < 0x8000)
+        {
+            if (PrgRamEnabled) _prgRam[address & 0x1FFF] = value;
+        }
+        else
+        {
+            WriteMapperRegister(address, value, _suppressCurrentSerialDataWrite);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ObserveCompiledCpuBusCycle(bool writeCycle)
+    {
+        _suppressCurrentSerialDataWrite = writeCycle && _previousCpuCycleWasWrite;
+        _previousCpuCycleWasWrite = writeCycle;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -459,29 +587,35 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             },
             CompiledBusReadPhase.Complete,
             address => ReadCpuCompiled((ushort)address),
-            (address, value) => WriteCpuCompiled((ushort)address, value));
+            (address, value) => WriteCpuCompiled((ushort)address, value),
+            ObserveCompiledCpuBusCycle);
 
-        yield return new CompiledBusTargetDescriptor(
-            this,
-            CpuAddress.Pins,
-            CpuData.Pins,
-            new[]
-            {
-                new CompiledPinCondition(CpuReadWrite, DigitalLevel.High),
-                new CompiledPinCondition(CpuAddress.Pins[15], DigitalLevel.Low),
-                new CompiledPinCondition(CpuAddress.Pins[14], DigitalLevel.High),
-                new CompiledPinCondition(CpuAddress.Pins[13], DigitalLevel.High)
-            },
-            new[]
-            {
-                new CompiledPinCondition(CpuReadWrite, DigitalLevel.Low),
-                new CompiledPinCondition(CpuAddress.Pins[15], DigitalLevel.Low),
-                new CompiledPinCondition(CpuAddress.Pins[14], DigitalLevel.High),
-                new CompiledPinCondition(CpuAddress.Pins[13], DigitalLevel.High)
-            },
-            CompiledBusReadPhase.Complete,
-            address => ReadCpuCompiled((ushort)address),
-            (address, value) => WriteCpuCompiled((ushort)address, value));
+        if (_prgRam.Length != 0)
+        {
+            yield return new CompiledBusTargetDescriptor(
+                this,
+                CpuAddress.Pins,
+                CpuData.Pins,
+                new[]
+                {
+                    new CompiledPinCondition(CpuReadWrite, DigitalLevel.High),
+                    new CompiledPinCondition(CpuAddress.Pins[15], DigitalLevel.Low),
+                    new CompiledPinCondition(CpuAddress.Pins[14], DigitalLevel.High),
+                    new CompiledPinCondition(CpuAddress.Pins[13], DigitalLevel.High)
+                },
+                new[]
+                {
+                    new CompiledPinCondition(CpuReadWrite, DigitalLevel.Low),
+                    new CompiledPinCondition(CpuAddress.Pins[15], DigitalLevel.Low),
+                    new CompiledPinCondition(CpuAddress.Pins[14], DigitalLevel.High),
+                    new CompiledPinCondition(CpuAddress.Pins[13], DigitalLevel.High)
+                },
+                CompiledBusReadPhase.Complete,
+                address => ReadCpuCompiled((ushort)address),
+                (address, value) => WriteCpuCompiled((ushort)address, value),
+                ObserveCompiledCpuBusCycle,
+                (_, _) => PrgRamEnabled);
+        }
 
         var ppuAddressPins = new DigitalPin[PpuAddressData.Width + PpuHighAddress.Width];
         for (var bit = 0; bit < PpuAddressData.Width; bit++) ppuAddressPins[bit] = PpuAddressData.Pins[bit];

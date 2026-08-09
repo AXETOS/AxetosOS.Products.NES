@@ -1,0 +1,11 @@
+v2.13.2 MMC1 PPU bus ownership + consecutive-write conformance
+
+Apply over validated v2.13.1.
+
+Fixes the severe physical-reference corruption seen with Alien Syndrome (Japan): MMC1 now releases PPU AD0-AD7 while ALE is high, before sampling the next multiplexed low address byte. Without that release, the cartridge could continue driving the previous CHR byte against the RP2C0x address drive and latch a contended/invalid address.
+
+Also implements MMC1 consecutive CPU write-cycle suppression. D0 serial writes immediately following another CPU write cycle are ignored; bit-7 reset always remains active. Physical execution derives this from M2/RW. Compiled execution receives the same package-local behavior through a generic topology-bound bus-cycle observer, with no mapper/product knowledge added to the compiler.
+
+DesktopHost now prints MMC1 register/write diagnostics on exit.
+
+Expected test total: 250. Run dotnet test locally before accepting v2.13.2 as validated.

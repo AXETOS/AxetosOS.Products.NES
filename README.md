@@ -295,3 +295,25 @@ The architectural regression suite now proves that one compiled Famicom motherbo
 v2.13.1 keeps the v2.13.0 replaceable-cartridge architecture unchanged and fixes the physical MMC1 reference path. MMC1 CPU transactions are now latched on the cartridge package's falling `M2` edge, when the active address, R/W and data levels are still physically present. This matches the RP2A0x package model's atomic output publication: its rising `M2` transition and next-cycle bus outputs are published together, so using the rising edge inside the cartridge could observe the newly-started cycle and miss the completed write. The compiled cartridge unit and fixed motherboard compiler remain mapper/product agnostic.
 
 The boot-host unsupported-mapper regression now uses mapper 2 because mapper 1 is intentionally supported by the new MMC1 cartridge hardware.
+
+## v2.13.2 MMC1 PPU bus ownership and consecutive-write conformance
+
+v2.13.2 keeps the validated replaceable-cartridge architecture and corrects two cartridge-local MMC1 behaviors exposed by real-ROM testing. During the RP2C0x address phase, MMC1 now releases the multiplexed PPU AD0-AD7 pins when ALE rises before latching the low address byte. This prevents the previous CHR read value from electrically contending with the PPU's next address. NROM already followed this connector rule.
+
+MMC1 also models its consecutive CPU write-cycle filter. The cartridge remembers M2/RW bus-cycle history and ignores D0 serial writes that immediately follow another write cycle, while bit-7 reset remains effective. The compiled path obtains the same behavior through a generic bus-target cycle-observation facet associated by actual bus topology; the compiler contains no MMC1/mapper/product or address-map knowledge.
+
+The desktop host now prints final MMC1 control, CHR-bank and PRG-bank registers together with mapper-write, ignored-consecutive-write and PPU-read counts. Three conformance tests cover ALE bus release, the serial-write filter/reset exception and a real 6502 RMW double-write sequence across compiled and physical execution. Expected suite total: **250**.
+
+## v2.13.3 MMC1 physical-bus regression fixture hotfix
+
+v2.13.3 changes no cartridge, motherboard or compiler behavior from v2.13.2. The new standalone MMC1 PPU electrical regression now instantiates `VirtualHardwareSimulator` after wiring its synthetic laboratory board so those traces are topology-compiled before the test drives ALE/RD/AD sources. Without that normal board initialization step, `DigitalSignalSource.Set` correctly changed package drive state but the uncompiled fixture nets could not propagate, causing the test to fail before it exercised MMC1 at all. Expected suite total remains **250**.
+
+## v2.13.4 cartridge RAM topology and deterministic MMC1 A/B diagnostics
+
+v2.13.4 tightens the replaceable-cartridge hardware description after real MMC1 ROM testing. NES 2.0 cartridge images now retain their explicit volatile/nonvolatile PRG and CHR RAM capacities from header bytes 10 and 11 instead of silently falling back to a generic MMC1 RAM assumption. Legacy iNES images keep their documented compatibility inference, while directly constructed laboratory images keep the existing unknown/legacy defaults.
+
+MMC1 now constructs a CPU $6000-$7FFF RAM target only when the image describes an actual 8 KiB PRG RAM/NVRAM device (or when a legacy image requires the compatibility assumption). A cartridge with zero NES 2.0 PRG RAM therefore leaves that connector address range electrically un-driven. For cartridges that do contain the RAM device, the MMC1 PRG register's package-local RAM-enable state is exposed through a generic dynamic target-selection facet. The whole-circuit compiler treats that facet only as component-provided hardware behavior; it contains no mapper, cartridge, board, product or address-map rule. Unsupported larger SxROM RAM topologies are rejected rather than guessed.
+
+The desktop host adds `--stop-frame N` for deterministic physical-vs-compiled comparisons. Final MMC1 diagnostics now include RAM presence/enable, serial commit/reset counts, the last mapper write and an FNV-1a hash over the complete mapper-write address/data stream. Running both runtimes to the same PPU frame therefore reveals whether they received identical cartridge transactions. ROM startup diagnostics also print parsed header/submapper and PRG/CHR RAM/NVRAM capacities.
+
+Three new conformance tests cover NES 2.0 RAM-size decoding, physical absence of an MMC1 PRG-RAM target, and mapper-local dynamic RAM chip-enable behavior. Existing compiled/reference MMC1 execution tests additionally compare the mapper write-stream hash. Expected suite total: **253**.

@@ -39,7 +39,32 @@ public sealed record VirtualHardwareNesRomImage(
     VirtualHardwareNesMirroring Mirroring,
     VirtualHardwareNesHeaderTiming HeaderTiming,
     byte[] PrgRom,
-    byte[] ChrRom);
+    byte[] ChrRom)
+{
+    /// <summary>Volatile PRG RAM described by the cartridge image, in bytes.</summary>
+    public int PrgRamSizeBytes { get; init; } = -1;
+
+    /// <summary>Battery/nonvolatile PRG RAM described by the cartridge image, in bytes.</summary>
+    public int PrgNvRamSizeBytes { get; init; } = -1;
+
+    /// <summary>Volatile CHR RAM described by the cartridge image, in bytes.</summary>
+    public int ChrRamSizeBytes { get; init; } = -1;
+
+    /// <summary>Nonvolatile CHR RAM described by the cartridge image, in bytes.</summary>
+    public int ChrNvRamSizeBytes { get; init; } = -1;
+
+    /// <summary>
+    /// True when the file format explicitly describes RAM/NVRAM capacities.
+    /// NES 2.0 does; legacy iNES metadata remains compatibility-oriented.
+    /// </summary>
+    public bool HasExplicitRamSizes { get; init; }
+
+    public int TotalPrgRamSizeBytes =>
+        Math.Max(0, PrgRamSizeBytes) + Math.Max(0, PrgNvRamSizeBytes);
+
+    public int TotalChrRamSizeBytes =>
+        Math.Max(0, ChrRamSizeBytes) + Math.Max(0, ChrNvRamSizeBytes);
+}
 
 public enum NesRegionSelection
 {

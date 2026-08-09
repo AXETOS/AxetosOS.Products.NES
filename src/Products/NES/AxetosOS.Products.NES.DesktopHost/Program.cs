@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Diagnostics;
 using AxetosOS.Audio.Windows;
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
+using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 using AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
@@ -20,6 +21,7 @@ var ppuSplitTrace = false;
 var referenceRuntime = false;
 var compiledLabRuntime = false;
 var uncappedRuntime = false;
+ulong? stopFrame = null;
 for (var index = 0; index < args.Length; index++)
 {
     if (args[index].Equals("--ppu-split-trace", StringComparison.OrdinalIgnoreCase))
@@ -52,6 +54,17 @@ for (var index = 0; index < args.Length; index++)
         continue;
     }
 
+    if (args[index].Equals("--stop-frame", StringComparison.OrdinalIgnoreCase))
+    {
+        if (++index >= args.Length || !ulong.TryParse(args[index], out var parsedStopFrame) || parsedStopFrame == 0)
+        {
+            Console.Error.WriteLine("--stop-frame requires a positive PPU frame number.");
+            return 2;
+        }
+        stopFrame = parsedStopFrame;
+        continue;
+    }
+
     if (args[index].Equals("--board", StringComparison.OrdinalIgnoreCase))
     {
         if (++index >= args.Length || !TryParseBoard(args[index], out boardSelection, out palCic))
@@ -64,7 +77,7 @@ for (var index = 0; index < args.Length; index++)
 
     if (romArgument is not null)
     {
-        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--reference-runtime|--compiled-lab] [--uncapped] [--ppu-split-trace]");
+        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--reference-runtime|--compiled-lab] [--uncapped] [--stop-frame N] [--ppu-split-trace]");
         return 2;
     }
 
@@ -166,7 +179,9 @@ Console.WriteLine($"ROM:        {romPath}");
 Console.WriteLine($"Mapper:     {image.MapperNumber}");
 Console.WriteLine($"Board:      {initial.Motherboard}");
 Console.WriteLine($"PRG ROM:    {image.PrgRomSizeBytes:N0} bytes");
-Console.WriteLine($"CHR:        {(image.ChrRomSizeBytes == 0 ? "8 KiB CHR RAM" : $"{image.ChrRomSizeBytes:N0} bytes ROM")}");
+Console.WriteLine($"CHR:        {(image.ChrRomSizeBytes == 0 ? $"{image.TotalChrRamSizeBytes:N0} bytes RAM/NVRAM" : $"{image.ChrRomSizeBytes:N0} bytes ROM")}");
+Console.WriteLine($"Header:     {image.HeaderFormat}{(image.SubmapperNumber.HasValue ? $"; submapper={image.SubmapperNumber.Value}" : string.Empty)}; RAM sizes={(image.HasExplicitRamSizes ? "explicit" : "legacy/inferred")}");
+Console.WriteLine($"Cart RAM:   PRG-RAM={Math.Max(0, image.PrgRamSizeBytes):N0}; PRG-NVRAM={Math.Max(0, image.PrgNvRamSizeBytes):N0}; CHR-RAM={Math.Max(0, image.ChrRamSizeBytes):N0}; CHR-NVRAM={Math.Max(0, image.ChrNvRamSizeBytes):N0} bytes");
 var compiledFamicom = host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom
     && host.Machine.Famicom.CompiledPhysicalMachineEnabled;
 var compiledLab = host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom
@@ -196,6 +211,7 @@ Console.WriteLine(realTimePacing
     : "Timing:      uncapped host throughput");
 if (profileSimulation) Console.WriteLine("Profiler:    enabled; component/net/internal-IC timing sampled 1/256; host timing exact; results every 5 seconds");
 if (ppuSplitTrace) Console.WriteLine("PPU trace:   sprite-zero and $2002/$2005/$2006 split-screen events enabled");
+if (stopFrame.HasValue) Console.WriteLine($"Stop target: PPU frame {stopFrame.Value:N0}");
 
 const int MasterCyclesPerVideoBatch = 16_384;
 const int AudioTransferBufferSize = 4_096;
@@ -237,6 +253,7 @@ while (presenter.IsOpen)
     profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
     host.AdvanceMasterCycles(MasterCyclesPerVideoBatch);
     pacedMasterCycles += MasterCyclesPerVideoBatch;
+    var reachedStopFrame = stopFrame.HasValue && host.Snapshot().PpuFrames >= stopFrame.Value;
     if (profileSimulation)
     {
         profileSimulationTicks += Stopwatch.GetTimestamp() - profileStarted;
@@ -269,6 +286,8 @@ while (presenter.IsOpen)
         if (profileSimulation) profileAudioSamples += (ulong)drained;
     }
     if (profileSimulation) profileAudioTransferTicks += Stopwatch.GetTimestamp() - profileStarted;
+
+    if (reachedStopFrame) break;
 
     if (realTimePacing)
         PaceToMasterClock(timer, pacedMasterCycles, masterClockHz);
@@ -379,6 +398,7 @@ Console.WriteLine(
     $"current={displayedFps:F2}, min={(double.IsPositiveInfinity(minimumFps) ? 0.0 : minimumFps):F2}, " +
     $"max={maximumFps:F2}, average={finalAverageFps:F2} FPS");
 Console.WriteLine($"Boot checks: reset-vector={final.ResetVectorObserved}, opcode={final.FirstOpcodeObserved}, vblank={final.FirstVblankObserved}, nmi={final.FirstNmiObserved}");
+Console.WriteLine($"State:       PC=${final.ProgramCounter:X4}, opcode=${final.CurrentOpcode:X2}, CPU-state={final.CpuCycleState}, bus=${final.CpuBusAddress:X4}");
 var finalCpu = host.Machine.ActiveMotherboard switch
 {
     ActiveNesMotherboard.Famicom => host.Machine.Famicom.Cpu,
@@ -390,6 +410,16 @@ if (finalCpu is not null)
     Console.WriteLine(
         $"Audio core:  apu-cycles={finalCpu.ApuCpuCycleCount:N0}, dac-events={finalCpu.AudioDacOutput.DriveCount:N0}, " +
         $"dac-level={finalCpu.AudioDacLevel}");
+}
+if (host.Machine.Slot.Cartridge is Mmc1Cartridge finalMmc1)
+{
+    Console.WriteLine(
+        $"MMC1 core:   control=${finalMmc1.ControlRegister:X2}, chr0=${finalMmc1.ChrBank0Register:X2}, " +
+        $"chr1=${finalMmc1.ChrBank1Register:X2}, prg=${finalMmc1.PrgBankRegister:X2}, " +
+        $"prg-ram={finalMmc1.PrgRamSizeBytes:N0} enabled={finalMmc1.PrgRamEnabled}, " +
+        $"mapper-writes={finalMmc1.MapperWriteCount:N0}, commits={finalMmc1.MapperCommitCount:N0}, resets={finalMmc1.MapperResetWriteCount:N0}, " +
+        $"ignored-consecutive={finalMmc1.IgnoredConsecutiveMapperWriteCount:N0}, hash=${finalMmc1.MapperWriteHash:X16}, " +
+        $"last=${finalMmc1.LastMapperWriteAddress:X4}:${finalMmc1.LastMapperWriteData:X2}, ppu-reads={finalMmc1.PpuReadCount:N0}");
 }
 if (profileSimulation)
 {

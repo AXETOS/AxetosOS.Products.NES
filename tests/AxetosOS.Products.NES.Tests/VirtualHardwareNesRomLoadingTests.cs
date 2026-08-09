@@ -87,6 +87,25 @@ public sealed class VirtualHardwareNesRomLoadingTests
         Assert.Equal(0x3C, image.ChrRom[0]);
     }
 
+
+    [Fact]
+    public void Nes20_reader_decodes_explicit_cartridge_ram_and_nvram_capacities()
+    {
+        var rom = CreateRom(nes20: true, mapper: 1, prgUnits: 2, chrUnits: 1);
+        rom[10] = 0x87; // 8 KiB volatile PRG RAM + 16 KiB PRG NVRAM.
+        rom[11] = 0x07; // 8 KiB volatile CHR RAM + no CHR NVRAM.
+
+        var image = VirtualHardwareNesRomReader.Read(rom);
+
+        Assert.True(image.HasExplicitRamSizes);
+        Assert.Equal(8 * 1024, image.PrgRamSizeBytes);
+        Assert.Equal(16 * 1024, image.PrgNvRamSizeBytes);
+        Assert.Equal(8 * 1024, image.ChrRamSizeBytes);
+        Assert.Equal(0, image.ChrNvRamSizeBytes);
+        Assert.Equal(24 * 1024, image.TotalPrgRamSizeBytes);
+        Assert.Equal(8 * 1024, image.TotalChrRamSizeBytes);
+    }
+
     [Fact]
     public void Factory_constructs_mmc1_hardware_from_rom_metadata_and_attaches_it_to_selected_board()
     {

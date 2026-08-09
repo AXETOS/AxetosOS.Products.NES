@@ -65,6 +65,41 @@ public static class VirtualHardwareNesRomReader
 
         var prgSize = checked(prgUnits * 16 * 1024);
         var chrSize = checked(chrUnits * 8 * 1024);
+
+        // NES 2.0 describes the actual volatile and nonvolatile memory fitted
+        // to the cartridge in bytes 10 and 11.  A zero shift means that chip is
+        // physically absent; non-zero values encode 64 << shift bytes.  Legacy
+        // iNES has only an ambiguous 8 KiB PRG-RAM unit count and battery flag,
+        // so retain the historical compatibility assumptions there but mark
+        // them as non-explicit metadata.
+        int prgRamSize;
+        int prgNvRamSize;
+        int chrRamSize;
+        int chrNvRamSize;
+        if (isNes20)
+        {
+            prgRamSize = DecodeRamShift(header[10] & 0x0F);
+            prgNvRamSize = DecodeRamShift(header[10] >> 4);
+            chrRamSize = DecodeRamShift(header[11] & 0x0F);
+            chrNvRamSize = DecodeRamShift(header[11] >> 4);
+        }
+        else
+        {
+            var legacyPrgRamUnits = header[8] == 0 ? 1 : header[8];
+            var legacyPrgRamSize = checked(legacyPrgRamUnits * 8 * 1024);
+            if ((flags6 & 0x02) != 0)
+            {
+                prgRamSize = 0;
+                prgNvRamSize = legacyPrgRamSize;
+            }
+            else
+            {
+                prgRamSize = legacyPrgRamSize;
+                prgNvRamSize = 0;
+            }
+            chrRamSize = chrSize == 0 ? 8 * 1024 : 0;
+            chrNvRamSize = 0;
+        }
         if (prgSize == 0)
             throw new InvalidDataException("A NES cartridge must contain PRG ROM.");
 
@@ -90,7 +125,21 @@ public static class VirtualHardwareNesRomReader
             mirroring,
             ReadTiming(header, isNes20),
             prgRom,
-            chrRom);
+            chrRom)
+        {
+            PrgRamSizeBytes = prgRamSize,
+            PrgNvRamSizeBytes = prgNvRamSize,
+            ChrRamSizeBytes = chrRamSize,
+            ChrNvRamSizeBytes = chrNvRamSize,
+            HasExplicitRamSizes = isNes20
+        };
+    }
+
+    private static int DecodeRamShift(int shift)
+    {
+        if (shift == 0) return 0;
+        if ((uint)shift > 15u) throw new InvalidDataException("NES 2.0 RAM shift count is invalid.");
+        return checked(64 << shift);
     }
 
     private static VirtualHardwareNesHeaderTiming ReadTiming(ReadOnlySpan<byte> header, bool isNes20)

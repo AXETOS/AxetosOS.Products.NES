@@ -370,12 +370,27 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             var dynamicIndices = Enumerable.Range(0, dynamicTargets.Length)
                 .Where(index => dynamicTargets[index])
                 .ToArray();
+
+            // A target may contain package circuitry clocked by every cycle on
+            // this physical bus rather than only by cycles that select it. Keep
+            // one instance of each observer after topology has proven that its
+            // target data pins belong to this bus master. This remains entirely
+            // topology/facet derived and carries no board or product semantics.
+            var busCycleObservers = new List<Action<bool>>();
+            for (var targetIndex = 0; targetIndex < targetArray.Length; targetIndex++)
+            {
+                var observer = targetArray[targetIndex].Descriptor.ObserveBusCycle;
+                if (observer is null || busCycleObservers.Contains(observer)) continue;
+                busCycleObservers.Add(observer);
+            }
+
             return new CompiledTargetSet(
                 targetArray,
                 addressSources,
                 dynamicIndices,
                 readRoutes,
-                writeRoutes);
+                writeRoutes,
+                busCycleObservers.ToArray());
         }
 
         private bool CanStaticallyCompileTarget(
@@ -385,6 +400,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             int addressCount)
         {
             var descriptor = target.Descriptor;
+            if (descriptor.IsSelected is not null) return false;
             if (descriptor.Read is not null
                 && !CanStaticallyCompileCycle(master, descriptor, addressSources, addressCount, readCycle: true))
                 return false;
@@ -495,7 +511,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 if (level == DigitalLevel.High) localAddress |= 1 << bit;
                 else if (level != DigitalLevel.Low) return false;
             }
-            return true;
+
+            return descriptor.IsSelected?.Invoke(localAddress, !readCycle) ?? true;
         }
 
         private static void ValidateDataBusCoverage(
@@ -825,13 +842,15 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             int[][] addressSources,
             int[] dynamicIndices,
             CompiledBusRoute[] readRoutes,
-            CompiledBusRoute[] writeRoutes)
+            CompiledBusRoute[] writeRoutes,
+            Action<bool>[] busCycleObservers)
         {
             Runtimes = runtimes;
             AddressSources = addressSources;
             DynamicIndices = dynamicIndices;
             ReadRoutes = readRoutes;
             WriteRoutes = writeRoutes;
+            BusCycleObservers = busCycleObservers;
         }
 
         public CompiledBusTargetRuntime[] Runtimes { get; }
@@ -839,6 +858,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public int[] DynamicIndices { get; }
         public CompiledBusRoute[] ReadRoutes { get; }
         public CompiledBusRoute[] WriteRoutes { get; }
+        public Action<bool>[] BusCycleObservers { get; }
 
         public static CompiledTargetSet Empty(int addressWidth)
         {
@@ -848,7 +868,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 Array.Empty<int[]>(),
                 Array.Empty<int>(),
                 new CompiledBusRoute[count],
-                new CompiledBusRoute[count]);
+                new CompiledBusRoute[count],
+                Array.Empty<Action<bool>>());
         }
     }
 
@@ -872,6 +893,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         private readonly CompiledSerialBinding[] _serialBindings;
         private readonly Func<ulong> _clockEdgeProvider;
         private readonly CompiledSignalRouter _signalRouter;
+        private Action<bool>[] _busCycleObservers;
         private ushort _latchedAddress;
         private byte _latchedValue;
         private bool _latchedValueValid;
@@ -891,6 +913,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _serialBindings = serialBindings;
             _clockEdgeProvider = clockEdgeProvider;
             _signalRouter = signalRouter;
+            _busCycleObservers = internalTargets.BusCycleObservers;
         }
 
         public CompiledBusMasterDescriptor Master { get; }
@@ -905,15 +928,34 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             var targets = _compiler.CompileExternalTargets(Master, component);
             if (targets.Runtimes.Length == 0) return;
             _externalBindings.Add(new CompiledExternalBinding(component, targets));
+            RebuildBusCycleObservers();
         }
 
         public void UnbindExternalDevice(IVirtualHardwareComponent component)
         {
+            var removed = false;
             for (var index = _externalBindings.Count - 1; index >= 0; index--)
             {
-                if (ReferenceEquals(_externalBindings[index].Component, component))
-                    _externalBindings.RemoveAt(index);
+                if (!ReferenceEquals(_externalBindings[index].Component, component)) continue;
+                _externalBindings.RemoveAt(index);
+                removed = true;
             }
+            if (removed) RebuildBusCycleObservers();
+        }
+
+        private void RebuildBusCycleObservers()
+        {
+            var observers = new List<Action<bool>>(_internalTargets.BusCycleObservers);
+            for (var bindingIndex = 0; bindingIndex < _externalBindings.Count; bindingIndex++)
+            {
+                var external = _externalBindings[bindingIndex].Targets.BusCycleObservers;
+                for (var observerIndex = 0; observerIndex < external.Length; observerIndex++)
+                {
+                    var observer = external[observerIndex];
+                    if (!observers.Contains(observer)) observers.Add(observer);
+                }
+            }
+            _busCycleObservers = observers.ToArray();
         }
 
         public void ResetTransientState()
@@ -927,6 +969,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void BeginRead(ushort address)
         {
+            ObserveBusCycle(writeCycle: false);
             _latchedAddress = address;
             _latchedValueValid = false;
             _latchedConflict = false;
@@ -961,11 +1004,20 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(ushort address, byte value)
         {
+            ObserveBusCycle(writeCycle: true);
             _latchedValueValid = false;
             _latchedConflict = false;
             WriteTargetSet(_internalTargets, address, value);
             for (var index = 0; index < _externalBindings.Count; index++)
                 WriteTargetSet(_externalBindings[index].Targets, address, value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ObserveBusCycle(bool writeCycle)
+        {
+            var observers = _busCycleObservers;
+            for (var index = 0; index < observers.Length; index++)
+                observers[index](writeCycle);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
