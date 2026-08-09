@@ -293,8 +293,9 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
         Assert.Contains((ushort)0x0020, addresses);
         Assert.Contains((ushort)0x0028, addresses);
         Assert.True(fixture.Chip.SpriteEvaluationCount >= 64);
-        Assert.Equal(1, fixture.Chip.EvaluatedSpriteCount);
-        Assert.Equal(2UL, fixture.Chip.SpritePatternFetchCount);
+        Assert.Equal(1, fixture.Chip.PreparedSpriteCount);
+        Assert.Equal(16UL, fixture.Chip.SpritePatternFetchCount);
+        Assert.Equal(16UL, fixture.Chip.SpriteDummyNametableFetchCount);
         Assert.Equal((byte)0x15, fixture.Chip.SpritePixelIndex);
         Assert.Equal((byte)0x15, fixture.Chip.PixelPaletteIndex);
     }
@@ -317,6 +318,29 @@ public sealed class VirtualHardwareRp2C02StandaloneTests
 
         Assert.Equal(8, fixture.Chip.EvaluatedSpriteCount);
         Assert.True(fixture.Chip.SpriteOverflow);
+    }
+
+    [Fact]
+    public void Oamdata_attribute_reads_mask_unimplemented_bits_two_through_four()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(3, 0x02);
+        fixture.WriteRegister(4, 0xFF);
+        fixture.WriteRegister(3, 0x02);
+
+        Assert.Equal((byte)0xE3, fixture.ReadRegister(4));
+    }
+
+    [Fact]
+    public void Greyscale_palette_ppudata_read_masks_color_bits_before_open_bus_merge()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(1, 0x01); // greyscale
+        fixture.WriteVramAddress(0x3F04);
+        fixture.WriteRegister(7, 0x2A);
+        fixture.WriteVramAddress(0x3F04);
+
+        Assert.Equal((byte)0x20, fixture.ReadRegister(7));
     }
 
     [Fact]

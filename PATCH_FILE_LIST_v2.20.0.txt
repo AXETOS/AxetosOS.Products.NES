@@ -1,0 +1,7 @@
+Directory.Build.props
+README.md
+src/Products/NES/AxetosOS.Products.NES.DesktopHost/CartridgeVideoTraceCollector.cs
+src/Products/NES/AxetosOS.Products.NES.DesktopHost/Program.cs
+RELEASE_NOTES_v2.20.0.md
+PATCH_NOTES_v2.20.0.txt
+PATCH_FILE_LIST_v2.20.0.txt

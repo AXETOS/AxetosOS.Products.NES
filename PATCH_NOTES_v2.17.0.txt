@@ -1,0 +1,9 @@
+AxetosOS.Products.NES v2.17.0
+
+- Adds generic compiled bus write phases (Begin/Complete).
+- RP2A03 publishes the physical CPU bus completion boundary on falling M2.
+- Defers MMC1 CPU-side writes to that completion edge.
+- Corrects the one-PPU-read-early CHR1 bank transition found by Alien Syndrome A/B tracing.
+- Preserves zero board/product/mapper semantics in the whole-circuit compiler.
+- Keeps the old hand-fused NROM runtime working as a fallback.
+- Adds two regression tests; expected suite total 264.

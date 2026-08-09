@@ -20,6 +20,12 @@ public enum CompiledBusReadPhase : byte
     Complete
 }
 
+public enum CompiledBusWritePhase : byte
+{
+    Begin,
+    Complete
+}
+
 public readonly record struct CompiledPinCondition(DigitalPin Pin, DigitalLevel RequiredLevel);
 
 public interface ICompiledBusFabric
@@ -30,6 +36,7 @@ public interface ICompiledBusFabric
     void BeginRead(ushort address);
     bool CompleteRead(ushort address, out byte value);
     void Write(ushort address, byte value);
+    void CompleteCycle();
 
     byte ReadSerialInput(int channel);
     void WriteParallelOutputs(byte value);
@@ -91,7 +98,9 @@ public sealed class CompiledBusTargetDescriptor
         Func<int, byte>? read,
         Action<int, byte>? write,
         Action<bool>? observeBusCycle = null,
-        Func<int, bool, bool>? isSelected = null)
+        Func<int, bool, bool>? isSelected = null,
+        CompiledBusWritePhase writePhase = CompiledBusWritePhase.Begin,
+        Action<int>? observeReadBegin = null)
     {
         Component = component;
         AddressPins = addressPins;
@@ -103,6 +112,8 @@ public sealed class CompiledBusTargetDescriptor
         Write = write;
         ObserveBusCycle = observeBusCycle;
         IsSelected = isSelected;
+        WritePhase = writePhase;
+        ObserveReadBegin = observeReadBegin;
     }
 
     public VirtualHardwareComponent Component { get; }
@@ -113,6 +124,12 @@ public sealed class CompiledBusTargetDescriptor
     public CompiledBusReadPhase ReadPhase { get; }
     public Func<int, byte>? Read { get; }
     public Action<int, byte>? Write { get; }
+    /// <summary>
+    /// Physical phase at which the target samples a compiled write. Components
+    /// that latch from an end-of-cycle strobe can request Complete without the
+    /// compiler learning what that strobe or component means.
+    /// </summary>
+    public CompiledBusWritePhase WritePhase { get; }
 
     /// <summary>
     /// Optional package-local observation of each bus cycle on the physical bus
@@ -132,6 +149,14 @@ public sealed class CompiledBusTargetDescriptor
     /// The bool is true for a write cycle and false for a read cycle.
     /// </summary>
     public Func<int, bool, bool>? IsSelected { get; }
+
+    /// <summary>
+    /// Optional package-local observation of a selected read at the instant the
+    /// bus master asserts the read window. This can clock internal diagnostic or
+    /// edge-sensitive state without forcing the data value itself to be resolved
+    /// until a later physical read phase.
+    /// </summary>
+    public Action<int>? ObserveReadBegin { get; }
 }
 
 public interface ICompiledBusTargetProvider

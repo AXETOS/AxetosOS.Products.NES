@@ -27,10 +27,11 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         ReadZeroPageIndexed, ReadAbsoluteIndexed, ReadIndirectPointerLow, ReadIndirectPointerHigh,
         JumpIndirectLow, JumpIndirectHigh,
         ReadMemory, WriteMemory, ReadModifyWriteDummy, ReadModifyWriteFinal,
-        BranchOffset, BranchApply, BranchPageCross,
-        JsrPushHigh, JsrPushLow, RtsDummyRead, RtsPullLow, RtsPullHigh, RtsIncrement,
-        RtiDummyRead, RtiPullStatus, RtiPullLow, RtiPullHigh,
-        StackPush, StackPullDummy, StackPull,
+        BranchOffset, BranchApply, BranchPageCross, ImpliedDummyRead,
+        JsrStackDummy, JsrPushHigh, JsrPushLow, JsrReadHigh,
+        RtsDummyRead, RtsStackDummy, RtsPullLow, RtsPullHigh, RtsIncrement,
+        RtiDummyRead, RtiStackDummy, RtiPullStatus, RtiPullLow, RtiPullHigh,
+        StackPushDummy, StackPush, StackPullDummy, StackPullStackDummy, StackPull,
         BrkPaddingRead, InterruptDummyRead, InterruptPushProgramCounterHigh, InterruptPushProgramCounterLow,
         InterruptPushStatus, InterruptVectorLow, InterruptVectorHigh, Halted
     }
@@ -57,6 +58,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
     private ushort _pointerAddress;
     private byte _readModifyValue;
     private bool _nmiPending;
+    private InterruptKind _polledInterrupt;
     private ushort _busAddress;
     private byte _busWriteValue;
     private bool _busRead;
@@ -84,6 +86,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
     private bool _frameFiveStepMode;
     private bool _frameIrqInhibit;
     private bool _frameIrqPending;
+    private bool _frameIrqTransientClearPending;
     private bool _frameCounterWritePending;
     private byte _pendingFrameCounterValue;
     private int _frameCounterWriteDelay;
@@ -114,6 +117,16 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
     private bool _compiledResetAsserted;
     private byte _compiledDataBusValue;
     private bool _compiledDataBusKnown;
+    // The NMOS CPU has a retained internal data-bus value, while the external
+    // D0-D7 package bus has its own charge/history. Internal APU/controller
+    // reads can change the former without driving the latter.
+    private byte _internalDataBusLatch;
+    private byte _externalDataBusLatch;
+    // External D0-D7 is sampled at the end of the active M2-high bus window,
+    // before motherboard/cartridge selects release on M2 falling. The CPU core
+    // consumes this retained cycle result at the following internal boundary.
+    private byte _completedReadData;
+    private bool _completedReadDataValid;
 
     public Rp2A03(string componentId) : base(componentId)
     {
@@ -256,7 +269,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
     {
         ProgramCounter = 0; StackPointer = 0; Status = InterruptDisableFlag | UnusedFlag;
         Accumulator = X = Y = CurrentOpcode = 0; _lowByte = _operand = 0; _effectiveAddress = 0;
-        _activeInterrupt = InterruptKind.None; _operation = Operation.None; _addressingMode = AddressingMode.None; _nmiPending = false;
+        _activeInterrupt = InterruptKind.None; _operation = Operation.None; _addressingMode = AddressingMode.None; _nmiPending = false; _polledInterrupt = InterruptKind.None;
         RisingEdgeCount = CompletedInstructionCount = CompletedInterruptCount = ReadyStallCount = 0;
         DmaTransferCount = 0;
         MasterClock.ResetInputActivationCounter();
@@ -267,6 +280,10 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         _controllerOutputLatch = 0;
         _controllerRead1Latch = _controllerRead2Latch = 0;
         _controllerRead1Valid = _controllerRead2Valid = false;
+        _internalDataBusLatch = 0;
+        _externalDataBusLatch = 0;
+        _completedReadData = 0;
+        _completedReadDataValid = false;
         _pulse1.Reset();
         _pulse2.Reset();
         _triangle.Reset();
@@ -277,6 +294,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         _frameFiveStepMode = false;
         _frameIrqInhibit = false;
         _frameIrqPending = false;
+        _frameIrqTransientClearPending = false;
         _frameCounterWritePending = false;
         _pendingFrameCounterValue = 0;
         _frameCounterWriteDelay = 0;
@@ -340,8 +358,21 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
     {
         if (!_packagePowered) return;
 
-        _m2Level = _m2Level == DigitalLevel.High ? DigitalLevel.Low : DigitalLevel.High;
-        if (_m2Level != DigitalLevel.High) return;
+        if (_m2Level == DigitalLevel.High)
+        {
+            // Read data is physically valid through the active M2-high window.
+            // Capture it before the falling edge closes /ROMSEL/RAM/PPU selects.
+            CaptureCompletedReadData();
+            _m2Level = DigitalLevel.Low;
+
+            // The physical M2 falling edge also closes writes. Compiled targets
+            // that advertise end-of-cycle write latching observe the transaction
+            // here, before any downstream clock-domain activation on this edge.
+            _compiledBusFabric?.CompleteCycle();
+            return;
+        }
+
+        _m2Level = DigitalLevel.High;
 
         if (_compiledResetAsserted)
         {
@@ -415,9 +446,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         // The chip-owned CLK input counts every physical master-clock rising
         // edge but wakes the full package only at the internal M2 divider
         // boundary. Reaching this point is therefore one M2 half-cycle.
-        _m2Level = _m2Level == DigitalLevel.High ? DigitalLevel.Low : DigitalLevel.High;
-        M2.Drive(_m2Level);
-        if (_m2Level != DigitalLevel.High) return;
+        if (!AdvancePhysicalM2HalfCycle()) return;
 
         if (ResetBar.SampledLevel == DigitalLevel.Low)
         {
@@ -493,9 +522,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         // The chip-owned CLK input counts every physical master-clock rising
         // edge but wakes the full package only at the internal M2 divider
         // boundary. Reaching this point is therefore one M2 half-cycle.
-        _m2Level = _m2Level == DigitalLevel.High ? DigitalLevel.Low : DigitalLevel.High;
-        M2.Drive(_m2Level);
-        if (_m2Level != DigitalLevel.High) return;
+        if (!AdvancePhysicalM2HalfCycle()) return;
 
         if (ResetBar.SampledLevel == DigitalLevel.Low)
         {
@@ -606,19 +633,31 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
 
         switch (_state)
         {
-            case CycleState.ResetDummyRead1: _state = CycleState.ResetDummyRead2; BeginRead(ProgramCounter); break;
-            case CycleState.ResetDummyRead2: _state = CycleState.ResetStackRead1; BeginRead(StackAddress); break;
-            case CycleState.ResetStackRead1: StackPointer--; _state = CycleState.ResetStackRead2; BeginRead(StackAddress); break;
-            case CycleState.ResetStackRead2: StackPointer--; _state = CycleState.ResetStackRead3; BeginRead(StackAddress); break;
-            case CycleState.ResetStackRead3: StackPointer--; _state = CycleState.ResetVectorLow; BeginRead(0xFFFC); break;
+            case CycleState.ResetDummyRead1:
+                if (!TrySampleData(out _)) return;
+                _state = CycleState.ResetDummyRead2; BeginRead(ProgramCounter); break;
+            case CycleState.ResetDummyRead2:
+                if (!TrySampleData(out _)) return;
+                _state = CycleState.ResetStackRead1; BeginRead(StackAddress); break;
+            case CycleState.ResetStackRead1:
+                if (!TrySampleData(out _)) return;
+                StackPointer--; _state = CycleState.ResetStackRead2; BeginRead(StackAddress); break;
+            case CycleState.ResetStackRead2:
+                if (!TrySampleData(out _)) return;
+                StackPointer--; _state = CycleState.ResetStackRead3; BeginRead(StackAddress); break;
+            case CycleState.ResetStackRead3:
+                if (!TrySampleData(out _)) return;
+                StackPointer--; _state = CycleState.ResetVectorLow; BeginRead(0xFFFC); break;
             case CycleState.ResetVectorLow: if (!TrySampleData(out _lowByte)) return; _state = CycleState.ResetVectorHigh; BeginRead(0xFFFD); break;
             case CycleState.ResetVectorHigh:
                 if (!TrySampleData(out var resetHigh)) return;
                 ProgramCounter = (ushort)(_lowByte | resetHigh << 8); BeginOpcodeFetch(); break;
 
             case CycleState.FetchOpcode:
-                if (TryBeginPendingInterrupt()) break;
+                // The next-opcode fetch is a real external read even when an
+                // interrupt recognized at this instruction boundary discards it.
                 if (!TrySampleData(out var opcode)) return;
+                if (TryBeginPolledInterrupt()) break;
                 CurrentOpcode = opcode; ProgramCounter++; _sync = false; DecodeOpcode(opcode); break;
 
             case CycleState.ReadOperand:
@@ -641,6 +680,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
                 break;
 
             case CycleState.ReadZeroPageIndexed:
+                if (!TrySampleData(out _)) return;
                 if (_addressingMode == AddressingMode.IndexedIndirect)
                 {
                     _pointerAddress = (byte)(_operand + X);
@@ -668,7 +708,18 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
 
             case CycleState.ReadAddressLow:
                 if (!TrySampleData(out _lowByte)) return;
-                ProgramCounter++; _state = CycleState.ReadAddressHigh; BeginRead(ProgramCounter); break;
+                ProgramCounter++;
+                if (_operation == Operation.Jsr)
+                {
+                    _state = CycleState.JsrStackDummy;
+                    BeginRead(StackAddress);
+                }
+                else
+                {
+                    _state = CycleState.ReadAddressHigh;
+                    BeginRead(ProgramCounter);
+                }
+                break;
             case CycleState.ReadAddressHigh:
                 if (!TrySampleData(out var high)) return;
                 ProgramCounter++; _effectiveAddress = (ushort)(_lowByte | high << 8);
@@ -680,12 +731,6 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
                 {
                     _pointerAddress = _effectiveAddress; _state = CycleState.JumpIndirectLow; BeginRead(_pointerAddress);
                 }
-                else if (_operation == Operation.Jsr)
-                {
-                    ProgramCounter--;
-                    _state = CycleState.JsrPushHigh;
-                    BeginWrite(StackAddress, (byte)(ProgramCounter >> 8));
-                }
                 else if (_addressingMode is AddressingMode.AbsoluteX or AddressingMode.AbsoluteY)
                 {
                     BeginIndexedAddress(_addressingMode == AddressingMode.AbsoluteX ? X : Y);
@@ -694,6 +739,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
                 break;
 
             case CycleState.ReadAbsoluteIndexed:
+                if (!TrySampleData(out _)) return;
                 BeginEffectiveOperation(); break;
 
             case CycleState.JumpIndirectLow:
@@ -721,28 +767,52 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
             case CycleState.BranchOffset:
                 if (!TrySampleData(out var offset)) return;
                 ProgramCounter++; _operand = offset;
-                if (!BranchCondition(CurrentOpcode)) { CompleteInstruction(); break; }
+                if (!BranchCondition(CurrentOpcode)) { CompleteInstruction(pollInterrupts: false); break; }
                 _state = CycleState.BranchApply; BeginRead(ProgramCounter); break;
             case CycleState.BranchApply:
+                if (!TrySampleData(out _)) return;
                 var branchOrigin = ProgramCounter;
                 var branchTarget = (ushort)(ProgramCounter + (sbyte)_operand);
                 ProgramCounter = branchTarget;
                 if ((branchOrigin & 0xFF00) != (branchTarget & 0xFF00))
                 {
+                    // Page-crossing branches perform a second poll before cycle 4.
+                    // PollInterrupts is sticky, so a successful cycle-2 poll cannot
+                    // be cancelled if the source disappears before this point.
+                    PollInterrupts();
                     _state = CycleState.BranchPageCross;
                     BeginRead((ushort)((branchOrigin & 0xFF00) | (branchTarget & 0x00FF)));
                 }
-                else CompleteInstruction();
+                else CompleteInstruction(pollInterrupts: false);
                 break;
             case CycleState.BranchPageCross:
-                CompleteInstruction(); break;
+                if (!TrySampleData(out _)) return;
+                CompleteInstruction(pollInterrupts: false); break;
 
+            case CycleState.ImpliedDummyRead:
+                if (!TrySampleData(out _)) return;
+                ExecuteImpliedOpcode();
+                CompleteInstruction(pollInterrupts: false);
+                break;
+
+            case CycleState.JsrStackDummy:
+                if (!TrySampleData(out _)) return;
+                _state = CycleState.JsrPushHigh;
+                BeginWrite(StackAddress, (byte)(ProgramCounter >> 8));
+                break;
             case CycleState.JsrPushHigh:
                 StackPointer--; _state = CycleState.JsrPushLow; BeginWrite(StackAddress, (byte)ProgramCounter); break;
             case CycleState.JsrPushLow:
-                StackPointer--; ProgramCounter = _effectiveAddress; CompleteInstruction(); break;
+                StackPointer--; _state = CycleState.JsrReadHigh; BeginRead(ProgramCounter); break;
+            case CycleState.JsrReadHigh:
+                if (!TrySampleData(out var jsrHigh)) return;
+                ProgramCounter = (ushort)(_lowByte | jsrHigh << 8); CompleteInstruction(); break;
 
             case CycleState.RtsDummyRead:
+                if (!TrySampleData(out _)) return;
+                _state = CycleState.RtsStackDummy; BeginRead(StackAddress); break;
+            case CycleState.RtsStackDummy:
+                if (!TrySampleData(out _)) return;
                 StackPointer++; _state = CycleState.RtsPullLow; BeginRead(StackAddress); break;
             case CycleState.RtsPullLow:
                 if (!TrySampleData(out _lowByte)) return;
@@ -751,32 +821,46 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
                 if (!TrySampleData(out var returnHigh)) return;
                 ProgramCounter = (ushort)(_lowByte | returnHigh << 8); _state = CycleState.RtsIncrement; BeginRead(ProgramCounter); break;
             case CycleState.RtsIncrement:
+                if (!TrySampleData(out _)) return;
                 ProgramCounter++; CompleteInstruction(); break;
 
             case CycleState.RtiDummyRead:
+                if (!TrySampleData(out _)) return;
+                _state = CycleState.RtiStackDummy; BeginRead(StackAddress); break;
+            case CycleState.RtiStackDummy:
+                if (!TrySampleData(out _)) return;
                 StackPointer++; _state = CycleState.RtiPullStatus; BeginRead(StackAddress); break;
             case CycleState.RtiPullStatus:
                 if (!TrySampleData(out var interruptStatus)) return;
                 Status = (byte)((interruptStatus & ~BreakFlag) | UnusedFlag);
+                PollInterrupts();
                 StackPointer++; _state = CycleState.RtiPullLow; BeginRead(StackAddress); break;
             case CycleState.RtiPullLow:
                 if (!TrySampleData(out _lowByte)) return;
                 StackPointer++; _state = CycleState.RtiPullHigh; BeginRead(StackAddress); break;
             case CycleState.RtiPullHigh:
                 if (!TrySampleData(out var interruptHigh)) return;
-                ProgramCounter = (ushort)(_lowByte | interruptHigh << 8); CompleteInstruction(); break;
+                ProgramCounter = (ushort)(_lowByte | interruptHigh << 8); CompleteInstruction(pollInterrupts: false); break;
 
+            case CycleState.StackPushDummy:
+                if (!TrySampleData(out _)) return;
+                _state = CycleState.StackPush; BeginWrite(StackAddress, _operand); break;
             case CycleState.StackPush:
                 StackPointer--; CompleteInstruction(); break;
             case CycleState.StackPullDummy:
+                if (!TrySampleData(out _)) return;
+                _state = CycleState.StackPullStackDummy; BeginRead(StackAddress); break;
+            case CycleState.StackPullStackDummy:
+                if (!TrySampleData(out _)) return;
                 StackPointer++; _state = CycleState.StackPull; BeginRead(StackAddress); break;
             case CycleState.StackPull:
                 if (!TrySampleData(out var pulled)) return;
                 if (_operation == Operation.Pla) { Accumulator = pulled; SetZeroAndNegativeFlags(pulled); }
                 else Status = (byte)((pulled & ~BreakFlag) | UnusedFlag);
-                CompleteInstruction(); break;
+                CompleteInstruction(pollInterrupts: _operation != Operation.Plp); break;
 
             case CycleState.BrkPaddingRead:
+                if (!TrySampleData(out _)) return;
                 // BRK performs a real padding-byte read and increments PC
                 // before stacking the return address.  It then shares the
                 // IRQ vector but stacks B=1.
@@ -785,6 +869,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
                 BeginWrite(StackAddress, (byte)(ProgramCounter >> 8));
                 break;
             case CycleState.InterruptDummyRead:
+                if (!TrySampleData(out _)) return;
                 _state = CycleState.InterruptPushProgramCounterHigh; BeginWrite(StackAddress, (byte)(ProgramCounter >> 8)); break;
             case CycleState.InterruptPushProgramCounterHigh:
                 StackPointer--; _state = CycleState.InterruptPushProgramCounterLow; BeginWrite(StackAddress, (byte)ProgramCounter); break;
@@ -799,6 +884,16 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
                 // write has completed, before vector fetch begins.
                 StackPointer--;
                 SetFlag(InterruptDisableFlag, true);
+
+                // NMI has a separate edge latch and can hijack an IRQ or BRK
+                // after the stack image is already fixed but before the vector
+                // is selected. A hijacked BRK therefore still stacks B=1.
+                if (_activeInterrupt is InterruptKind.Irq or InterruptKind.Brk && _nmiPending)
+                {
+                    _nmiPending = false;
+                    _activeInterrupt = InterruptKind.Nmi;
+                }
+
                 _state = CycleState.InterruptVectorLow;
                 BeginRead(VectorAddress);
                 break;
@@ -820,7 +915,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
     {
         switch (opcode)
         {
-            case 0xEA: CompleteInstruction(); return;
+            case 0xEA: BeginImplied(); return;
             case 0x00:
                 _activeInterrupt = InterruptKind.Brk;
                 _state = CycleState.BrkPaddingRead;
@@ -884,32 +979,23 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
             case 0x2E: BeginAddressed(Operation.Rol, AddressingMode.Absolute); return; case 0x3E: BeginAddressed(Operation.Rol, AddressingMode.AbsoluteX); return;
             case 0x66: BeginAddressed(Operation.Ror, AddressingMode.ZeroPage); return; case 0x76: BeginAddressed(Operation.Ror, AddressingMode.ZeroPageX); return;
             case 0x6E: BeginAddressed(Operation.Ror, AddressingMode.Absolute); return; case 0x7E: BeginAddressed(Operation.Ror, AddressingMode.AbsoluteX); return;
-            case 0x0A: ApplyAccumulatorShift(Operation.Asl); return; case 0x4A: ApplyAccumulatorShift(Operation.Lsr); return;
-            case 0x2A: ApplyAccumulatorShift(Operation.Rol); return; case 0x6A: ApplyAccumulatorShift(Operation.Ror); return;
+            case 0x0A: case 0x4A: case 0x2A: case 0x6A: BeginImplied(); return;
 
             case 0x4C: BeginAddressed(Operation.Jmp, AddressingMode.Absolute); return;
             case 0x6C: BeginAddressed(Operation.Jmp, AddressingMode.Indirect); return;
-            case 0x20: BeginAddressed(Operation.Jsr, AddressingMode.Absolute); return;
+            case 0x20: BeginJsr(); return;
             case 0x60: _state = CycleState.RtsDummyRead; BeginRead(ProgramCounter); return;
             case 0x40: _state = CycleState.RtiDummyRead; BeginRead(ProgramCounter); return;
             case 0x48: BeginStackPush(Operation.Pha, Accumulator); return; case 0x08: BeginStackPush(Operation.Php, (byte)(Status | BreakFlag | UnusedFlag)); return;
             case 0x68: BeginStackPull(Operation.Pla); return; case 0x28: BeginStackPull(Operation.Plp); return;
             case 0x10: case 0x30: case 0x50: case 0x70: case 0x90: case 0xB0: case 0xD0: case 0xF0:
+                // Branches perform their first interrupt poll before cycle 2.
+                PollInterrupts();
                 _state = CycleState.BranchOffset; BeginRead(ProgramCounter); return;
-            case 0xAA: X = Accumulator; SetZeroAndNegativeFlags(X); CompleteInstruction(); return;
-            case 0xA8: Y = Accumulator; SetZeroAndNegativeFlags(Y); CompleteInstruction(); return;
-            case 0x8A: Accumulator = X; SetZeroAndNegativeFlags(Accumulator); CompleteInstruction(); return;
-            case 0x98: Accumulator = Y; SetZeroAndNegativeFlags(Accumulator); CompleteInstruction(); return;
-            case 0xBA: X = StackPointer; SetZeroAndNegativeFlags(X); CompleteInstruction(); return;
-            case 0x9A: StackPointer = X; CompleteInstruction(); return;
-            case 0xE8: X++; SetZeroAndNegativeFlags(X); CompleteInstruction(); return;
-            case 0xC8: Y++; SetZeroAndNegativeFlags(Y); CompleteInstruction(); return;
-            case 0xCA: X--; SetZeroAndNegativeFlags(X); CompleteInstruction(); return;
-            case 0x88: Y--; SetZeroAndNegativeFlags(Y); CompleteInstruction(); return;
-            case 0x18: SetFlag(CarryFlag, false); CompleteInstruction(); return; case 0x38: SetFlag(CarryFlag, true); CompleteInstruction(); return;
-            case 0x58: SetFlag(InterruptDisableFlag, false); CompleteInstruction(); return; case 0x78: SetFlag(InterruptDisableFlag, true); CompleteInstruction(); return;
-            case 0xD8: SetFlag(DecimalFlag, false); CompleteInstruction(); return; case 0xF8: SetFlag(DecimalFlag, true); CompleteInstruction(); return;
-            case 0xB8: SetFlag(OverflowFlag, false); CompleteInstruction(); return;
+            case 0xAA: case 0xA8: case 0x8A: case 0x98: case 0xBA: case 0x9A:
+            case 0xE8: case 0xC8: case 0xCA: case 0x88:
+            case 0x18: case 0x38: case 0x58: case 0x78: case 0xD8: case 0xF8: case 0xB8:
+                BeginImplied(); return;
 
             // Stable NMOS 6502 unofficial opcodes used by commercial software.
             case 0xEB: BeginImmediate(Operation.Sbc); return;
@@ -954,7 +1040,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
             case 0x14: case 0x34: case 0x54: case 0x74: case 0xD4: case 0xF4: BeginAddressed(Operation.Nop, AddressingMode.ZeroPageX); return;
             case 0x0C: BeginAddressed(Operation.Nop, AddressingMode.Absolute); return;
             case 0x1C: case 0x3C: case 0x5C: case 0x7C: case 0xDC: case 0xFC: BeginAddressed(Operation.Nop, AddressingMode.AbsoluteX); return;
-            case 0x1A: case 0x3A: case 0x5A: case 0x7A: case 0xDA: case 0xFA: CompleteInstruction(); return;
+            case 0x1A: case 0x3A: case 0x5A: case 0x7A: case 0xDA: case 0xFA: BeginImplied(); return;
 
             // KIL/JAM opcodes stop the CPU core until /RES is asserted.
             case 0x02: case 0x12: case 0x22: case 0x32: case 0x42: case 0x52:
@@ -1067,11 +1153,56 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         return result;
     }
 
-    private void ApplyAccumulatorShift(Operation operation)
+    private void BeginImplied()
     {
+        // CLI/SEI and all other implied operations poll before cycle 2, using
+        // the pre-instruction flag state. The dummy read then completes before
+        // the implied operation mutates registers/flags.
+        PollInterrupts();
+        _state = CycleState.ImpliedDummyRead;
+        BeginRead(ProgramCounter);
+    }
+
+    private void ExecuteImpliedOpcode()
+    {
+        switch (CurrentOpcode)
+        {
+            case 0x0A: Accumulator = ApplyAccumulatorReadModifyWrite(Operation.Asl); break;
+            case 0x4A: Accumulator = ApplyAccumulatorReadModifyWrite(Operation.Lsr); break;
+            case 0x2A: Accumulator = ApplyAccumulatorReadModifyWrite(Operation.Rol); break;
+            case 0x6A: Accumulator = ApplyAccumulatorReadModifyWrite(Operation.Ror); break;
+            case 0xAA: X = Accumulator; SetZeroAndNegativeFlags(X); break;
+            case 0xA8: Y = Accumulator; SetZeroAndNegativeFlags(Y); break;
+            case 0x8A: Accumulator = X; SetZeroAndNegativeFlags(Accumulator); break;
+            case 0x98: Accumulator = Y; SetZeroAndNegativeFlags(Accumulator); break;
+            case 0xBA: X = StackPointer; SetZeroAndNegativeFlags(X); break;
+            case 0x9A: StackPointer = X; break;
+            case 0xE8: X++; SetZeroAndNegativeFlags(X); break;
+            case 0xC8: Y++; SetZeroAndNegativeFlags(Y); break;
+            case 0xCA: X--; SetZeroAndNegativeFlags(X); break;
+            case 0x88: Y--; SetZeroAndNegativeFlags(Y); break;
+            case 0x18: SetFlag(CarryFlag, false); break;
+            case 0x38: SetFlag(CarryFlag, true); break;
+            case 0x58: SetFlag(InterruptDisableFlag, false); break;
+            case 0x78: SetFlag(InterruptDisableFlag, true); break;
+            case 0xD8: SetFlag(DecimalFlag, false); break;
+            case 0xF8: SetFlag(DecimalFlag, true); break;
+            case 0xB8: SetFlag(OverflowFlag, false); break;
+            case 0xEA:
+            case 0x1A: case 0x3A: case 0x5A: case 0x7A: case 0xDA: case 0xFA:
+                break;
+            default:
+                throw new InvalidOperationException($"Opcode 0x{CurrentOpcode:X2} is not an implied/accumulator operation.");
+        }
+    }
+
+    private byte ApplyAccumulatorReadModifyWrite(Operation operation)
+    {
+        var previousOperation = _operation;
         _operation = operation;
-        Accumulator = ApplyReadModifyWrite(Accumulator);
-        CompleteInstruction();
+        var result = ApplyReadModifyWrite(Accumulator);
+        _operation = previousOperation;
+        return result;
     }
 
     private byte ShiftLeft(byte value)
@@ -1124,9 +1255,35 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         0xD0 => !IsFlagSet(ZeroFlag), 0xF0 => IsFlagSet(ZeroFlag), _ => false
     };
 
-    private void BeginStackPush(Operation operation, byte value) { _operation = operation; _state = CycleState.StackPush; BeginWrite(StackAddress, value); }
-    private void BeginStackPull(Operation operation) { _operation = operation; _state = CycleState.StackPullDummy; BeginRead(ProgramCounter); }
-    private void CompleteInstruction() { CompletedInstructionCount++; BeginOpcodeFetch(); }
+    private void BeginJsr()
+    {
+        _operation = Operation.Jsr;
+        _addressingMode = AddressingMode.Absolute;
+        _state = CycleState.ReadAddressLow;
+        BeginRead(ProgramCounter);
+    }
+
+    private void BeginStackPush(Operation operation, byte value)
+    {
+        _operation = operation;
+        _operand = value;
+        _state = CycleState.StackPushDummy;
+        BeginRead(ProgramCounter);
+    }
+
+    private void BeginStackPull(Operation operation)
+    {
+        _operation = operation;
+        if (operation == Operation.Plp) PollInterrupts();
+        _state = CycleState.StackPullDummy;
+        BeginRead(ProgramCounter);
+    }
+    private void CompleteInstruction(bool pollInterrupts = true)
+    {
+        if (pollInterrupts) PollInterrupts();
+        CompletedInstructionCount++;
+        BeginOpcodeFetch();
+    }
 
     private void SampleNmiEdge()
     {
@@ -1142,6 +1299,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         _operation = Operation.None;
         _addressingMode = AddressingMode.None;
         _nmiPending = false;
+        _polledInterrupt = InterruptKind.None;
 
         // /RES is not a second power-on.  The NMOS CPU core performs three
         // stack-page read cycles and decrements the existing stack pointer;
@@ -1151,16 +1309,34 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         BeginRead(ProgramCounter);
     }
 
-    private bool TryBeginPendingInterrupt()
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private void PollInterrupts()
     {
-        if (_nmiPending) { _nmiPending = false; BeginInterrupt(InterruptKind.Nmi); return true; }
-        var externalIrqLow = _compiledBusFabric?.InterruptRequestLow ?? (IrqBar.SampledLevel == DigitalLevel.Low);
-        if ((externalIrqLow || _frameIrqPending || _dmc.IrqPending) && !InterruptDisable)
+        // IRQ/NMI recognition belongs to instruction-specific polling cycles,
+        // not to the following opcode fetch. Once recognized the decision is
+        // sticky until that fetch is discarded. This preserves the real CLI,
+        // SEI, PLP, RTI and branch interrupt latency.
+        if (_polledInterrupt != InterruptKind.None) return;
+
+        if (_nmiPending)
         {
-            BeginInterrupt(InterruptKind.Irq);
-            return true;
+            _nmiPending = false;
+            _polledInterrupt = InterruptKind.Nmi;
+            return;
         }
-        return false;
+
+        var externalIrqLow = _compiledBusFabric?.InterruptRequestLow ?? (IrqBar.SampledLevel == DigitalLevel.Low);
+        if ((externalIrqLow || (_frameIrqPending && !_frameIrqInhibit) || _dmc.IrqPending) && !InterruptDisable)
+            _polledInterrupt = InterruptKind.Irq;
+    }
+
+    private bool TryBeginPolledInterrupt()
+    {
+        if (_polledInterrupt == InterruptKind.None) return false;
+        var kind = _polledInterrupt;
+        _polledInterrupt = InterruptKind.None;
+        BeginInterrupt(kind);
+        return true;
     }
 
     private void BeginInterrupt(InterruptKind kind)
@@ -1176,6 +1352,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         _sync = sync;
         _busAddress = address;
         _busRead = true;
+        _completedReadDataValid = false;
         _compiledDataBusKnown = false;
 
         var compiled = _compiledBusFabric;
@@ -1209,6 +1386,9 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         _busAddress = address;
         _busWriteValue = value;
         _busRead = false;
+        _completedReadDataValid = false;
+        _internalDataBusLatch = value;
+        _externalDataBusLatch = value;
         _compiledDataBusValue = value;
         _compiledDataBusKnown = _compiledBusFabric is not null;
 
@@ -1256,69 +1436,167 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         }
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private bool AdvancePhysicalM2HalfCycle()
+    {
+        if (_m2Level == DigitalLevel.High)
+        {
+            // Sample D0-D7 while M2 is still High. The board decoder and
+            // cartridge /ROMSEL will release their outputs after M2 falls.
+            CaptureCompletedReadData();
+            _m2Level = DigitalLevel.Low;
+            M2.Drive(DigitalLevel.Low);
+            return false;
+        }
+
+        _m2Level = DigitalLevel.High;
+        M2.Drive(DigitalLevel.High);
+        return true;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private void CaptureCompletedReadData()
+    {
+        if (!_busRead || _busAddress is 0x4015 or 0x4016 or 0x4017) return;
+
+        byte value;
+        if (_compiledBusFabric is not null)
+        {
+            if (!_compiledBusFabric.CompleteRead(_busAddress, out value))
+                value = _externalDataBusLatch;
+            else
+                _externalDataBusLatch = value;
+
+            _compiledDataBusValue = value;
+            _compiledDataBusKnown = true;
+        }
+        else
+        {
+            if (Data.TrySample(out var raw))
+                _externalDataBusLatch = (byte)raw;
+            value = _externalDataBusLatch;
+        }
+
+        _internalDataBusLatch = value;
+        _completedReadData = value;
+        _completedReadDataValid = true;
+    }
+
     private bool TrySampleData(out byte value)
     {
         if (_busRead && _busAddress == 0x4015)
         {
+            // $4015 is generated inside the RP2A0x. It updates the CPU's
+            // internal DB but never drives the external D0-D7 package pins.
+            // Bit 5 has no status source and therefore retains internal open bus.
             value = (byte)((_pulse1.LengthCounter > 0 ? 0x01 : 0) |
                            (_pulse2.LengthCounter > 0 ? 0x02 : 0) |
                            (_triangle.LengthCounter > 0 ? 0x04 : 0) |
                            (_noise.LengthCounter > 0 ? 0x08 : 0) |
                            (_dmc.BytesRemaining > 0 ? 0x10 : 0) |
+                           (_internalDataBusLatch & 0x20) |
                            (_frameIrqPending ? 0x40 : 0) |
                            (_dmc.IrqPending ? 0x80 : 0));
             _frameIrqPending = false;
+            _internalDataBusLatch = value;
             return true;
         }
 
         if (_busRead && _busAddress == 0x4016)
         {
+            byte serial;
             if (_compiledBusFabric is not null)
             {
-                value = _compiledBusFabric.ReadSerialInput(0);
-                _compiledDataBusValue = value;
-                _compiledDataBusKnown = true;
-                return true;
+                serial = _compiledBusFabric.ReadSerialInput(0);
             }
-            return TrySampleControllerInput(
-                ControllerData1,
-                ref _controllerRead1Latch,
-                ref _controllerRead1Valid,
-                out value);
+            else if (!TrySampleControllerInput(
+                         ControllerData1,
+                         ref _controllerRead1Latch,
+                         ref _controllerRead1Valid,
+                         out serial))
+            {
+                serial = 0;
+            }
+
+            // Only the controller serial bit is newly generated here. D5-D7
+            // retain the CPU's internal open-bus state. D1-D4 are low on the
+            // RP2A03/RP2A07 controller readback path used by the NES boards.
+            value = (byte)((_internalDataBusLatch & 0xE0) | (serial & 0x01));
+            _internalDataBusLatch = value;
+            _compiledDataBusValue = value;
+            _compiledDataBusKnown = _compiledBusFabric is not null;
+            return true;
         }
 
         if (_busRead && _busAddress == 0x4017)
         {
+            byte serial;
             if (_compiledBusFabric is not null)
             {
-                value = _compiledBusFabric.ReadSerialInput(1);
-                _compiledDataBusValue = value;
-                _compiledDataBusKnown = true;
-                return true;
+                serial = _compiledBusFabric.ReadSerialInput(1);
             }
-            return TrySampleControllerInput(
-                ControllerData2,
-                ref _controllerRead2Latch,
-                ref _controllerRead2Valid,
-                out value);
+            else if (!TrySampleControllerInput(
+                         ControllerData2,
+                         ref _controllerRead2Latch,
+                         ref _controllerRead2Valid,
+                         out serial))
+            {
+                serial = 0;
+            }
+
+            value = (byte)((_internalDataBusLatch & 0xE0) | (serial & 0x01));
+            _internalDataBusLatch = value;
+            _compiledDataBusValue = value;
+            _compiledDataBusKnown = _compiledBusFabric is not null;
+            return true;
         }
 
+        if (_completedReadDataValid)
+        {
+            value = _completedReadData;
+            _internalDataBusLatch = value;
+            if (_compiledBusFabric is not null)
+            {
+                _compiledDataBusValue = value;
+                _compiledDataBusKnown = true;
+            }
+            return true;
+        }
+
+        // Fallback for direct chip-level harnesses that do not advance through
+        // an M2 falling edge before asking the core to consume a read. Normal
+        // motherboard execution uses the completed-read latch above.
         if (_compiledBusFabric is not null)
         {
             if (_compiledBusFabric.CompleteRead(_busAddress, out value))
             {
+                _externalDataBusLatch = value;
+                _internalDataBusLatch = value;
                 _compiledDataBusValue = value;
                 _compiledDataBusKnown = true;
                 return true;
             }
-            _compiledDataBusKnown = false;
-            value = 0;
-            return false;
+
+            // No external device drove this read. The package sees the retained
+            // external bus value rather than inventing zero or stalling the CPU.
+            value = _externalDataBusLatch;
+            _internalDataBusLatch = value;
+            _compiledDataBusValue = value;
+            _compiledDataBusKnown = true;
+            return true;
         }
 
-        if (Data.TrySample(out var raw)) { value = (byte)raw; return true; }
-        value = 0;
-        return false;
+        if (Data.TrySample(out var raw))
+        {
+            value = (byte)raw;
+            _externalDataBusLatch = value;
+            _internalDataBusLatch = value;
+            return true;
+        }
+
+        value = _externalDataBusLatch;
+        _internalDataBusLatch = value;
+        return true;
     }
 
     private static bool TrySampleControllerInput(
@@ -1437,6 +1715,16 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
     {
         _apuCpuCycles++;
 
+        // The frame sequencer's status latch and IRQ output are not the same
+        // node. At the terminal 4-step count the status bit is asserted for
+        // two CPU cycles even when IRQ generation is inhibited; suppression
+        // prevents the IRQ output and clears that transient on the next cycle.
+        if (_frameIrqTransientClearPending)
+        {
+            if (_frameIrqInhibit) _frameIrqPending = false;
+            _frameIrqTransientClearPending = false;
+        }
+
         if (_frameCounterWritePending && --_frameCounterWriteDelay == 0)
         {
             ApplyPendingFrameCounterWrite();
@@ -1481,10 +1769,17 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
                     ClockQuarterFrame();
                     ClockHalfFrame();
                     break;
+                case 29828:
+                    // The frame status latch is set on each of the two terminal
+                    // CPU cycles regardless of IRQ inhibit. Inhibit gates the
+                    // IRQ output, not these brief status-latch assertions.
+                    _frameIrqPending = true;
+                    break;
                 case 29829:
+                    _frameIrqPending = true;
                     ClockQuarterFrame();
                     ClockHalfFrame();
-                    if (!_frameIrqInhibit) _frameIrqPending = true;
+                    _frameIrqTransientClearPending = _frameIrqInhibit;
                     _frameSequenceCycle = 0;
                     break;
             }
@@ -1533,6 +1828,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         _frameFiveStepMode = (_pendingFrameCounterValue & 0x80) != 0;
         _frameIrqInhibit = (_pendingFrameCounterValue & 0x40) != 0;
         if (_frameIrqInhibit) _frameIrqPending = false;
+        _frameIrqTransientClearPending = false;
         _frameSequenceCycle = 0;
 
         // Five-step mode clocks both frame units when the delayed reload
@@ -1819,13 +2115,12 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         private bool _linearReloadFlag;
         private ushort _timerCounter;
         private byte _sequenceStep;
+        private byte _outputLevel;
 
         public ushort TimerPeriod { get; private set; }
         public byte LengthCounter { get; private set; }
         public byte LinearCounter { get; private set; }
-        public byte Output => _enabled && LengthCounter > 0 && LinearCounter > 0 && TimerPeriod > 1
-            ? Sequence[_sequenceStep]
-            : (byte)0;
+        public byte Output => _outputLevel;
 
         public void Reset()
         {
@@ -1835,6 +2130,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
             _linearReloadFlag = false;
             _timerCounter = 0;
             _sequenceStep = 0;
+            _outputLevel = 0;
             TimerPeriod = 0;
             LengthCounter = 0;
             LinearCounter = 0;
@@ -1868,7 +2164,10 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
             {
                 _timerCounter = TimerPeriod;
                 if (LengthCounter > 0 && LinearCounter > 0 && TimerPeriod > 1)
+                {
                     _sequenceStep = (byte)((_sequenceStep + 1) & 0x1F);
+                    _outputLevel = Sequence[_sequenceStep];
+                }
             }
             else _timerCounter--;
         }
@@ -1929,7 +2228,8 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
             _envelopeStart = false;
             _envelopeDivider = _envelopeDecay = 0;
             _mode = false;
-            _timerCounter = TimerPeriod = 0;
+            TimerPeriod = PeriodTable[0];
+            _timerCounter = (ushort)((TimerPeriod >> 1) - 1);
             LengthCounter = 0;
             ShiftRegister = 1;
         }
@@ -1963,7 +2263,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         {
             if (_timerCounter == 0)
             {
-                _timerCounter = TimerPeriod;
+                _timerCounter = (ushort)((TimerPeriod >> 1) - 1);
                 var tap = _mode ? 6 : 1;
                 var feedback = (ushort)((ShiftRegister & 1) ^ ((ShiftRegister >> tap) & 1));
                 ShiftRegister = (ushort)((ShiftRegister >> 1) | (feedback << 14));
@@ -2025,7 +2325,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
             _irqEnabled = false;
             _loop = false;
             _timerPeriod = PeriodTable[0];
-            _timerCounter = _timerPeriod;
+            _timerCounter = (ushort)(_timerPeriod - 1);
             _sampleAddress = 0xC000;
             _sampleLength = 1;
             CurrentAddress = _sampleAddress;
@@ -2084,7 +2384,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
                 _timerCounter--;
                 return;
             }
-            _timerCounter = _timerPeriod;
+            _timerCounter = (ushort)(_timerPeriod - 1);
             ClockOutputUnit();
         }
 

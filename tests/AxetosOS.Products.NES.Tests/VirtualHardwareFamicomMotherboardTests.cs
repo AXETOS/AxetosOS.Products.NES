@@ -30,14 +30,18 @@ public sealed class VirtualHardwareFamicomMotherboardTests
 
         Assert.Equal(16, board.CpuAddressNets.Count);
         Assert.Equal(8, board.CpuDataNets.Count);
-        Assert.Equal(8, board.PpuAddressDataNets.Count);
+        Assert.Equal(8, board.PpuDataNets.Count);
+        Assert.Equal(8, board.PpuLowAddressNets.Count);
         Assert.Equal(6, board.PpuHighAddressNets.Count);
 
         Assert.Same(board.CpuDataNets[0], board.Cpu.Data.Pins[0].Net);
         Assert.Same(board.CpuDataNets[0], board.CpuRam.Data.Pins[0].Net);
         Assert.Same(board.CpuDataNets[0], board.Ppu.CpuData.Pins[0].Net);
-        Assert.Same(board.PpuAddressDataNets[0], board.Ppu.MultiplexedAddressData.Pins[0].Net);
-        Assert.Same(board.PpuAddressDataNets[0], board.Ciram.Data.Pins[0].Net);
+        Assert.Same(board.PpuDataNets[0], board.Ppu.MultiplexedAddressData.Pins[0].Net);
+        Assert.Same(board.PpuLowAddressNets[0], board.PpuAddressLatch.Q.Pins[0].Net);
+        Assert.NotSame(board.PpuDataNets[0], board.PpuLowAddressNets[0]);
+        Assert.Same(board.PpuDataNets[0], board.Ciram.Data.Pins[0].Net);
+        Assert.Same(board.PpuLowAddressNets[0], board.Ciram.Address.Pins[0].Net);
         Assert.Same(board.CpuReadWriteNet, board.Cpu.ReadWrite.Net);
         Assert.Same(board.CpuM2Net, board.Cpu.M2.Net);
         Assert.Same(board.CartridgeIrqNet, board.Cpu.IrqBar.Net);
@@ -68,11 +72,14 @@ public sealed class VirtualHardwareFamicomMotherboardTests
     {
         var board = new FamicomMotherboard();
 
-        Assert.Same(board.CpuAddressNets[15], board.AddressDecoder.Enable1Bar.Net);
-        Assert.Same(board.CpuAddressNets[15], board.AddressDecoder.Enable2Bar.Net);
-        Assert.Same(board.CpuAddressNets[13], board.AddressDecoder.A1.Net);
-        Assert.Same(board.CpuAddressNets[14], board.AddressDecoder.B1.Net);
-        Assert.Same(board.AddressDecoder.Y10Bar.Net, board.CpuRam.ChipSelectBar.Net);
+        Assert.Same(board.Ground.Output.Net, board.AddressDecoder.Enable1Bar.Net);
+        Assert.Same(board.CpuM2Net, board.AddressDecoder.A1.Net);
+        Assert.Same(board.CpuAddressNets[15], board.AddressDecoder.B1.Net);
+        Assert.Same(board.AddressDecoder.Y11Bar.Net, board.AddressDecoder.Enable2Bar.Net);
+        Assert.Same(board.AddressDecoder.Y13Bar.Net, board.CpuRomSelectBarNet);
+        Assert.Same(board.CpuAddressNets[13], board.AddressDecoder.A2.Net);
+        Assert.Same(board.CpuAddressNets[14], board.AddressDecoder.B2.Net);
+        Assert.Same(board.AddressDecoder.Y20Bar.Net, board.CpuRam.ChipSelectBar.Net);
         Assert.Same(board.AddressDecoder.Y21Bar.Net, board.Ppu.ChipSelectBar.Net);
     }
 }

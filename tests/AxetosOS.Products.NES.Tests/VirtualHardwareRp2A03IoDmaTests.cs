@@ -33,7 +33,9 @@ public sealed class VirtualHardwareRp2A03IoDmaTests
         fixture.RunCpuCycles(50);
 
         Assert.True(fixture.Chip.IsHalted);
-        Assert.Equal((byte)1, fixture.Memory.Inspect(0x6000));
+        // The controller contributes D0; the RP2A03 internal data bus retains
+        // D5-D7 from the preceding operand-high read ($40), yielding $41 here.
+        Assert.Equal((byte)0x41, fixture.Memory.Inspect(0x6000));
         Assert.Contains(DigitalLevel.Low, fixture.Memory.Controller1EnableHistory);
         Assert.DoesNotContain(DigitalLevel.Low, fixture.Memory.Controller2EnableHistory);
     }

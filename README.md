@@ -140,9 +140,9 @@ The first compiled machine covers the benchmark-critical fixed hardware paths:
 - the one-driver `MASTER.CLK` trace is compiled directly to the RP2A03 and RP2C02 package clock pins while retaining every physical Low/High presentation and each chip pin's own divide-by-six/divide-by-four activation counter;
 - CPU A0-A15 are compiled as one 16-trace parallel route;
 - CPU D0-D7 are compiled as one eight-trace shared electrical route with the real RP2A03, PPU, work-RAM and cartridge drivers still participating in per-bit Hi-Z/strength/contention resolution;
-- PPU AD0-AD7 are compiled as one eight-trace shared electrical route across RP2C02, SN74LS373, CIRAM and the cartridge;
+- PPU AD0-AD7 are compiled as one eight-trace shared electrical route across RP2C02, the SN74LS373 D inputs, CIRAM data and the cartridge PPU-data pins;
 - PPU A8-A13 are compiled as one six-trace physical route;
-- the SN74LS373-to-CIRAM A0-A7 path is compiled as one eight-trace physical route;
+- the SN74LS373 Q0-Q7 low-address path is compiled as one eight-trace physical route to CIRAM A0-A7 and the cartridge PPU-address pins;
 - package output batching remains atomic: a chip's complete output state is established before any receiving package executes, even when one reaction changes both compiled buses and ordinary scalar control pins;
 - receiver pin levels are still stored unconditionally before chip-owned activation gates decide whether internal circuitry wakes;
 - no signal queue, scheduler, motherboard `/CS` knowledge, direct CPU-to-ROM call, skipped PPU/CPU clock, or receiver-aware transport suppression is introduced.
@@ -240,7 +240,7 @@ The motherboard compiler derives optimizations from physical chip definitions an
 - it identifies the installed RP2A03, RP2C02 and SRAM packages by physical chip type, then determines the CPU-side and PPU-side SRAM roles from their real shared data traces rather than component IDs;
 - it evaluates the connected SN74LS139A and SN74LS368A combinational circuitry for all RP2A03 address/RW source patterns and emits 65,536-entry read/write dispatch tables for the exact assembled board;
 - it derives SRAM and RP2C02 register address projections from actual package-pin connectivity;
-- it traces RP2C02 AD pins through the installed SN74LS373 into the PPU-side SRAM and compiles the resulting CIRAM address projection, while requiring the externally supplied CIRAM select/address contribution to originate at the replaceable-device boundary;
+- it traces RP2C02 AD pins through the installed SN74LS373 into the PPU-side SRAM and the replaceable cartridge low-address boundary, while requiring the externally supplied CIRAM select/address contribution to originate at the replaceable-device boundary;
 - it derives the RP2A03/RP2C02 master-clock activation periods and shared-edge ordering from their physical clock pins. When the assembled circuit proves a 6/4 repeating schedule, it emits the existing unrolled 12-master-edge execution kernel as a circuit-derived shortcut;
 - it directly fuses PPU NMI delivery only after proving that the RP2C02 and RP2A03 NMI package pins are on the same physical trace;
 - it validates direct PPU-side SRAM `/OE` and `/WE` shortcuts against the actual connected control traces before compiling them.
@@ -299,6 +299,8 @@ The boot-host unsupported-mapper regression now uses mapper 2 because mapper 1 i
 ## v2.13.2 MMC1 PPU bus ownership and consecutive-write conformance
 
 v2.13.2 keeps the validated replaceable-cartridge architecture and corrects two cartridge-local MMC1 behaviors exposed by real-ROM testing. During the RP2C0x address phase, MMC1 now releases the multiplexed PPU AD0-AD7 pins when ALE rises before latching the low address byte. This prevents the previous CHR read value from electrically contending with the PPU's next address. NROM already followed this connector rule.
+
+**Historical note (superseded by v2.23.0):** the v2.13.2 cartridge-side ALE/AD model treated the PPU package's multiplexed bus as though it appeared directly on the cartridge connector. v2.23.0 corrects that physical topology: the console motherboard's SN74LS373 owns low-address demultiplexing, and replaceable cartridges receive separate PPU A0-A13 and D0-D7 connector buses. The CPU-side consecutive-write fix described below remains valid.
 
 MMC1 also models its consecutive CPU write-cycle filter. The cartridge remembers M2/RW bus-cycle history and ignores D0 serial writes that immediately follow another write cycle, while bit-7 reset remains effective. The compiled path obtains the same behavior through a generic bus-target cycle-observation facet associated by actual bus topology; the compiler contains no MMC1/mapper/product or address-map knowledge.
 
@@ -373,3 +375,148 @@ v2.16.2 completes the v2.16.1 diagnostic-boundary migration by updating the MMC1
 
 Production RP2C02, MMC1, cartridge, motherboard, electrical and compiler behavior is unchanged from v2.16.1. The expected suite remains **262 tests**.
 
+## v2.16.3 precise MMC1 raster-correlation trace
+
+v2.16.3 tightens the diagnostic-only cartridge-video trace after the first Alien Syndrome capture exposed two important facts: MMC1 control/mirroring, CHR bank 0 and PRG bank remain stable through the affected frame window, while CHR bank 1 changes twice per frame. The original v2.16 trace could not place those commits precisely because DesktopHost normally advanced 16,384 master clocks between diagnostic drains, so buffered mapper events were stamped with a PPU raster position several scanlines after the physical commit.
+
+While `--cartridge-video-trace` capture is active, DesktopHost now advances and drains diagnostics every 12 master clocks, one CPU bus-cycle period on the Famicom clock tree. Normal execution remains on the existing 16,384-master-clock presentation batch. The smaller diagnostic cadence changes observation only; the motherboard, CPU, PPU, mapper and whole-circuit compiler execute the same physical clocks.
+
+Each `Mmc1RegisterTraceEvent` now carries the cartridge-local PPU read/write counters captured at the exact serial-register commit. `CART MMC1` records print those exact counters together with the externally observed raster and the number of PPU reads that occurred before the trace was drained. This makes the remaining raster observation error explicit instead of silently presenting a coarse drain-time timestamp as the commit time.
+
+Per-frame trace output is also held until the RP2C0x frame counter advances. This keeps the real pre-render scanline fetches in the same frame summary and removes the duplicate 137-fetch `CART FRAME` records produced after the framebuffer had completed but before the PPU entered the next frame.
+
+No MMC1, RP2C0x, motherboard, cartridge-bus or compiler execution behavior is changed. Expected suite total remains **262 tests**. Local `dotnet test` remains the acceptance gate.
+
+
+
+## v2.17.0 MMC1 end-of-cycle write timing
+
+The precise Alien Syndrome A/B capture isolated a compiled-boundary timing error rather than a mapper-register equation error. Reference and whole-circuit compiled execution commit the same MMC1 CHR1 values at the same CPU transaction sequence, but on collision frames the compiled path committed the fifth serial write one PPU fetch too early. The physical cartridge samples CPU writes on the falling M2 edge; the compiled bus previously invoked every target write immediately when the RP2A03 began the write cycle on rising M2.
+
+v2.17.0 extends the product-agnostic compiler contract with a generic write phase (`Begin` or `Complete`). The compiled bus retains the address/data of a write cycle and can present completion-phase targets when the bus master announces the physical cycle-completion edge. RP2A03 now announces completion on its chip-local falling M2 half-cycle. MMC1 CPU-side targets request `Complete`, matching the package model's existing falling-M2 latch. No mapper number, cartridge role, Famicom identity or address-map semantics are added to the compiler. Other targets retain the existing begin-phase behavior unless their own hardware facets request otherwise.
+
+This specifically addresses the captured frames where reference performed one final PPU CHR read from the old bank before the MMC1 commit while compiled execution switched the bank before that same read. Two regressions cover the MMC1 target's completion-phase contract and repeated rendering-time CHR1 commits landing on the same cartridge PPU-read boundary in physical and compiled execution.
+
+Expected test total: **264**. Local `dotnet test` remains the acceptance gate.
+
+## v2.18.0 live MMC1 CHR output and end-of-read sampling
+
+v2.18.0 moves the Alien Syndrome investigation from compiled-vs-reference parity to the shared physical cartridge behavior. v2.17.0 made MMC1 CPU writes land on the same falling-M2 boundary in both paths, but the visible artifacts remained because both paths still effectively retained the CHR byte selected when the PPU read window began.
+
+MMC1 CHR bank outputs are mapper-controlled address lines feeding the cartridge character ROM. When a serial-register commit changes CHR0/CHR1 while a PPU `/RD` window is already active, the selected ROM address therefore changes without requiring another PPU ALE or `/RD` edge. The physical MMC1 package now re-drives an already-active CHR read immediately from the newly selected bank while preserving the same transaction/read count. Control-register changes likewise refresh the mapper-controlled CIRAM outputs from the currently presented PPU address.
+
+The compiled RP2C02 path now keeps each external VRAM read open across the same two-dot package transaction used by the physical PPU: `BeginRead` occurs when the data phase is asserted and `CompleteRead` resolves the byte only at the PPU sample phase. This allows replaceable hardware state to change during the read window instead of freezing the memory byte at read assertion. CPU-side PPUDATA reads use the same split begin/sample behavior.
+
+To preserve package-local edge accounting independently from late data resolution, `CompiledBusTargetDescriptor` gains an optional generic selected-read-begin observer. MMC1 uses it only to retain its physical PPU-read counter semantics; the compiler assigns no mapper, cartridge, product or address-map meaning to the callback.
+
+Two new regressions cover an active physical MMC1 CHR read changing immediately when CHR1 commits without another PPU edge, and the compiled PPU target observing read assertion separately from final data resolution. The rendering-time MMC1 A/B test additionally requires full RP2C02 diagnostic and CIRAM-state equality.
+
+Expected test total: **266**. Local `dotnet test` remains the acceptance gate.
+
+
+## v2.19.0 MMC1 raster-split CPU provenance trace
+
+The full Alien Syndrome frame 1-1850 capture shows that the game uses MMC1 CHR bank 1 as an active raster resource rather than changing it only during blanking. Early gameplay already switches CHR1 during the visible picture and restores it near the end of the frame; after the title-sequence transition the game performs two visible CHR1 changes per frame while control/mirroring and the other mapper-visible banks remain stable. The recurring visual corruption therefore tracks a real cartridge raster-bank-switch workload that Mapper 0 cartridges cannot exercise.
+
+v2.19.0 deliberately makes no further CPU, PPU, MMC1 or compiler execution change. Instead, `--cartridge-video-trace` now correlates each PPU-visible MMC1 commit with host-observed RP2A03 timing state: CPU cycle, cycles since the most recent PPU NMI falling edge, program counter/opcode/microcycle, current physical CPU bus address/direction, completed instructions/interrupts, sprite-zero timing, and DMC/OAM-DMA activity since NMI. The host samples only existing public chip diagnostics at the already-enabled 12-master-clock precision cadence. No chip gains a peer, board, simulator or callback reference, and none of the new data feeds execution.
+
+This provenance trace is intended to distinguish the remaining shared-model possibilities without another speculative hardware patch: an NMI/service-latency error, a sprite-zero synchronization error, DMC/OAM-DMA CPU stalls, or ordinary RP2A03 instruction-cycle timing. Once the same raster split is tied to its actual CPU-side trigger, the next correction can be made in the physical circuit that causes the phase error instead of moving mapper/PPU behavior by guesswork.
+
+Expected test total remains **266**. Local `dotnet test` remains the acceptance gate.
+
+
+## v2.20.0 MMC1 raster-trigger provenance trace
+
+The v2.19.0 full Alien Syndrome trace narrows the title corruption substantially without changing hardware behavior. Every title-phase CHR1 commit is observed at the same RP2A03 execution site (`$F895`, opcode `$8D`), DMC contributes no reads or stalls in the captured interval, and the one OAM DMA after NMI contributes the same 256 transferred bytes on the recurring split families. Most importantly, the second CHR1 commit follows the first by exactly 8,692 CPU cycles / 4,380 completed instructions throughout the captured title phase. The moving raster position is therefore selected before the common MMC1 writer rather than being introduced by the second serial write or by mapper timing drift.
+
+v2.20.0 remains diagnostic-only and moves provenance one level earlier. While the existing cartridge-video trace is active, `DesktopHost` now observes the physical CPU bus at the same one-CPU-cycle cadence and records mirrored PPUSTATUS (`$2002`) reads. For each MMC1 mapping commit the trace reports:
+
+- PPUSTATUS reads since the most recent NMI as `total/sprite-zero-clear/sprite-zero-set`;
+- the most recent PPUSTATUS read, including returned physical bus byte, raster, PC/opcode and age at commit;
+- the last status read that observed sprite-zero clear and the first that observed sprite-zero set;
+- a rolling tail of the sixteen most recent physical opcode-fetch addresses and sampled opcode bytes;
+- OAM DMA explicitly labelled as transferred bytes rather than ambiguous "DMA" units.
+
+This is sufficient to tell whether the 20/24/30-scanline first-commit families are selected by a `$2002` sprite-zero polling loop, by a different caller/branch into the common `$F895` MMC1 writer, or by CPU work that occurs after status synchronization. All correlation state remains in `DesktopHost`; no RP2A03, RP2C02, cartridge, motherboard or compiler component gains peer knowledge, callbacks or execution feedback.
+
+No CPU, PPU, MMC1, motherboard or compiler execution behavior changes. Expected test total remains **266**. Local `dotnet test` remains the acceptance gate.
+
+
+## v2.20.1 exact PPUSTATUS provenance hotfix
+
+The v2.20.0 Alien Syndrome title-window trace identifies a discrete PPUSTATUS polling dependency rather than mapper drift. Frames whose previous visible frame produced a sprite-zero hit perform roughly 131-132 `$2002` reads and do not leave the polling path until pre-render scanline 261; the following MMC1 CHR1 commits then land around scanlines 30/107. Frames with no previous-frame sprite-zero hit perform only two reads and begin the same invariant mapper sequence around scanlines 20/96 (or the intermediate 24/100 family). The second CHR1 commit remains exactly 8,692 CPU cycles after the first.
+
+v2.20.0 correctly found the CPU-side `$2002` read addresses and caller (`$81C1`), but its host-side data-bus snapshot occurred between compiled read phases, so returned bytes appeared as `v=??`. v2.20.1 fixes only that diagnostic blind spot. `DesktopHost` now enables and consumes the RP2C02 package's already-existing external `SplitTraceOutput`, whose `PPUSTATUS read` event carries the exact status byte produced by the PPU before read side effects clear vblank.
+
+Each visible MMC1 commit now reports both the CPU-side bus provenance and the exact PPU-produced status provenance:
+
+- `ppustatus-bus-from-nmi=...` retains the CPU address/PC-side polling count;
+- `ppustatus-exact-from-nmi=total/sprite-zero-clear/sprite-zero-set`;
+- `ppustatus-vblank-exact=clear/set`;
+- `s0-at-nmi=True/False`;
+- `last-ppustatus=$xx@frame:scanline:dot:s0=n:vb=n`;
+- exact last sprite-zero-clear and first sprite-zero-set status events;
+- `last-ppustatus-cpu=...` retains the `$81C1` CPU provenance even when the physical data bus is between readable phases.
+
+The PPU, CPU, MMC1, motherboard and compiler execution paths are unchanged. No chip gains a reference to another chip, board, simulator or callback; the host only drains an existing package-owned diagnostic output. Expected test total remains **266**.
+
+
+## v2.21.0 sprite-zero pixel provenance trace
+
+The v2.20.1 Alien Syndrome capture proves the title-phase CHR1 raster family is selected by the retained RP2C02 sprite-zero latch. Frames entering NMI with sprite zero set perform about 131-132 `$2002` reads and leave the polling loop only when the PPU clears sprite zero during pre-render; frames entering NMI with sprite zero clear perform only two reads and begin the otherwise-identical MMC1 sequence roughly 1,165 CPU cycles earlier.
+
+v2.21.0 changes no emulation behavior. During explicit cartridge-video capture it records sprite-zero activation, pattern fetches, transparent-background encounters, opaque overlaps, masking/X=255 rejection, sprite selection and the authoritative hit transition. `CART FRAME` also reports PPUCTRL/PPUMASK and OAM0 Y/tile/attributes/X so hit and miss frames can be compared without changing execution.
+
+Expected test total remains **266**. Local `dotnet test` remains the acceptance gate.
+
+
+## v2.22.0 exact MMC1 CHR-read provenance
+
+The v2.21.0 title-window trace places the remaining fault on the background/CHR1 path rather than on sprite-zero evaluation. OAM0 keeps Y=$10, tile=$D0 and attributes=$20, its fetched sprite pattern hash remains identical, and missed hits are exclusively opaque sprite-zero pixels over transparent background. Because PPUCTRL=$90 selects the `$1000` background pattern table while 8x8 sprites use `$0000`, MMC1 control=$1E routes the stable sprite through CHR0=$18 but routes the background beneath it through the actively switched CHR1 `$18/$19` bank.
+
+v2.22.0 remains diagnostic-only. MMC1 now exposes a captured CHR-read provenance event from the exact compiled PPU read-completion callback, containing logical PPU address, physical CHR ROM address, selected 4 KiB bank, returned byte and retained mapper registers. DesktopHost correlates those package-owned events with RP2C02 rendering fetches and adds a compact `s0-bg-chr` summary for scanlines 17-24: exact-read coverage, physical bank mask, CHR1 switch raster, per-bank read/hash information and an exact logical/physical/data hash.
+
+This directly tests whether Alien Syndrome's sprite-zero background pixels are being sourced from the intended MMC1 physical CHR bank at the instant of each visible CHR1 commit. No CPU, PPU, MMC1 mapping equation, motherboard, cartridge execution or compiler behavior changes.
+
+Expected test total remains **266**. Local `dotnet test` remains the acceptance gate.
+
+## v2.23.0 physical cartridge PPU-bus topology correction
+
+The v2.22.0 Alien Syndrome capture clears the simple MMC1 CHR-bank decoder of random read corruption: every RP2C02 background-pattern fetch in the sprite-zero window paired with an exact cartridge CHR-read provenance event, with `fetch=544/exact=544/miss=0`. Frames that remain on CHR1=$19 read bank 25 for the complete window, while frames whose visible raster commit changes CHR1 from $19 to $18 split deterministically between physical banks 25 and 24 at the recorded commit raster.
+
+Source inspection exposed a lower-level hardware-model error at the replaceable cartridge connector. The RP2C0x package multiplexes low PPU address and data on AD0-AD7, but the console motherboard already contains the SN74LS373 that captures the low address during ALE. The cartridge connector must therefore receive two separate electrical groups: PPU A0-A13 (A0-A7 from SN74LS373 Q and A8-A13 directly from RP2C0x) and PPU D0-D7 (the RP2C0x AD0-AD7 data-phase nets). The previous model incorrectly connected cartridge `PPU.AD0-AD7` directly to the multiplexed PPU package nets and made every NROM/MMC1 cartridge own a second private ALE low-address latch.
+
+v2.23.0 corrects that topology across Famicom, NTSC NES and PAL NES assemblies and the shared replaceable-cartridge slot. `IReplaceableCartridgeHardware` now exposes a 14-bit `PpuAddress` bus and an independent 8-bit bidirectional `PpuData` bus; ALE remains entirely motherboard-local between RP2C0x and SN74LS373. NROM and MMC1 sample the already-demultiplexed package address directly, their physical and compiled PPU bus targets use the same connector pins, and MMC1's existing live CHR-bank re-drive remains cartridge-local. No motherboard mapper semantics or cross-chip references are introduced.
+
+Regression coverage now proves that PPU data and latched low-address nets are physically distinct, that the cartridge A0 pin is attached to SN74LS373 Q rather than the raw AD net, that cartridge D0 remains on the raw RP2C0x/CIRAM data trace, and that the cartridge has no attachment to motherboard ALE. The MMC1 standalone connector regression likewise exercises independent A0-A13 and D0-D7 buses and preserves active-/RD bank-remap behavior without a synthetic cartridge-local ALE latch.
+
+Expected test total remains **266**. Local `dotnet test` remains the acceptance gate.
+
+
+## v2.24.1 compile hotfix
+
+v2.24.1 fixes the Famicom decoder regression test added by v2.24.0 to reference the existing `DigitalPowerRail.Output` pin instead of the nonexistent `DigitalPowerRail.Rail` member. No CPU, PPU, APU, motherboard, cartridge, mapper, compiler, or runtime behavior changes from v2.24.0. Expected discovered test total remains 276.
+
+## v2.24.0 hardware conformance sweep
+
+v2.24.0 audits the NES hardware model by physical-device behavior rather than by individual game symptoms. Compact implementations are retained where they are pin-equivalent; shortcuts that removed observable CPU cycles, PPU OAM/fetch phases, APU state, motherboard decode or cartridge connector signals are corrected. The cartridge CPU side now exposes A0-A14 plus M2/RW `/ROMSEL` instead of an impossible A15 pin, and both NROM/MMC1 use the motherboard's M2-qualified LS139 decode.
+
+The release also records unresolved hardware honestly: the current CIC lock model is synthetic and lacks a cartridge key-CIC counterpart, and silicon-unstable unofficial NMOS opcodes are not assigned guessed deterministic results. See `HARDWARE_CONFORMANCE_AUDIT_v2.24.0.md` and `RELEASE_NOTES_v2.24.0.md`.
+
+Expected local test total: **276**. Local `dotnet test` remains the acceptance gate.
+
+
+## v2.24.2 M2 read-phase integration hotfix
+
+v2.24.2 addresses the integration regressions exposed by the first complete v2.24.1 test run. The v2.24.0 motherboard decoder correctly made RAM/PPU/cartridge selection M2-qualified, but RP2A03/RP2A07 still consumed external D0-D7 at the following M2-high CPU boundary. By that point the newly-correct board decode had already released the selected device at M2 falling, so the physical runtime could consume retained/open-bus data while compiled execution resolved the intended byte directly.
+
+Both regional CPU packages now capture external read data at the end of the active M2-high window, before driving M2 Low, and consume that retained cycle result on the following internal CPU boundary. Compiled execution resolves the same read at its M2-falling completion point, eliminating duplicate complete-phase reads and aligning physical/compiled bus-cycle semantics. Internal `$4015/$4016/$4017` reads remain chip-local.
+
+Two stale conformance assertions are also corrected: the MMC1 connector test now accepts component-qualified physical pin names, and the controller-read test expects the RP2A03 internal open-bus upper bits retained from the preceding `$40` operand-high cycle. The sprite-pipeline tests now distinguish the in-progress secondary-OAM count from the prepared sprite count retained after dot 257.
+
+Expected local test total remains **276**. Local `dotnet test` is the acceptance gate; do not Git-push this release until the suite passes.
+
+
+## v2.24.3 xUnit analyzer hotfix
+
+v2.24.3 changes no hardware behavior. It replaces the three MMC1 cartridge connector assertions that used `Assert.True(...EndsWith(...))` with xUnit's dedicated `Assert.EndsWith(...)` assertion so the repository's analyzer-as-error policy can compile the v2.24.2 test suite. Expected discovered test total remains **276**.

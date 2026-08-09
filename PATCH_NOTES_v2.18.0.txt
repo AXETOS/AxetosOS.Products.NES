@@ -1,0 +1,8 @@
+AxetosOS.Products.NES v2.18.0
+
+- Keeps RP2C02 external VRAM reads open until the real PPU sample phase.
+- Re-drives an active physical MMC1 CHR read when mapper bank outputs change.
+- Refreshes mapper-controlled CIRAM outputs when the MMC1 control register changes.
+- Adds a generic compiled selected-read-begin hardware facet; no mapper/product semantics.
+- Preserves cartridge PPU-read accounting while resolving CHR data at read completion.
+- Adds two regressions; expected suite total 266.

@@ -34,12 +34,14 @@ internal static class PpuDotDecoder
     internal const uint SpriteEvaluationReset = 1u << 8;
     internal const uint SpriteEvaluate = 1u << 9;
     internal const uint SpriteLoad = 1u << 10;
+    internal const uint SpriteSecondaryOamClear = 1u << 16;
 
     internal const int SpriteFetchShift = 11;
     internal const uint SpriteFetchMask = 0x03u << SpriteFetchShift;
     internal const uint SpriteFetchNone = 0u << SpriteFetchShift;
-    internal const uint SpriteFetchPatternLow = 1u << SpriteFetchShift;
-    internal const uint SpriteFetchPatternHigh = 2u << SpriteFetchShift;
+    internal const uint SpriteFetchDummyNametable = 1u << SpriteFetchShift;
+    internal const uint SpriteFetchPatternLow = 2u << SpriteFetchShift;
+    internal const uint SpriteFetchPatternHigh = 3u << SpriteFetchShift;
 
     internal const int SpriteSlotShift = 13;
     internal const uint SpriteSlotMask = 0x07u << SpriteSlotShift;
@@ -77,10 +79,9 @@ internal static class PpuDotDecoder
                 word |= BackgroundDummyNametable;
             }
 
-            if (dot == 1) word |= SpriteActivate;
-            if (dot == 65) word |= SpriteEvaluationReset;
-            if (dot is >= 65 and <= 256 && ((dot - 65) % 3) == 0)
-                word |= SpriteEvaluate;
+            if (dot == 1) word |= SpriteActivate | SpriteEvaluationReset;
+            if (dot is >= 1 and <= 64) word |= SpriteSecondaryOamClear;
+            if (dot is >= 65 and <= 256) word |= SpriteEvaluate;
             if (dot == 256) word |= IncrementY;
             if (dot == 257) word |= CopyHorizontal | SpriteLoad;
             if (dot is >= 280 and <= 304) word |= CopyVertical;
@@ -88,12 +89,14 @@ internal static class PpuDotDecoder
             if (dot is >= 257 and <= 320)
             {
                 var fetchPhase = (dot - 257) & 7;
-                if (fetchPhase == 4)
+                if (fetchPhase is 0 or 2)
+                    word |= SpriteFetchDummyNametable;
+                else if (fetchPhase == 4)
                     word |= SpriteFetchPatternLow;
                 else if (fetchPhase == 6)
                     word |= SpriteFetchPatternHigh;
 
-                if (fetchPhase is 4 or 6)
+                if (fetchPhase is 0 or 2 or 4 or 6)
                     word |= (uint)(((dot - 257) >> 3) << SpriteSlotShift);
             }
 

@@ -1,0 +1,19 @@
+AxetosOS.Products.NES v2.23.0 - physical cartridge PPU-bus topology correction
+
+Behavior/topology release.
+
+The v2.22 Alien Syndrome trace showed 544/544 exact MMC1 CHR-read matches in
+each sprite-zero background window, so the simple 4 KiB CHR bank decoder was
+not randomly returning the wrong byte. Source inspection then exposed the real
+physical-boundary error: replaceable cartridges were connected directly to the
+RP2C0x multiplexed AD0-AD7 + ALE bus and implemented a duplicate private low
+address latch, even though the console motherboard already owns the SN74LS373.
+
+v2.23.0 moves the cartridge connector to separate PPU A0-A13 and PPU D0-D7
+buses. A0-A7 come from motherboard SN74LS373 Q outputs, A8-A13 remain direct
+PPU high-address traces, D0-D7 remain on the RP2C0x/CIRAM data traces, and ALE
+stays motherboard-local. NROM/MMC1 physical and compiled targets now consume
+that same corrected connector topology.
+
+No claim is made that Alien Syndrome is visually fixed until tested locally.
+Expected test total remains 266.

@@ -1,0 +1,13 @@
+Directory.Build.props
+README.md
+RELEASE_NOTES_v2.24.2.md
+PATCH_NOTES_v2.24.2.txt
+PATCH_FILE_LIST_v2.24.2.txt
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A03.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A07.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C02.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C07.cs
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareMmc1CartridgeTests.cs
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareRp2A03IoDmaTests.cs
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareRp2C02StandaloneTests.cs
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareRp2C07StandaloneTests.cs

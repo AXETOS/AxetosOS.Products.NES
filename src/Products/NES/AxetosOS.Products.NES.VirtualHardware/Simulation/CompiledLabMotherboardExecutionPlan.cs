@@ -898,6 +898,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         private byte _latchedValue;
         private bool _latchedValueValid;
         private bool _latchedConflict;
+        private ushort _pendingWriteAddress;
+        private byte _pendingWriteValue;
+        private bool _pendingWriteCompletion;
 
         public CompiledBusFabric(
             HardwareCompiler compiler,
@@ -964,6 +967,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _latchedConflict = false;
             _latchedAddress = 0;
             _latchedValue = 0;
+            _pendingWriteAddress = 0;
+            _pendingWriteValue = 0;
+            _pendingWriteCompletion = false;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -973,6 +979,9 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _latchedAddress = address;
             _latchedValueValid = false;
             _latchedConflict = false;
+            ObserveTargetSetReadBegins(_internalTargets, address);
+            for (var index = 0; index < _externalBindings.Count; index++)
+                ObserveTargetSetReadBegins(_externalBindings[index].Targets, address);
             AccumulateTargetSetReads(
                 _internalTargets, address, CompiledBusReadPhase.Begin,
                 ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
@@ -1007,9 +1016,24 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             ObserveBusCycle(writeCycle: true);
             _latchedValueValid = false;
             _latchedConflict = false;
-            WriteTargetSet(_internalTargets, address, value);
+            _pendingWriteAddress = address;
+            _pendingWriteValue = value;
+            _pendingWriteCompletion = true;
+            WriteTargetSet(_internalTargets, address, value, CompiledBusWritePhase.Begin);
             for (var index = 0; index < _externalBindings.Count; index++)
-                WriteTargetSet(_externalBindings[index].Targets, address, value);
+                WriteTargetSet(_externalBindings[index].Targets, address, value, CompiledBusWritePhase.Begin);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void CompleteCycle()
+        {
+            if (!_pendingWriteCompletion) return;
+            var address = _pendingWriteAddress;
+            var value = _pendingWriteValue;
+            _pendingWriteCompletion = false;
+            WriteTargetSet(_internalTargets, address, value, CompiledBusWritePhase.Complete);
+            for (var index = 0; index < _externalBindings.Count; index++)
+                WriteTargetSet(_externalBindings[index].Targets, address, value, CompiledBusWritePhase.Complete);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1054,6 +1078,48 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _signalRouter.Present(sourcePin, level);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ObserveTargetSetReadBegins(CompiledTargetSet set, ushort address)
+        {
+            var route = set.ReadRoutes[address & (set.ReadRoutes.Length - 1)];
+            ObserveReadBeginRoute(set.Runtimes, route);
+
+            var dynamic = set.DynamicIndices;
+            for (var index = 0; index < dynamic.Length; index++)
+            {
+                var targetIndex = dynamic[index];
+                var target = set.Runtimes[targetIndex];
+                var observer = target.Descriptor.ObserveReadBegin;
+                if (observer is null) continue;
+                if (!_compiler.TryResolveRuntimeTarget(
+                    Master, target, set.AddressSources[targetIndex], address, readCycle: true, out var localAddress))
+                    continue;
+                observer(localAddress);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void ObserveReadBeginRoute(CompiledBusTargetRuntime[] targets, CompiledBusRoute route)
+        {
+            if (route.Count == 0) return;
+            ObserveReadBeginTarget(targets, route.Target0, route.Address0);
+            if (route.Count == 1) return;
+            ObserveReadBeginTarget(targets, route.Target1, route.Address1);
+            if (route.Count == 2) return;
+            var overflow = route.Overflow!;
+            for (var index = 0; index < overflow.Targets.Length; index++)
+                ObserveReadBeginTarget(targets, overflow.Targets[index], overflow.Addresses[index]);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void ObserveReadBeginTarget(
+            CompiledBusTargetRuntime[] targets,
+            int targetIndex,
+            int localAddress)
+        {
+            targets[targetIndex].Descriptor.ObserveReadBegin?.Invoke(localAddress);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void AccumulateTargetSetReads(
             CompiledTargetSet set,
             ushort address,
@@ -1079,17 +1145,21 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void WriteTargetSet(CompiledTargetSet set, ushort address, byte value)
+        private void WriteTargetSet(
+            CompiledTargetSet set,
+            ushort address,
+            byte value,
+            CompiledBusWritePhase phase)
         {
             var route = set.WriteRoutes[address & (set.WriteRoutes.Length - 1)];
-            WriteRoute(set.Runtimes, route, value);
+            WriteRoute(set.Runtimes, route, value, phase);
 
             var dynamic = set.DynamicIndices;
             for (var index = 0; index < dynamic.Length; index++)
             {
                 var targetIndex = dynamic[index];
                 var target = set.Runtimes[targetIndex];
-                if (target.Descriptor.Write is null) continue;
+                if (target.Descriptor.Write is null || target.Descriptor.WritePhase != phase) continue;
                 if (!_compiler.TryResolveRuntimeTarget(
                     Master, target, set.AddressSources[targetIndex], address, readCycle: false, out var localAddress))
                     continue;
@@ -1098,16 +1168,33 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void WriteRoute(CompiledBusTargetRuntime[] targets, CompiledBusRoute route, byte value)
+        private static void WriteRoute(
+            CompiledBusTargetRuntime[] targets,
+            CompiledBusRoute route,
+            byte value,
+            CompiledBusWritePhase phase)
         {
             if (route.Count == 0) return;
-            targets[route.Target0].Write(route.Address0, value);
+            WriteTarget(targets, route.Target0, route.Address0, value, phase);
             if (route.Count == 1) return;
-            targets[route.Target1].Write(route.Address1, value);
+            WriteTarget(targets, route.Target1, route.Address1, value, phase);
             if (route.Count == 2) return;
             var overflow = route.Overflow!;
             for (var index = 0; index < overflow.Targets.Length; index++)
-                targets[overflow.Targets[index]].Write(overflow.Addresses[index], value);
+                WriteTarget(targets, overflow.Targets[index], overflow.Addresses[index], value, phase);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void WriteTarget(
+            CompiledBusTargetRuntime[] targets,
+            int targetIndex,
+            int localAddress,
+            byte value,
+            CompiledBusWritePhase phase)
+        {
+            var target = targets[targetIndex];
+            if (target.Descriptor.Write is null || target.Descriptor.WritePhase != phase) return;
+            target.Write(localAddress, value);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

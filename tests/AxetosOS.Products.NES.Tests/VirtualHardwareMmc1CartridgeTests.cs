@@ -62,6 +62,21 @@ public sealed class VirtualHardwareMmc1CartridgeTests
     }
 
     [Fact]
+    public void Compiled_ppu_target_observes_read_assertion_separately_from_data_resolution()
+    {
+        var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 4);
+        var ppuChr = PpuChrTarget(cartridge);
+        var observeReadBegin = Assert.IsType<Action<int>>(ppuChr.ObserveReadBegin);
+
+        var before = cartridge.PpuReadCount;
+        observeReadBegin(0x1000);
+        Assert.Equal(before + 1, cartridge.PpuReadCount);
+
+        _ = ppuChr.Read!(0x1000);
+        Assert.Equal(before + 1, cartridge.PpuReadCount);
+    }
+
+    [Fact]
     public void Prg_ram_is_cartridge_local_and_round_trips_through_its_compiled_bus_facet()
     {
         var cartridge = CreateCartridge(prgBanks: 2, chrBanks4K: 2);
@@ -80,17 +95,12 @@ public sealed class VirtualHardwareMmc1CartridgeTests
     {
         var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 4, prgRamSizeBytes: 0);
         var cpuTargets = ((ICompiledBusTargetProvider)cartridge).GetCompiledBusTargets()
-            .Where(target => target.AddressPins.Count == 16)
+            .Where(target => target.AddressPins.Count == 15)
             .ToArray();
 
         Assert.Equal(0, cartridge.PrgRamSizeBytes);
         Assert.False(cartridge.PrgRamEnabled);
         Assert.Single(cpuTargets);
-        Assert.DoesNotContain(
-            cpuTargets,
-            target => target.ReadConditions.Any(condition =>
-                ReferenceEquals(condition.Pin, cartridge.CpuAddress.Pins[15]) &&
-                condition.RequiredLevel == DigitalLevel.Low));
     }
 
     [Fact]
@@ -117,6 +127,34 @@ public sealed class VirtualHardwareMmc1CartridgeTests
         Assert.True(isSelected(0x6000, false));
     }
 
+    [Fact]
+    public void Cpu_connector_exposes_A0_through_A14_plus_M2_and_romsel_not_A15()
+    {
+        var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 4);
+
+        Assert.Equal(15, cartridge.CpuAddress.Width);
+        Assert.EndsWith(".CPU.A14", cartridge.CpuAddress.Pins[^1].Name);
+        Assert.EndsWith(".CPU.M2", cartridge.CpuM2.Name);
+        Assert.EndsWith(".CPU.ROMSEL_BAR", cartridge.CpuRomSelectBar.Name);
+        Assert.DoesNotContain(cartridge.Pins, pin => pin.Name.EndsWith(".CPU.A15", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Compiled_prg_ram_window_is_M2_qualified_and_requires_inactive_romsel_A14_A13()
+    {
+        var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 4, prgRamSizeBytes: 8 * 1024);
+        var prgRam = CpuRamTarget(cartridge);
+
+        Assert.Contains(prgRam.ReadConditions, condition => ReferenceEquals(condition.Pin, cartridge.CpuM2)
+            && condition.RequiredLevel == DigitalLevel.High);
+        Assert.Contains(prgRam.ReadConditions, condition => ReferenceEquals(condition.Pin, cartridge.CpuRomSelectBar)
+            && condition.RequiredLevel == DigitalLevel.High);
+        Assert.Contains(prgRam.ReadConditions, condition => ReferenceEquals(condition.Pin, cartridge.CpuAddress.Pins[14])
+            && condition.RequiredLevel == DigitalLevel.High);
+        Assert.Contains(prgRam.ReadConditions, condition => ReferenceEquals(condition.Pin, cartridge.CpuAddress.Pins[13])
+            && condition.RequiredLevel == DigitalLevel.High);
+    }
+
     [Theory]
     [InlineData(0x00, 0x0000, DigitalLevel.Low)]
     [InlineData(0x01, 0x0000, DigitalLevel.High)]
@@ -133,7 +171,7 @@ public sealed class VirtualHardwareMmc1CartridgeTests
         var combinational = (ICompiledCombinationalComponent)cartridge;
         var evaluated = combinational.TryEvaluateCompiledOutput(
             cartridge.CiramA10,
-            pin => SamplePpuHighAddress(cartridge, pin, ppuAddress),
+            pin => SamplePpuAddress(cartridge, pin, ppuAddress),
             out var drive);
 
         Assert.True(evaluated);
@@ -142,54 +180,92 @@ public sealed class VirtualHardwareMmc1CartridgeTests
 
 
     [Fact]
-    public void Physical_ppu_address_phase_releases_previous_chr_data_before_latching_next_low_address()
+    public void Physical_cartridge_connector_keeps_ppu_address_and_data_on_separate_buses()
     {
         var cartridge = CreateCartridge(prgBanks: 2, chrBanks4K: 2);
-        var board = new VirtualHardwareBoard("MMC1.PPU.BUS.TEST");
+        var board = new VirtualHardwareBoard("MMC1.PPU.CONNECTOR.TEST");
         board.Add(cartridge);
 
         var vcc = AttachSource(board, "VCC", cartridge.Vcc);
         var gnd = AttachSource(board, "GND", cartridge.Gnd);
-        var ale = AttachSource(board, "ALE", cartridge.PpuAle);
         var readBar = AttachSource(board, "RD", cartridge.PpuReadBar);
         var writeBar = AttachSource(board, "WR", cartridge.PpuWriteBar);
-        var high = cartridge.PpuHighAddress.Pins
-            .Select((pin, bit) => AttachSource(board, $"AH{bit}", pin))
+        var address = cartridge.PpuAddress.Pins
+            .Select((pin, bit) => AttachSource(board, $"A{bit}", pin))
             .ToArray();
-        var ad = cartridge.PpuAddressData.Pins
-            .Select((pin, bit) => AttachSource(board, $"AD{bit}", pin))
+        var data = cartridge.PpuData.Pins
+            .Select((pin, bit) => AttachSource(board, $"D{bit}", pin))
             .ToArray();
 
-        // Physical source changes propagate only after the laboratory board's
-        // traces have been topology-compiled, exactly as in a running machine.
         _ = new VirtualHardwareSimulator(board);
 
-        foreach (var source in high) source.Set(DigitalLevel.Low);
-        DriveByte(ad, 0x00);
-        ale.Set(DigitalLevel.High);
+        DriveAddress(address, 0x0000);
+        DriveByte(data, null);
         readBar.Set(DigitalLevel.High);
         writeBar.Set(DigitalLevel.High);
         gnd.Set(DigitalLevel.Low);
         vcc.Set(DigitalLevel.High);
 
-        // Complete a CHR read at $0000 so the cartridge owns AD0-AD7 with $50.
-        ale.Set(DigitalLevel.Low);
-        DriveByte(ad, null);
         readBar.Set(DigitalLevel.Low);
-        Assert.True(cartridge.PpuAddressData.TrySample(out var chrData));
+        Assert.True(cartridge.PpuData.TrySample(out var chrData));
         Assert.Equal(0x50UL, chrData);
+        Assert.True(cartridge.PpuAddress.TrySample(out var addressWhileReading));
+        Assert.Equal(0x0000UL, addressWhileReading);
 
-        // The RP2C0x starts the next address phase by driving AD before ALE
-        // rises. That temporarily contends with the previous CHR byte. ALE is
-        // the physical signal that must make the cartridge release its drivers.
-        DriveByte(ad, 0xA5);
-        Assert.Contains(cartridge.PpuAddressData.Pins, pin => pin.SampledLevel == DigitalLevel.Contention);
+        // Changing A0-A13 is independent of the CHR data bus. There is no
+        // cartridge-local ALE latch and no address/data contention.
+        DriveAddress(address, 0x0001);
+        Assert.True(cartridge.PpuAddress.TrySample(out var nextAddress));
+        Assert.Equal(0x0001UL, nextAddress);
+        Assert.True(cartridge.PpuData.TrySample(out var nextData));
+        Assert.Equal(0x50UL, nextData);
+        Assert.DoesNotContain(cartridge.PpuData.Pins, pin => pin.SampledLevel == DigitalLevel.Contention);
+    }
 
-        ale.Set(DigitalLevel.High);
 
-        Assert.All(cartridge.PpuAddressData.Pins, pin => Assert.Equal(DigitalLevel.HighImpedance, pin.DriveLevel));
-        Assert.True(cartridge.PpuAddressData.TrySample(out var nextLowAddress));
-        Assert.Equal(0xA5UL, nextLowAddress);
+    [Fact]
+    public void Active_physical_chr_read_tracks_bank_output_change_without_a_new_ppu_edge()
+    {
+        var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 4);
+        var cpuRom = CpuRomTarget(cartridge);
+        WriteSerial(cpuRom, 0x8000, 0x1C); // independent 4 KiB CHR banks
+        WriteSerial(cpuRom, 0xC000, 0x01);
+
+        var board = new VirtualHardwareBoard("MMC1.ACTIVE.CHR.REMAP.TEST");
+        board.Add(cartridge);
+        var vcc = AttachSource(board, "ACTIVE.VCC", cartridge.Vcc);
+        var gnd = AttachSource(board, "ACTIVE.GND", cartridge.Gnd);
+        var readBar = AttachSource(board, "ACTIVE.RD", cartridge.PpuReadBar);
+        var writeBar = AttachSource(board, "ACTIVE.WR", cartridge.PpuWriteBar);
+        var address = cartridge.PpuAddress.Pins
+            .Select((pin, bit) => AttachSource(board, $"ACTIVE.A{bit}", pin))
+            .ToArray();
+        var data = cartridge.PpuData.Pins
+            .Select((pin, bit) => AttachSource(board, $"ACTIVE.D{bit}", pin))
+            .ToArray();
+        _ = new VirtualHardwareSimulator(board);
+
+        DriveAddress(address, 0x1000);
+        DriveByte(data, null);
+        readBar.Set(DigitalLevel.High);
+        writeBar.Set(DigitalLevel.High);
+        gnd.Set(DigitalLevel.Low);
+        vcc.Set(DigitalLevel.High);
+
+        // Assert /RD and leave it active. Bank 1 currently selects 4 KiB bank 1.
+        readBar.Set(DigitalLevel.Low);
+        Assert.True(cartridge.PpuData.TrySample(out var before));
+        Assert.Equal(0x51UL, before);
+        var readsBeforeRemap = cartridge.PpuReadCount;
+
+        // A completed MMC1 register load changes the mapper's CHR address
+        // outputs combinationally. No PPU address or /RD transition is required
+        // for the selected ROM byte to change while the read window remains open.
+        WriteSerial(cpuRom, 0xC000, 0x03);
+
+        Assert.True(cartridge.PpuData.TrySample(out var after));
+        Assert.Equal(0x53UL, after);
+        Assert.Equal(readsBeforeRemap, cartridge.PpuReadCount);
     }
 
     [Fact]
@@ -238,11 +314,22 @@ public sealed class VirtualHardwareMmc1CartridgeTests
         Assert.Equal(Mmc1RegisterOperation.ChrBank0, commit.Operation);
         Assert.Equal((byte)0x03, commit.ChrBank0);
         Assert.Equal(5UL, commit.MapperWriteCount);
+        Assert.Equal(cartridge.PpuReadCount, commit.PpuReadCountAtCommit);
+        Assert.Equal(cartridge.PpuWriteCount, commit.PpuWriteCountAtCommit);
 
         cpuRom.Write!(0x8000, 0x80);
         var reset = Assert.Single(cartridge.RegisterTraceOutput.Drain());
         Assert.Equal(Mmc1RegisterOperation.Reset, reset.Operation);
         Assert.Equal((byte)0x0C, (byte)(reset.Control & 0x0C));
+    }
+
+    [Fact]
+    public void Compiled_cpu_mapper_target_latches_writes_at_bus_cycle_completion()
+    {
+        var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 8);
+        var cpuRom = CpuRomTarget(cartridge);
+
+        Assert.Equal(CompiledBusWritePhase.Complete, cpuRom.WritePhase);
     }
 
     [Fact]
@@ -311,15 +398,15 @@ public sealed class VirtualHardwareMmc1CartridgeTests
 
     private static CompiledBusTargetDescriptor CpuRomTarget(Mmc1Cartridge cartridge) =>
         ((ICompiledBusTargetProvider)cartridge).GetCompiledBusTargets()
-            .Single(target => target.AddressPins.Count == 16
-                && target.ReadConditions.Any(condition => ReferenceEquals(condition.Pin, cartridge.CpuAddress.Pins[15])
-                    && condition.RequiredLevel == DigitalLevel.High));
+            .Single(target => target.AddressPins.Count == 15
+                && target.ReadConditions.Any(condition => ReferenceEquals(condition.Pin, cartridge.CpuRomSelectBar)
+                    && condition.RequiredLevel == DigitalLevel.Low));
 
     private static CompiledBusTargetDescriptor CpuRamTarget(Mmc1Cartridge cartridge) =>
         ((ICompiledBusTargetProvider)cartridge).GetCompiledBusTargets()
-            .Single(target => target.AddressPins.Count == 16
-                && target.ReadConditions.Any(condition => ReferenceEquals(condition.Pin, cartridge.CpuAddress.Pins[15])
-                    && condition.RequiredLevel == DigitalLevel.Low));
+            .Single(target => target.AddressPins.Count == 15
+                && target.ReadConditions.Any(condition => ReferenceEquals(condition.Pin, cartridge.CpuRomSelectBar)
+                    && condition.RequiredLevel == DigitalLevel.High));
 
     private static CompiledBusTargetDescriptor PpuChrTarget(Mmc1Cartridge cartridge) =>
         ((ICompiledBusTargetProvider)cartridge).GetCompiledBusTargets()
@@ -347,13 +434,20 @@ public sealed class VirtualHardwareMmc1CartridgeTests
         }
     }
 
-    private static DigitalLevel SamplePpuHighAddress(Mmc1Cartridge cartridge, DigitalPin pin, ushort address)
+    private static void DriveAddress(IReadOnlyList<DigitalSignalSource> sources, ushort value)
     {
-        for (var bit = 0; bit < cartridge.PpuHighAddress.Width; bit++)
+        for (var bit = 0; bit < sources.Count; bit++)
+            sources[bit].Set((value & (1 << bit)) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+    }
+
+    private static DigitalLevel SamplePpuAddress(Mmc1Cartridge cartridge, DigitalPin pin, ushort address)
+    {
+        for (var bit = 0; bit < cartridge.PpuAddress.Width; bit++)
         {
-            if (!ReferenceEquals(pin, cartridge.PpuHighAddress.Pins[bit])) continue;
-            return (address & (1 << (bit + 8))) != 0 ? DigitalLevel.High : DigitalLevel.Low;
+            if (!ReferenceEquals(pin, cartridge.PpuAddress.Pins[bit])) continue;
+            return (address & (1 << bit)) != 0 ? DigitalLevel.High : DigitalLevel.Low;
         }
         return DigitalLevel.Unknown;
     }
+
 }

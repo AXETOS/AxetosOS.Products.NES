@@ -73,6 +73,46 @@ public sealed class VirtualHardwareRp2A03ApuAccuracyTests
         Assert.InRange(fixture.Chip.FrameSequenceCycle, 0, 2);
     }
 
+
+    [Fact]
+    public void Inhibited_four_step_frame_irq_status_is_transient_for_the_two_terminal_cycles()
+    {
+        var fixture = CreateFixture([
+            0xA9, 0x40,       // LDA #$40: 4-step mode, inhibit frame IRQ output
+            0x8D, 0x17, 0x40, // STA $4017
+            0x02              // halt CPU; APU continues clocking
+        ]);
+
+        var sawPendingWrite = false;
+        for (var cycle = 0; cycle < 200; cycle++)
+        {
+            fixture.RunCpuCycles(1);
+            sawPendingWrite |= fixture.Chip.FrameCounterWritePending;
+            if (sawPendingWrite && !fixture.Chip.FrameCounterWritePending) break;
+        }
+
+        Assert.True(sawPendingWrite);
+        Assert.False(fixture.Chip.FrameCounterWritePending);
+        Assert.False(fixture.Chip.FrameIrqPending);
+
+        while (fixture.Chip.FrameSequenceCycle < 29_827)
+            fixture.RunCpuCycles(1);
+
+        Assert.Equal(29_827, fixture.Chip.FrameSequenceCycle);
+        Assert.False(fixture.Chip.FrameIrqPending);
+
+        fixture.RunCpuCycles(1);
+        Assert.Equal(29_828, fixture.Chip.FrameSequenceCycle);
+        Assert.True(fixture.Chip.FrameIrqPending);
+
+        fixture.RunCpuCycles(1);
+        Assert.Equal(0, fixture.Chip.FrameSequenceCycle);
+        Assert.True(fixture.Chip.FrameIrqPending);
+
+        fixture.RunCpuCycles(1);
+        Assert.False(fixture.Chip.FrameIrqPending);
+    }
+
     private static Fixture CreateFixture(byte[] program)
     {
         var board = new VirtualHardwareBoard("chiptest.rp2a03.apu-accuracy");

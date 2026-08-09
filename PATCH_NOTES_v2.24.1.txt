@@ -1,0 +1,6 @@
+AxetosOS Products / NES v2.24.1 compile hotfix
+
+Fixes the v2.24.0 Famicom decoder test compile error by replacing the invalid DigitalPowerRail.Rail reference with DigitalPowerRail.Output.
+
+No production/runtime hardware source changes.
+Expected local test total: 276.

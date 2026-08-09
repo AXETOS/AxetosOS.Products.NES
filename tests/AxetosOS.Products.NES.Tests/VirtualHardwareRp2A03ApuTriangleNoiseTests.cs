@@ -92,8 +92,33 @@ public sealed class VirtualHardwareRp2A03ApuTriangleNoiseTests
         Assert.True(fixture.Chip.IsHalted);
         Assert.Equal((byte)0, fixture.Chip.TriangleLengthCounter);
         Assert.Equal((byte)0, fixture.Chip.NoiseLengthCounter);
-        Assert.Equal((byte)0, fixture.Chip.TriangleOutputLevel);
         Assert.Equal((byte)0, fixture.Chip.NoiseOutputLevel);
+    }
+
+    [Fact]
+    public void Disabling_triangle_clears_length_but_holds_the_last_dac_level()
+    {
+        var fixture = CreateFixture(
+        [
+            0xA9, 0x04, 0x8D, 0x15, 0x40, // enable triangle
+            0xA9, 0xFF, 0x8D, 0x08, 0x40, // control flag, linear reload 127
+            0xA9, 0xFF, 0x8D, 0x0A, 0x40, // slow timer low
+            0xA9, 0x0F, 0x8D, 0x0B, 0x40, // timer high 7, length index 1
+            0xAD, 0x00, 0x60,             // wait: LDA $6000
+            0xF0, 0xFB,                   // BEQ wait
+            0xA9, 0x00, 0x8D, 0x15, 0x40, // disable triangle
+            0x02
+        ]);
+
+        fixture.RunCpuCycles(9_600);
+        Assert.True(fixture.Chip.TriangleOutputLevel > 0);
+
+        fixture.Memory.Poke(0x6000, 0x01);
+        fixture.RunCpuCycles(64);
+
+        Assert.True(fixture.Chip.IsHalted);
+        Assert.Equal((byte)0, fixture.Chip.TriangleLengthCounter);
+        Assert.True(fixture.Chip.TriangleOutputLevel > 0);
     }
 
     private static Fixture CreateFixture(byte[] program)
@@ -128,7 +153,7 @@ public sealed class VirtualHardwareRp2A03ApuTriangleNoiseTests
         var simulator = new VirtualHardwareSimulator(board);
         board.PowerOn();
         simulator.Settle();
-        return new Fixture(chip, clock, simulator);
+        return new Fixture(chip, clock, simulator, memory);
     }
 
     private static DigitalSignalSource Source(VirtualHardwareBoard board, string id, DigitalLevel level, DigitalPin target)
@@ -138,7 +163,11 @@ public sealed class VirtualHardwareRp2A03ApuTriangleNoiseTests
         return source;
     }
 
-    private sealed record Fixture(Rp2A03 Chip, DigitalSignalSource Clock, VirtualHardwareSimulator Simulator)
+    private sealed record Fixture(
+        Rp2A03 Chip,
+        DigitalSignalSource Clock,
+        VirtualHardwareSimulator Simulator,
+        TestBusMemory Memory)
     {
         public void RunCpuCycles(int cycles)
         {

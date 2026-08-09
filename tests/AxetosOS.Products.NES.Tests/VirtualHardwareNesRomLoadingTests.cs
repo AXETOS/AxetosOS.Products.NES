@@ -139,7 +139,8 @@ public sealed class VirtualHardwareNesRomLoadingTests
             machine.Hardware.NtscNes.Board.Components,
             component => ReferenceEquals(component, machine.CartridgeBoard));
         Assert.Same(machine.Hardware.NtscNes.CpuAddressNets[0], machine.CartridgeBoard.CpuAddress.Pins[0].Net);
-        Assert.Same(machine.Hardware.NtscNes.PpuAddressDataNets[0], machine.CartridgeBoard.PpuAddressData.Pins[0].Net);
+        Assert.Same(machine.Hardware.NtscNes.PpuDataNets[0], machine.CartridgeBoard.PpuData.Pins[0].Net);
+        Assert.Same(machine.Hardware.NtscNes.PpuLowAddressNets[0], machine.CartridgeBoard.PpuAddress.Pins[0].Net);
     }
 
     private static byte[] CreateRom(

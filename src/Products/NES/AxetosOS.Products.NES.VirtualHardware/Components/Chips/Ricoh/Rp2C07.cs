@@ -95,17 +95,23 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     // Packing changes only the host representation: each word still contains
     // one sprite unit's independent tile/attribute/X/row/pattern/zero state.
     private readonly ulong[] _secondaryOam = new ulong[8];
+    private readonly byte[] _secondaryOamBytes = new byte[32];
+    private readonly byte[] _secondarySpriteSourceIndex = new byte[8];
+    private readonly bool[] _secondarySpriteZeroCandidate = new bool[8];
     private readonly ulong[] _activeSprites = new ulong[8];
     private readonly ulong[] _nextSprites = new ulong[8];
     private int _secondarySpriteCount;
     private int _activeSpriteCount;
     private int _nextSpriteCount;
-    private int _spriteEvaluationIndex;
+    private int _secondaryOamWriteIndex;
+    private byte _spriteEvaluationReadLatch;
+    private SpriteEvaluationState _spriteEvaluationState;
+    private int _spriteEvaluationBytesRemaining;
+    private bool _spriteEvaluationAddressWrapped;
     private int _spriteFetchSlot;
     private bool _nmiAsserted;
     private bool _suppressVblankSet;
     private byte _oamDataBusLatch;
-    private int _spriteOverflowByteOffset;
     private bool _packagePowered;
     private bool _resetAsserted;
     private readonly ulong _powerInputMask;
@@ -206,6 +212,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     public ulong BackgroundAttributeFetchCount { get; private set; }
     public ulong BackgroundPatternFetchCount { get; private set; }
     public ulong DummyNametableFetchCount { get; private set; }
+    public ulong SpriteDummyNametableFetchCount { get; private set; }
     public byte BackgroundPixelIndex { get; private set; }
     public byte NextTileId => _nextTileId;
     public byte NextTileAttribute => _nextTileAttribute;
@@ -214,6 +221,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     public ulong SpriteEvaluationCount { get; private set; }
     public ulong SpritePatternFetchCount { get; private set; }
     public int EvaluatedSpriteCount => _secondarySpriteCount;
+    public int PreparedSpriteCount => _nextSpriteCount;
     public bool SpriteOverflow => _spriteOverflow;
     public bool SpriteZeroHit => _spriteZeroHit;
     public byte SpritePixelIndex { get; private set; }
@@ -291,6 +299,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         BackgroundAttributeFetchCount = 0;
         BackgroundPatternFetchCount = 0;
         DummyNametableFetchCount = 0;
+        SpriteDummyNametableFetchCount = 0;
         BackgroundPixelIndex = 0;
         SpritePixelIndex = 0;
         PixelPaletteIndex = 0;
@@ -306,12 +315,18 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _nextSpriteCount = 0;
         _nmiAsserted = false;
         _suppressVblankSet = false;
-        _spriteEvaluationIndex = 0;
+        _secondaryOamWriteIndex = 0;
+        _spriteEvaluationReadLatch = 0xFF;
+        _spriteEvaluationState = SpriteEvaluationState.CheckingNormal;
+        _spriteEvaluationBytesRemaining = 0;
+        _spriteEvaluationAddressWrapped = false;
         _spriteFetchSlot = 0;
-        _spriteOverflowByteOffset = 0;
         _oamDataBusLatch = 0xFF;
         _nmiAsserted = false;
         Array.Clear(_secondaryOam);
+        Array.Fill(_secondaryOamBytes, (byte)0xFF);
+        Array.Fill(_secondarySpriteSourceIndex, (byte)0xFF);
+        Array.Clear(_secondarySpriteZeroCandidate);
         Array.Clear(_activeSprites);
         Array.Clear(_nextSprites);
         _cpuSelectedLast = false;
@@ -380,9 +395,16 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _secondarySpriteCount = 0;
         _activeSpriteCount = 0;
         _nextSpriteCount = 0;
-        _spriteOverflowByteOffset = 0;
+        _secondaryOamWriteIndex = 0;
+        _spriteEvaluationReadLatch = 0xFF;
+        _spriteEvaluationState = SpriteEvaluationState.CheckingNormal;
+        _spriteEvaluationBytesRemaining = 0;
+        _spriteEvaluationAddressWrapped = false;
         _oamDataBusLatch = 0xFF;
         Array.Clear(_secondaryOam);
+        Array.Fill(_secondaryOamBytes, (byte)0xFF);
+        Array.Fill(_secondarySpriteSourceIndex, (byte)0xFF);
+        Array.Clear(_secondarySpriteZeroCandidate);
         Array.Clear(_activeSprites);
         Array.Clear(_nextSprites);
         _backgroundShifters = 0;
@@ -713,51 +735,58 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ExecuteDecodedSpriteCircuit(uint executionPlan, bool visibleScanline)
     {
+        var spriteEvaluationScanline = visibleScanline;
+
         if ((executionPlan & PpuDotDecoder.SpriteActivate) != 0)
         {
             _activeSpriteCount = _nextSpriteCount;
             Array.Copy(_nextSprites, _activeSprites, _activeSpriteCount);
         }
 
-        if (visibleScanline
+        if (spriteEvaluationScanline
             && (executionPlan & PpuDotDecoder.SpriteEvaluationReset) != 0)
         {
-            _secondarySpriteCount = 0;
-            _spriteEvaluationIndex = 0;
-            _spriteOverflowByteOffset = 0;
-            Array.Clear(_secondaryOam);
+            BeginSpriteEvaluationScanline();
         }
 
-        if (visibleScanline
-            && (executionPlan & PpuDotDecoder.SpriteEvaluate) != 0
-            && _spriteEvaluationIndex < 64)
+        if (spriteEvaluationScanline
+            && (executionPlan & PpuDotDecoder.SpriteSecondaryOamClear) != 0)
         {
-            EvaluateOneSpriteForNextScanline(_spriteEvaluationIndex++);
+            ClockSecondaryOamClear();
+        }
+
+        if (spriteEvaluationScanline
+            && (executionPlan & PpuDotDecoder.SpriteEvaluate) != 0)
+        {
+            ClockSpriteEvaluation();
         }
 
         if ((executionPlan & PpuDotDecoder.SpriteLoad) != 0)
+            LoadEvaluatedSpritesForNextScanline();
+
+        if (Dot is >= 257 and <= 320)
         {
-            _nextSpriteCount = _secondarySpriteCount;
-            for (var index = 0; index < _nextSpriteCount; index++)
-            {
-                var entry = _secondaryOam[index];
-                var sprite = entry & 0x00000000FFFFFFFFUL;
-                if (((entry >> 32) & 0xFF) == 0) sprite |= SpriteZeroMask;
-                _nextSprites[index] = sprite;
-            }
-            for (var index = _nextSpriteCount; index < 8; index++)
-                _nextSprites[index] = 0;
+            // The sprite-fetch/shift-register initialization interval forces
+            // OAMADDR to zero on every dot, not merely at its first cycle.
+            _oamAddress = 0;
+            _oamDataBusLatch = 0xFF;
         }
 
         var spriteFetch = executionPlan & PpuDotDecoder.SpriteFetchMask;
         if (spriteFetch != PpuDotDecoder.SpriteFetchNone)
         {
             _spriteFetchSlot = (int)((executionPlan & PpuDotDecoder.SpriteSlotMask) >> PpuDotDecoder.SpriteSlotShift);
-            if (_spriteFetchSlot < _nextSpriteCount)
+            if (spriteFetch == PpuDotDecoder.SpriteFetchDummyNametable)
+            {
+                BeginBackgroundRead(
+                    (ushort)(0x2000 | (_vramAddress & 0x0FFF)),
+                    VramTransactionPurpose.SpriteDummyNametable);
+            }
+            else
             {
                 var highPlane = spriteFetch == PpuDotDecoder.SpriteFetchPatternHigh;
                 BeginBackgroundRead(
-                    SpritePatternAddress(_nextSprites[_spriteFetchSlot], highPlane),
+                    SpritePatternAddressForFetchSlot(_spriteFetchSlot, highPlane),
                     highPlane
                         ? VramTransactionPurpose.SpritePatternHigh
                         : VramTransactionPurpose.SpritePatternLow);
@@ -885,13 +914,15 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                 }
                 break;
             case 4: // OAMDATA
-                value = RenderingBusActive ? _oamDataBusLatch : _primaryOam[_oamAddress];
+                value = RenderingBusActive ? _oamDataBusLatch : ReadPrimaryOamByte(_oamAddress);
                 break;
             case 7: // PPUDATA
                 if ((_vramAddress & 0x3F00) == 0x3F00)
                 {
                     // Palette RAM drives only D0-D5; D6-D7 retain the PPU open bus.
-                    value = (byte)((_openBus & 0xC0) | ReadPalette(_vramAddress));
+                    var paletteValue = ReadPalette(_vramAddress);
+                    if (_greyscaleEnabled) paletteValue &= 0x30;
+                    value = (byte)((_openBus & 0xC0) | paletteValue);
                     if (firstSelectedEvaluation)
                     {
                         // Palette reads bypass the delayed buffer, while the mirrored
@@ -948,7 +979,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                     // During rendering the OAM port is owned by sprite evaluation.
                     // CPU writes do not reach OAM and the address counter advances
                     // by four, matching the package's internal entry stride.
-                    _oamAddress = (byte)(_oamAddress + 4);
+                    _oamAddress = (byte)((_oamAddress + 4) & 0xFC);
                     RenderingOamWriteCount++;
                 }
                 else _primaryOam[_oamAddress++] = value;
@@ -1129,7 +1160,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private bool VramBusBusy => _transaction != VramTransaction.None || _renderReadPhase != 0;
     private bool RenderingBusActive => RenderingEnabled
         && IsRenderingScanline()
-        && ((Dot >= 1 && Dot <= 256) || (Dot >= 321 && Dot <= 340));
+        && Dot >= 1 && Dot <= 340;
 
     private bool IsRenderingScanline() => Scanline < 240 || Scanline == PreRenderScanline;
 
@@ -1186,7 +1217,13 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             case VramTransactionPurpose.DummyNametable:
                 DummyNametableFetchCount++;
                 break;
+            case VramTransactionPurpose.SpriteDummyNametable:
+                // Sprite fetch slots perform two nametable bus reads before the
+                // pattern planes. The returned byte is discarded internally.
+                SpriteDummyNametableFetchCount++;
+                break;
             case VramTransactionPurpose.SpritePatternLow:
+                SpritePatternFetchCount++;
                 if (_spriteFetchSlot < _nextSpriteCount)
                 {
                     var sprite = _nextSprites[_spriteFetchSlot];
@@ -1195,10 +1232,10 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                         : data;
                     _nextSprites[_spriteFetchSlot] = (sprite & ~SpritePatternLowMask)
                         | ((ulong)pattern << 32);
-                    SpritePatternFetchCount++;
                 }
                 break;
             case VramTransactionPurpose.SpritePatternHigh:
+                SpritePatternFetchCount++;
                 if (_spriteFetchSlot < _nextSpriteCount)
                 {
                     var sprite = _nextSprites[_spriteFetchSlot];
@@ -1207,7 +1244,6 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                         : data;
                     _nextSprites[_spriteFetchSlot] = (sprite & ~SpritePatternHighMask)
                         | ((ulong)pattern << 40);
-                    SpritePatternFetchCount++;
                 }
                 break;
         }
@@ -1280,39 +1316,222 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
     private bool SpriteRenderingEnabled => _spriteRenderingEnabled;
 
-    private void EvaluateOneSpriteForNextScanline(int spriteIndex)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte ReadPrimaryOamByte(byte address)
     {
-        SpriteEvaluationCount++;
-        var baseAddress = spriteIndex * 4;
-        var targetScanline = Scanline == PreRenderScanline ? 0 : Scanline + 1;
-        var height = _spriteHeight;
+        var value = _primaryOam[address];
+        // Attribute bits 2-4 are not implemented in the RP2C0x OAM cell array
+        // and therefore read back as zero through $2004 and the internal OAM bus.
+        return (address & 0x03) == 2 ? (byte)(value & 0xE3) : value;
+    }
 
-        if (_secondarySpriteCount >= 8)
+    private void BeginSpriteEvaluationScanline()
+    {
+        _secondarySpriteCount = 0;
+        _secondaryOamWriteIndex = 0;
+        _spriteEvaluationReadLatch = 0xFF;
+        _spriteEvaluationState = SpriteEvaluationState.CheckingNormal;
+        _spriteEvaluationBytesRemaining = 0;
+        _spriteEvaluationAddressWrapped = false;
+        Array.Fill(_secondarySpriteSourceIndex, (byte)0xFF);
+        Array.Clear(_secondarySpriteZeroCandidate);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ClockSecondaryOamClear()
+    {
+        // The internal OAM data bus is charged to $FF on odd dots, then that
+        // value is written into one secondary-OAM byte on the following even
+        // dot.  Keeping the two phases distinct also makes $2004 snooping see
+        // the same MDR value as the physical evaluator.
+        if ((Dot & 1) != 0)
         {
-            // Once secondary OAM is full, the RP2C0x's broken evaluation logic
-            // advances diagonally through primary OAM. Non-Y bytes can therefore
-            // be interpreted as Y coordinates and create false-positive overflow.
-            var candidate = _primaryOam[baseAddress + _spriteOverflowByteOffset];
-            _oamDataBusLatch = candidate;
-            var rowCandidate = targetScanline - (candidate + 1);
-            if (rowCandidate >= 0 && rowCandidate < height) _spriteOverflow = true;
-            _spriteOverflowByteOffset = (_spriteOverflowByteOffset + 1) & 3;
+            _spriteEvaluationReadLatch = 0xFF;
+            _oamDataBusLatch = 0xFF;
             return;
         }
 
-        var y = _primaryOam[baseAddress];
-        _oamDataBusLatch = y;
-        var row = targetScanline - (y + 1);
-        if (row < 0 || row >= height) return;
+        var index = (Dot >> 1) - 1;
+        if ((uint)index < (uint)_secondaryOamBytes.Length)
+            _secondaryOamBytes[index] = _spriteEvaluationReadLatch;
+        _oamDataBusLatch = _spriteEvaluationReadLatch;
+    }
 
-        var attributes = _primaryOam[baseAddress + 2];
-        if ((attributes & 0x80) != 0) row = height - 1 - row;
-        _secondaryOam[_secondarySpriteCount++] =
-            (ulong)_primaryOam[baseAddress + 1]
-            | ((ulong)attributes << 8)
-            | ((ulong)_primaryOam[baseAddress + 3] << 16)
-            | ((ulong)(byte)row << 24)
-            | ((ulong)(byte)spriteIndex << 32);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ClockSpriteEvaluation()
+    {
+        if ((Dot & 1) != 0)
+        {
+            _spriteEvaluationReadLatch = ReadPrimaryOamByte(_oamAddress);
+            _oamDataBusLatch = _spriteEvaluationReadLatch;
+            SpriteEvaluationCount++;
+            return;
+        }
+
+        switch (_spriteEvaluationState)
+        {
+            case SpriteEvaluationState.CheckingNormal:
+                EvaluateNormalSpriteY(_spriteEvaluationReadLatch);
+                break;
+            case SpriteEvaluationState.CopyingNormal:
+                CopyNormalSpriteByte(_spriteEvaluationReadLatch);
+                break;
+            case SpriteEvaluationState.CheckingOverflow:
+                EvaluateOverflowSpriteByte(_spriteEvaluationReadLatch);
+                break;
+            case SpriteEvaluationState.Complete:
+                AdvanceSpriteEvaluationAddress(4);
+                break;
+            default:
+                throw new InvalidOperationException($"Unknown sprite evaluation state {_spriteEvaluationState}.");
+        }
+    }
+
+    private void EvaluateNormalSpriteY(byte value)
+    {
+        if (_secondaryOamWriteIndex < _secondaryOamBytes.Length)
+            _secondaryOamBytes[_secondaryOamWriteIndex] = value;
+
+        var inRange = SpriteYIsInRange(value);
+        if (!inRange)
+        {
+            // A failed Y comparison increments the object number and clears the
+            // low two OAM address bits.  This is the hardware path that
+            // realigns a deliberately misaligned OAMADDR.
+            var objectIndex = _oamAddress >> 2;
+            _spriteEvaluationAddressWrapped |= objectIndex == 0x3F;
+            _oamAddress = (byte)(((objectIndex + 1) & 0x3F) << 2);
+            if (_spriteEvaluationAddressWrapped) CompleteSpriteEvaluation();
+            return;
+        }
+
+        var slot = _secondarySpriteCount;
+        if ((uint)slot < (uint)_secondarySpriteSourceIndex.Length)
+        {
+            _secondarySpriteSourceIndex[slot] = (byte)(_oamAddress >> 2);
+            // Hardware treats the first object processed by this scanline as
+            // the sprite-zero source, even when OAMADDR was intentionally
+            // misaligned.
+            _secondarySpriteZeroCandidate[slot] = Dot == 66;
+        }
+
+        if (_secondaryOamWriteIndex < _secondaryOamBytes.Length)
+            _secondaryOamWriteIndex++;
+        AdvanceSpriteEvaluationAddress(1);
+        _spriteEvaluationBytesRemaining = 2;
+        _spriteEvaluationState = SpriteEvaluationState.CopyingNormal;
+    }
+
+    private void CopyNormalSpriteByte(byte value)
+    {
+        if (_secondaryOamWriteIndex < _secondaryOamBytes.Length)
+            _secondaryOamBytes[_secondaryOamWriteIndex++] = value;
+
+        AdvanceSpriteEvaluationAddress(1);
+        if (_spriteEvaluationBytesRemaining > 0)
+        {
+            _spriteEvaluationBytesRemaining--;
+            return;
+        }
+
+        _secondarySpriteCount++;
+        if (_spriteEvaluationAddressWrapped)
+        {
+            CompleteSpriteEvaluation();
+            return;
+        }
+
+        _spriteEvaluationState = _secondaryOamWriteIndex >= _secondaryOamBytes.Length
+            ? SpriteEvaluationState.CheckingOverflow
+            : SpriteEvaluationState.CheckingNormal;
+    }
+
+    private void EvaluateOverflowSpriteByte(byte value)
+    {
+        // Once secondary OAM is full, the broken n/m increment network keeps
+        // treating the byte currently selected by OAMADDR as a Y candidate.
+        // A successful comparison asserts overflow and advances only m.  A
+        // failed comparison advances both n and m, producing the characteristic
+        // diagonal +5 walk; when m=3 wraps back to zero the packed address
+        // advances by only one byte.  Evaluation continues until OAMADDR wraps.
+        var inRange = SpriteYIsInRange(value);
+        if (inRange) _spriteOverflow = true;
+
+        var increment = inRange || (_oamAddress & 0x03) == 3 ? 1 : 5;
+        AdvanceSpriteEvaluationAddress(increment);
+        if (_spriteEvaluationAddressWrapped) CompleteSpriteEvaluation();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool SpriteYIsInRange(byte y)
+    {
+        // Evaluation on visible scanline N prepares sprites for scanline N+1.
+        // NES sprite Y is one less than the first rendered scanline, making the
+        // comparison equivalent to y <= N && N-y < height.
+        return y <= Scanline && Scanline - y < _spriteHeight;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AdvanceSpriteEvaluationAddress(int increment)
+    {
+        var next = _oamAddress + increment;
+        if (next > 0xFF) _spriteEvaluationAddressWrapped = true;
+        _oamAddress = (byte)next;
+    }
+
+    private void CompleteSpriteEvaluation()
+    {
+        _oamAddress &= 0xFC;
+        _spriteEvaluationState = SpriteEvaluationState.Complete;
+        _spriteEvaluationBytesRemaining = 0;
+    }
+
+    private void LoadEvaluatedSpritesForNextScanline()
+    {
+        _nextSpriteCount = _secondarySpriteCount;
+        var targetScanline = Scanline == PreRenderScanline ? 0 : Scanline + 1;
+        for (var index = 0; index < _nextSpriteCount; index++)
+        {
+            var offset = index << 2;
+            var y = _secondaryOamBytes[offset];
+            var tile = _secondaryOamBytes[offset + 1];
+            var attributes = _secondaryOamBytes[offset + 2];
+            var x = _secondaryOamBytes[offset + 3];
+            var row = targetScanline - (y + 1);
+            if ((attributes & 0x80) != 0) row = _spriteHeight - 1 - row;
+
+            var packed = (ulong)tile
+                | ((ulong)attributes << 8)
+                | ((ulong)x << 16)
+                | ((ulong)(byte)row << 24)
+                | ((ulong)_secondarySpriteSourceIndex[index] << 32);
+            if (Scanline != PreRenderScanline && _secondarySpriteZeroCandidate[index]) packed |= SpriteZeroMask;
+            _secondaryOam[index] = packed;
+            _nextSprites[index] = packed;
+        }
+
+        for (var index = _nextSpriteCount; index < 8; index++)
+        {
+            _secondaryOam[index] = 0;
+            _nextSprites[index] = 0;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ushort SpritePatternAddressForFetchSlot(int slot, bool highPlane)
+    {
+        if (slot < _nextSpriteCount)
+            return SpritePatternAddress(_nextSprites[slot], highPlane);
+
+        // Empty secondary-OAM slots still perform the two pattern-table bus
+        // fetches. Their lower address bits are don't-care to rendering, but
+        // the physical pattern-table select line remains observable to mapper
+        // hardware, so preserve the selected sprite table rather than skipping
+        // the cartridge transaction entirely.
+        if (_spriteHeight == 8)
+            return (ushort)(_spritePatternTableBase | 0x0FF0 | (highPlane ? 8 : 0));
+
+        return (ushort)(0x1000 | 0x0FE0 | (highPlane ? 8 : 0));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1576,6 +1795,14 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         return new DigitalBus($"{ComponentId}.{prefix}", pins);
     }
 
+    private enum SpriteEvaluationState
+    {
+        CheckingNormal,
+        CopyingNormal,
+        CheckingOverflow,
+        Complete
+    }
+
     private enum VramTransaction { None, Read, Write }
 
     private enum VramTransactionPurpose
@@ -1586,6 +1813,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         BackgroundPatternLow,
         BackgroundPatternHigh,
         DummyNametable,
+        SpriteDummyNametable,
         SpritePatternLow,
         SpritePatternHigh
     }

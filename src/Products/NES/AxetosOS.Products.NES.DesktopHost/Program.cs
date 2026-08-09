@@ -186,7 +186,7 @@ if (ppuSplitTrace || cartridgeVideoTrace.HasValue)
         ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.Ppu,
         _ => null
     };
-    if (ppuSplitTrace) tracedPpu?.SplitTraceOutput.SetCaptureEnabled(true);
+    if (ppuSplitTrace || cartridgeVideoTrace.HasValue) tracedPpu?.SplitTraceOutput.SetCaptureEnabled(true);
 }
 
 CartridgeVideoTraceCollector? cartridgeTraceCollector = null;
@@ -198,7 +198,19 @@ if (cartridgeVideoTrace is { } traceRange)
         return 6;
     }
 
-    cartridgeTraceCollector = new CartridgeVideoTraceCollector(traceMmc1, tracedPpu, traceRange.Start, traceRange.End);
+    var tracedCpu = host.Machine.ActiveMotherboard switch
+    {
+        ActiveNesMotherboard.Famicom => host.Machine.Famicom.Cpu,
+        ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.Cpu,
+        _ => null
+    };
+    if (tracedCpu is null)
+    {
+        Console.Error.WriteLine("--cartridge-video-trace requires an RP2A0x CPU paired with the traced RP2C02 board.");
+        return 6;
+    }
+
+    cartridgeTraceCollector = new CartridgeVideoTraceCollector(traceMmc1, tracedPpu, tracedCpu, traceRange.Start, traceRange.End);
 }
 var initial = host.Snapshot();
 Console.WriteLine("AxetosOS Products / NES — virtual hardware desktop host");
@@ -239,10 +251,14 @@ Console.WriteLine(realTimePacing
 if (profileSimulation) Console.WriteLine("Profiler:    enabled; component/net/internal-IC timing sampled 1/256; host timing exact; results every 5 seconds");
 if (ppuSplitTrace) Console.WriteLine("PPU trace:   sprite-zero and $2002/$2005/$2006 split-screen events enabled");
 if (cartridgeVideoTrace is { } activeTrace)
-    Console.WriteLine($"Cart trace:  MMC1 CHR/CIRAM mapping + framebuffer quarters for frames {activeTrace.Start:N0}-{activeTrace.End:N0}");
+{
+    Console.WriteLine($"Cart trace:  MMC1 exact CHR-read + PPUSTATUS + sprite-zero provenance for frames {activeTrace.Start:N0}-{activeTrace.End:N0}");
+    Console.WriteLine("Trace timing: precision drain every 12 master clocks (one CPU bus-cycle period) while capture is active");
+}
 if (stopFrame.HasValue) Console.WriteLine($"Stop target: PPU frame {stopFrame.Value:N0}");
 
 const int MasterCyclesPerVideoBatch = 16_384;
+const int MasterCyclesPerPrecisionTraceBatch = 12;
 const int AudioTransferBufferSize = 4_096;
 var audioTransfer = new float[AudioTransferBufferSize];
 var timer = Stopwatch.StartNew();
@@ -280,10 +296,14 @@ while (presenter.IsOpen)
     if (!presenter.IsOpen) break;
 
     cartridgeTraceCollector?.UpdateFetchCapture(host.Snapshot().PpuFrames);
+    var masterCyclesThisBatch = cartridgeTraceCollector?.RequiresFineTiming == true
+        ? MasterCyclesPerPrecisionTraceBatch
+        : MasterCyclesPerVideoBatch;
     profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
-    host.AdvanceMasterCycles(MasterCyclesPerVideoBatch);
+    host.AdvanceMasterCycles(masterCyclesThisBatch);
+    cartridgeTraceCollector?.ObserveTimingSample();
     cartridgeTraceCollector?.DrainCapturedSignals();
-    pacedMasterCycles += MasterCyclesPerVideoBatch;
+    pacedMasterCycles += (ulong)masterCyclesThisBatch;
     var reachedStopFrame = stopFrame.HasValue && host.Snapshot().PpuFrames >= stopFrame.Value;
     if (profileSimulation)
     {
@@ -291,10 +311,17 @@ while (presenter.IsOpen)
         profileSimulationBatches++;
     }
 
-    tracedPpu?.SplitTraceOutput.Drain(trace => Console.WriteLine(
-        $"PPU SPLIT: frame={trace.Frame:N0}; scanline={trace.Scanline}; dot={trace.Dot}; " +
-        $"op={trace.Operation}; value=${trace.Value:X2}; v=${trace.VramAddress:X4}; " +
-        $"t=${trace.TemporaryAddress:X4}; x={trace.FineX}; w={(trace.WriteToggle ? 1 : 0)}"));
+    tracedPpu?.SplitTraceOutput.Drain(trace =>
+    {
+        cartridgeTraceCollector?.OnPpuSplitTrace(trace);
+        if (ppuSplitTrace)
+        {
+            Console.WriteLine(
+                $"PPU SPLIT: frame={trace.Frame:N0}; scanline={trace.Scanline}; dot={trace.Dot}; " +
+                $"op={trace.Operation}; value=${trace.Value:X2}; v=${trace.VramAddress:X4}; " +
+                $"t=${trace.TemporaryAddress:X4}; x={trace.FineX}; w={(trace.WriteToggle ? 1 : 0)}");
+        }
+    });
 
     if (videoSink.CompletedFrame != lastPresentedFrame)
     {

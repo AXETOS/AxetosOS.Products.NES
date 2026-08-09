@@ -22,9 +22,9 @@ public interface IReplaceableCartridgeHardware : IVirtualHardwareComponent, ICom
     DigitalBus CpuData { get; }
     DigitalPin CpuReadWrite { get; }
     DigitalPin CpuM2 { get; }
-    DigitalBus PpuAddressData { get; }
-    DigitalBus PpuHighAddress { get; }
-    DigitalPin PpuAle { get; }
+    DigitalPin CpuRomSelectBar { get; }
+    DigitalBus PpuAddress { get; }
+    DigitalBus PpuData { get; }
     DigitalPin PpuReadBar { get; }
     DigitalPin PpuWriteBar { get; }
     DigitalPin CiramChipEnableBar { get; }

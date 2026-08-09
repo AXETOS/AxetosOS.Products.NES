@@ -33,8 +33,21 @@ public readonly record struct Mmc1PpuMappingDiagnostic(
     byte ChrBank1,
     byte PrgBank);
 
+public readonly record struct Mmc1ChrReadTraceEvent(
+    ulong PpuReadCount,
+    ushort PpuAddress,
+    int PhysicalAddress,
+    int Bank4K,
+    byte Data,
+    byte Control,
+    byte ChrBank0,
+    byte ChrBank1,
+    byte PrgBank);
+
 public readonly record struct Mmc1RegisterTraceEvent(
     ulong MapperWriteCount,
+    ulong PpuReadCountAtCommit,
+    ulong PpuWriteCountAtCommit,
     ushort Address,
     byte Data,
     Mmc1RegisterOperation Operation,
@@ -69,7 +82,6 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     private byte _chrBank0;
     private byte _chrBank1;
     private byte _prgBank;
-    private byte _ppuLowAddressLatch;
     private bool _cpuReadAddressSelected;
     private ushort _cpuSelectedAddress;
     private byte _cpuSelectedData;
@@ -77,19 +89,23 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     private bool _ppuWriteActive;
     private bool _previousCpuCycleWasWrite;
     private bool _suppressCurrentSerialDataWrite;
+    private bool _cpuCycleRomSelected;
+    private bool _cpuCyclePrgRamSelected;
+    private ushort _cpuCycleLogicalAddress;
     private ulong _mapperWriteHash = MapperWriteHashOffset;
     private readonly ulong _powerInputMask;
     private readonly ulong _cpuAddressControlInputMask;
     private readonly ulong _cpuM2InputMask;
-    private readonly ulong _ppuControlInputMask;
-    private readonly ulong _ppuAddressDataInputMask;
+    private readonly ulong _cpuRomSelectInputMask;
+    private readonly ulong _ppuAddressControlInputMask;
+    private readonly ulong _ppuDataInputMask;
 
     public Mmc1Cartridge(string componentId) : base(componentId)
     {
         Vcc = AddPin("VCC", PinDirection.Input);
         Gnd = AddPin("GND", PinDirection.Input);
         CpuAddress = new DigitalBus($"{componentId}.CPU.A",
-            Enumerable.Range(0, 16).Select(i => AddPin($"CPU.A{i}", PinDirection.Input)).ToArray());
+            Enumerable.Range(0, 15).Select(i => AddPin($"CPU.A{i}", PinDirection.Input)).ToArray());
         CpuData = new DigitalBus($"{componentId}.CPU.D",
             Enumerable.Range(0, 8).Select(i => AddPin($"CPU.D{i}", PinDirection.Bidirectional)).ToArray());
         CpuReadWrite = AddPin("CPU.RW", PinDirection.Input);
@@ -99,12 +115,15 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         // observe the newly-started cycle rather than the cycle that just ended.
         // The falling edge is a real cartridge connector edge and occurs while
         // address, R/W and CPU data still represent the active transaction.
-        CpuM2 = AddPin("CPU.M2", PinDirection.Input, DigitalInputActivation.FallingEdge);
-        PpuAddressData = new DigitalBus($"{componentId}.PPU.AD",
-            Enumerable.Range(0, 8).Select(i => AddPin($"PPU.AD{i}", PinDirection.Bidirectional)).ToArray());
-        PpuHighAddress = new DigitalBus($"{componentId}.PPU.AH",
-            Enumerable.Range(8, 6).Select(i => AddPin($"PPU.A{i}", PinDirection.Input)).ToArray());
-        PpuAle = AddPin("PPU.ALE", PinDirection.Input);
+        CpuM2 = AddPin("CPU.M2", PinDirection.Input);
+        CpuRomSelectBar = AddPin("CPU.ROMSEL_BAR", PinDirection.Input);
+        // The console motherboard has already demultiplexed RP2C0x AD0-AD7
+        // through its 74LS373 before the cartridge connector. MMC1 therefore
+        // receives ordinary PPU A0-A13 address pins plus a separate D0-D7 bus.
+        PpuAddress = new DigitalBus($"{componentId}.PPU.A",
+            Enumerable.Range(0, 14).Select(i => AddPin($"PPU.A{i}", PinDirection.Input)).ToArray());
+        PpuData = new DigitalBus($"{componentId}.PPU.D",
+            Enumerable.Range(0, 8).Select(i => AddPin($"PPU.D{i}", PinDirection.Bidirectional)).ToArray());
         PpuReadBar = AddPin("PPU.RD_BAR", PinDirection.Input);
         PpuWriteBar = AddPin("PPU.WR_BAR", PinDirection.Input);
         CiramChipEnableBar = AddPin("CIRAM.CE_BAR", PinDirection.Output);
@@ -112,18 +131,21 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         IrqBar = AddPin("IRQ_BAR", PinDirection.Output);
         RegisterTraceOutput = new BufferedOutputPin<Mmc1RegisterTraceEvent>(
             $"{componentId}.REGISTER_TRACE");
+        ChrReadTraceOutput = new BufferedOutputPin<Mmc1ChrReadTraceEvent>(
+            $"{componentId}.CHR_READ_TRACE");
 
         _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
         _cpuAddressControlInputMask = CpuAddress.InputChangeMask | CpuReadWrite.InputChangeMask;
         _cpuM2InputMask = CpuM2.InputChangeMask;
-        _ppuControlInputMask = PpuHighAddress.InputChangeMask | PpuAle.InputChangeMask |
+        _cpuRomSelectInputMask = CpuRomSelectBar.InputChangeMask;
+        _ppuAddressControlInputMask = PpuAddress.InputChangeMask |
             PpuReadBar.InputChangeMask | PpuWriteBar.InputChangeMask;
-        _ppuAddressDataInputMask = PpuAddressData.InputChangeMask;
+        _ppuDataInputMask = PpuData.InputChangeMask;
 
         // Data pins always retain delivered levels, but MMC1 consumes CPU data
-        // only on an M2-qualified write and PPU data only during ALE/CHR-RAM write.
+        // only on an M2-qualified write and PPU data only during CHR-RAM writes.
         CpuData.SetOwnerWakeEnabled(false);
-        PpuAddressData.SetOwnerWakeEnabled(false);
+        PpuData.SetOwnerWakeEnabled(false);
         ApplyResetState();
     }
 
@@ -134,9 +156,9 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     public DigitalBus CpuData { get; }
     public DigitalPin CpuReadWrite { get; }
     public DigitalPin CpuM2 { get; }
-    public DigitalBus PpuAddressData { get; }
-    public DigitalBus PpuHighAddress { get; }
-    public DigitalPin PpuAle { get; }
+    public DigitalPin CpuRomSelectBar { get; }
+    public DigitalBus PpuAddress { get; }
+    public DigitalBus PpuData { get; }
     public DigitalPin PpuReadBar { get; }
     public DigitalPin PpuWriteBar { get; }
     public DigitalPin CiramChipEnableBar { get; }
@@ -165,6 +187,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     public byte LastMapperWriteData { get; private set; }
     public ulong MapperWriteHash => _mapperWriteHash;
     public BufferedOutputPin<Mmc1RegisterTraceEvent> RegisterTraceOutput { get; }
+    public BufferedOutputPin<Mmc1ChrReadTraceEvent> ChrReadTraceOutput { get; }
 
     /// <summary>
     /// Inspects the cartridge-local PPU address translation without mutating
@@ -272,6 +295,9 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         _ppuWriteActive = false;
         _previousCpuCycleWasWrite = false;
         _suppressCurrentSerialDataWrite = false;
+        _cpuCycleRomSelected = false;
+        _cpuCyclePrgRamSelected = false;
+        _cpuCycleLogicalAddress = 0;
         IgnoredConsecutiveMapperWriteCount = 0;
         RefreshPpuDataWakeState();
         ReleaseOutputs();
@@ -284,7 +310,6 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         _chrBank0 = 0;
         _chrBank1 = 0;
         _prgBank = 0;
-        _ppuLowAddressLatch = 0;
         _cpuReadAddressSelected = false;
         _cpuSelectedAddress = 0;
         _cpuSelectedData = 0;
@@ -292,6 +317,9 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         _ppuWriteActive = false;
         _previousCpuCycleWasWrite = false;
         _suppressCurrentSerialDataWrite = false;
+        _cpuCycleRomSelected = false;
+        _cpuCyclePrgRamSelected = false;
+        _cpuCycleLogicalAddress = 0;
         MapperWriteCount = 0;
         MapperResetWriteCount = 0;
         MapperCommitCount = 0;
@@ -326,10 +354,12 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
 
     private void RefreshPpuDataWakeState()
     {
-        var enabled = IsPowered() &&
-            (PpuAle.SampledLevel == DigitalLevel.High || (_chrRam && PpuWriteBar.SampledLevel == DigitalLevel.Low));
-        PpuAddressData.SetOwnerWakeEnabled(enabled);
+        var enabled = IsPowered()
+            && _chrRam
+            && PpuWriteBar.SampledLevel == DigitalLevel.Low;
+        PpuData.SetOwnerWakeEnabled(enabled);
     }
+
 
     protected override void OnInputChanges(ulong changedInputMask)
     {
@@ -337,10 +367,11 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         var powerChanged = (changedInputMask & _powerInputMask) != 0;
         var cpuAddressOrControlChanged = (changedInputMask & _cpuAddressControlInputMask) != 0;
         var cpuM2Changed = (changedInputMask & _cpuM2InputMask) != 0;
-        var ppuControlChanged = (changedInputMask & _ppuControlInputMask) != 0;
-        var ppuDataChanged = (changedInputMask & _ppuAddressDataInputMask) != 0;
+        var cpuRomSelectChanged = (changedInputMask & _cpuRomSelectInputMask) != 0;
+        var ppuAddressOrControlChanged = (changedInputMask & _ppuAddressControlInputMask) != 0;
+        var ppuDataChanged = (changedInputMask & _ppuDataInputMask) != 0;
 
-        if (!powerChanged && !cpuAddressOrControlChanged && !cpuM2Changed && !ppuControlChanged && !ppuDataChanged)
+        if (!powerChanged && !cpuAddressOrControlChanged && !cpuM2Changed && !cpuRomSelectChanged && !ppuAddressOrControlChanged && !ppuDataChanged)
             return;
 
         if (!IsPowered())
@@ -354,20 +385,20 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             return;
         }
 
-        if (powerChanged || ppuControlChanged) RefreshPpuDataWakeState();
+        if (powerChanged || ppuAddressOrControlChanged) RefreshPpuDataWakeState();
         var ppuDataCanMatter = ppuDataChanged &&
-            (PpuAle.SampledLevel == DigitalLevel.High || (_chrRam && PpuWriteBar.SampledLevel == DigitalLevel.Low));
-        if (powerChanged || ppuControlChanged || ppuDataCanMatter)
+            _chrRam && PpuWriteBar.SampledLevel == DigitalLevel.Low;
+        if (powerChanged || ppuAddressOrControlChanged || ppuDataCanMatter)
             ProcessPpuPort();
 
-        if (powerChanged || cpuAddressOrControlChanged)
-            UpdateCpuOutput();
-
-        // CpuM2 is package-owned falling-edge activated.  At this edge the
-        // CPU bus still carries the transaction being completed, so both ROM
-        // reads and MMC1/PRG-RAM writes are sampled from the physical pins.
+        // Sample the bus transaction before recomputing output selection for
+        // the now-inactive M2 phase. This preserves the /ROMSEL/WRAM select
+        // that was latched throughout the preceding high phase.
         if (!powerChanged && cpuM2Changed && CpuM2.SampledLevel == DigitalLevel.Low)
             CompleteCpuTransaction();
+
+        if (powerChanged || cpuAddressOrControlChanged || cpuRomSelectChanged || cpuM2Changed)
+            UpdateCpuOutput();
     }
 
     private void UpdateCpuOutput()
@@ -375,23 +406,38 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         if (!CpuAddress.TrySample(out var rawAddress))
         {
             _cpuReadAddressSelected = false;
+            _cpuCycleRomSelected = false;
+            _cpuCyclePrgRamSelected = false;
             CpuData.Release();
             return;
         }
 
-        var address = (ushort)rawAddress;
-        var romSelected = address >= 0x8000;
-        var prgRamSelected = address is >= 0x6000 and < 0x8000 && PrgRamEnabled;
-        _cpuReadAddressSelected = CpuReadWrite.SampledLevel == DigitalLevel.High && (romSelected || prgRamSelected);
+        var address = (ushort)(rawAddress & 0x7FFF);
+        var m2High = CpuM2.SampledLevel == DigitalLevel.High;
+        var romSelected = m2High && CpuRomSelectBar.SampledLevel == DigitalLevel.Low;
+        var prgRamSelected = m2High
+            && CpuRomSelectBar.SampledLevel == DigitalLevel.High
+            && (address & 0x6000) == 0x6000
+            && PrgRamEnabled;
+
+        // A15 is not present on the NES cartridge connector. During an active
+        // /ROMSEL window its value is implicit (logical $8000-$FFFF); during a
+        // PRG-RAM window A13/A14 + M2 + inactive /ROMSEL identify $6000-$7FFF.
+        _cpuCycleRomSelected = romSelected;
+        _cpuCyclePrgRamSelected = prgRamSelected;
+        _cpuCycleLogicalAddress = romSelected ? (ushort)(0x8000 | address) : address;
+
+        _cpuReadAddressSelected = CpuReadWrite.SampledLevel == DigitalLevel.High
+            && (romSelected || prgRamSelected);
         if (!_cpuReadAddressSelected)
         {
             CpuData.Release();
             return;
         }
 
-        _cpuSelectedAddress = address;
-        _cpuSelectedData = address >= 0x8000
-            ? ReadPrg(address)
+        _cpuSelectedAddress = _cpuCycleLogicalAddress;
+        _cpuSelectedData = romSelected
+            ? ReadPrg(_cpuSelectedAddress)
             : _prgRam[address & 0x1FFF];
         CpuData.Drive(_cpuSelectedData);
     }
@@ -402,8 +448,6 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         var suppressSerialDataWrite = writeCycle && _previousCpuCycleWasWrite;
         _previousCpuCycleWasWrite = writeCycle;
 
-        if (!CpuAddress.TrySample(out var rawAddress)) return;
-        var address = (ushort)rawAddress;
         if (!writeCycle)
         {
             if (!_cpuReadAddressSelected) return;
@@ -413,66 +457,57 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             return;
         }
 
-        if (address < 0x6000 || !CpuData.TrySample(out var rawData)) return;
+        if (!CpuData.TrySample(out var rawData)) return;
         var data = (byte)rawData;
-        if (address < 0x8000)
+        if (_cpuCyclePrgRamSelected)
         {
-            if (PrgRamEnabled) _prgRam[address & 0x1FFF] = data;
+            if (PrgRamEnabled) _prgRam[_cpuCycleLogicalAddress & 0x1FFF] = data;
             return;
         }
 
-        WriteMapperRegister(address, data, suppressSerialDataWrite);
+        if (_cpuCycleRomSelected)
+            WriteMapperRegister(_cpuCycleLogicalAddress, data, suppressSerialDataWrite);
     }
 
     private void ProcessPpuPort()
     {
-        if (PpuAle.SampledLevel == DigitalLevel.High)
-        {
-            // AD0-AD7 are multiplexed address/data pins. During ALE the RP2C0x
-            // owns them and presents the low PPU address byte. The cartridge
-            // must drop its CHR data drivers before sampling that address or it
-            // physically contends with the PPU and can latch its own old data.
-            PpuAddressData.Release();
-            _ppuReadActive = false;
-            _ppuWriteActive = false;
-            if (PpuAddressData.TrySample(out var low)) _ppuLowAddressLatch = (byte)low;
-        }
-
-        if (!PpuHighAddress.TrySample(out var high))
+        if (!PpuAddress.TrySample(out var rawAddress))
         {
             CiramChipEnableBar.Drive(DigitalLevel.High);
             CiramA10.Drive(DigitalLevel.Unknown);
-            if (PpuAle.SampledLevel != DigitalLevel.High) PpuAddressData.Release();
+            PpuData.Release();
+            _ppuReadActive = false;
+            _ppuWriteActive = false;
             return;
         }
 
-        var address = (ushort)(((high & 0x3F) << 8) | _ppuLowAddressLatch);
+        var address = (ushort)(rawAddress & 0x3FFF);
         DriveCiramOutputs(address);
         var readSelected = false;
         var writeSelected = false;
 
-        if (PpuAle.SampledLevel != DigitalLevel.High && address < 0x2000)
+        if (address < 0x2000)
         {
             readSelected = PpuReadBar.SampledLevel == DigitalLevel.Low;
             writeSelected = _chrRam && PpuWriteBar.SampledLevel == DigitalLevel.Low;
             if (readSelected)
             {
-                PpuAddressData.Drive(ReadChr(address));
+                PpuData.Drive(ReadChr(address));
                 if (!_ppuReadActive) PpuReadCount++;
             }
             else
             {
-                PpuAddressData.Release();
-                if (writeSelected && PpuAddressData.TrySample(out var data) && !_ppuWriteActive)
+                PpuData.Release();
+                if (writeSelected && PpuData.TrySample(out var data) && !_ppuWriteActive)
                 {
                     WriteChr(address, (byte)data);
                     PpuWriteCount++;
                 }
             }
         }
-        else if (PpuAle.SampledLevel != DigitalLevel.High)
+        else
         {
-            PpuAddressData.Release();
+            PpuData.Release();
         }
 
         _ppuReadActive = readSelected;
@@ -558,6 +593,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             MapperResetWriteCount++;
             _shiftRegister = 0x10;
             _control |= 0x0C;
+            RefreshMapperControlledPpuOutputs();
             NotifyRegisterDiagnostic(address, value, Mmc1RegisterOperation.Reset);
             return;
         }
@@ -597,6 +633,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         }
         MapperCommitCount++;
         _shiftRegister = 0x10;
+        RefreshMapperControlledPpuOutputs();
         NotifyRegisterDiagnostic(address, value, operation);
     }
 
@@ -606,6 +643,8 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         if (!RegisterTraceOutput.CaptureEnabled) return;
         RegisterTraceOutput.Drive(new Mmc1RegisterTraceEvent(
             MapperWriteCount,
+            PpuReadCount,
+            PpuWriteCount,
             address,
             data,
             operation,
@@ -614,6 +653,26 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             _chrBank1,
             _prgBank,
             _shiftRegister));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RefreshMapperControlledPpuOutputs()
+    {
+        if (!IsPowered() || !PpuAddress.TrySample(out var rawAddress)) return;
+
+        var address = (ushort)(rawAddress & 0x3FFF);
+        DriveCiramOutputs(address);
+
+        // MMC1 CHR bank outputs feed the cartridge CHR device continuously.
+        // If the register commits while /RD is already active, the physical
+        // CHR address changes on the same data window without inventing a new
+        // PPU read transaction.
+        if (_ppuReadActive &&
+            PpuReadBar.SampledLevel == DigitalLevel.Low &&
+            address < 0x2000)
+        {
+            PpuData.Drive(ReadChr(address));
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -671,9 +730,29 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal byte ReadPpuCompiled(ushort address)
     {
-        PpuReadCount++;
-        return ReadChr(address);
+        address &= 0x1FFF;
+        var physicalAddress = ChrIndex(address);
+        var data = _chr[physicalAddress];
+
+        if (ChrReadTraceOutput.CaptureEnabled)
+        {
+            ChrReadTraceOutput.Drive(new Mmc1ChrReadTraceEvent(
+                PpuReadCount,
+                address,
+                physicalAddress,
+                physicalAddress / ChrBankSize,
+                data,
+                _control,
+                _chrBank0,
+                _chrBank1,
+                _prgBank));
+        }
+
+        return data;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ObserveCompiledPpuReadBegin(int _) => PpuReadCount++;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void WritePpuCompiled(ushort address, byte value)
@@ -686,7 +765,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     private void ReleaseOutputs()
     {
         CpuData.Release();
-        PpuAddressData.Release();
+        PpuData.Release();
         CiramChipEnableBar.Release();
         CiramA10.Release();
         IrqBar.Release();
@@ -705,17 +784,18 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             new[]
             {
                 new CompiledPinCondition(CpuReadWrite, DigitalLevel.High),
-                new CompiledPinCondition(CpuAddress.Pins[15], DigitalLevel.High)
+                new CompiledPinCondition(CpuRomSelectBar, DigitalLevel.Low)
             },
             new[]
             {
                 new CompiledPinCondition(CpuReadWrite, DigitalLevel.Low),
-                new CompiledPinCondition(CpuAddress.Pins[15], DigitalLevel.High)
+                new CompiledPinCondition(CpuRomSelectBar, DigitalLevel.Low)
             },
             CompiledBusReadPhase.Complete,
-            address => ReadCpuCompiled((ushort)address),
-            (address, value) => WriteCpuCompiled((ushort)address, value),
-            ObserveCompiledCpuBusCycle);
+            address => ReadCpuCompiled((ushort)(0x8000 | address)),
+            (address, value) => WriteCpuCompiled((ushort)(0x8000 | address), value),
+            ObserveCompiledCpuBusCycle,
+            writePhase: CompiledBusWritePhase.Complete);
 
         if (_prgRam.Length != 0)
         {
@@ -726,14 +806,16 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
                 new[]
                 {
                     new CompiledPinCondition(CpuReadWrite, DigitalLevel.High),
-                    new CompiledPinCondition(CpuAddress.Pins[15], DigitalLevel.Low),
+                    new CompiledPinCondition(CpuM2, DigitalLevel.High),
+                    new CompiledPinCondition(CpuRomSelectBar, DigitalLevel.High),
                     new CompiledPinCondition(CpuAddress.Pins[14], DigitalLevel.High),
                     new CompiledPinCondition(CpuAddress.Pins[13], DigitalLevel.High)
                 },
                 new[]
                 {
                     new CompiledPinCondition(CpuReadWrite, DigitalLevel.Low),
-                    new CompiledPinCondition(CpuAddress.Pins[15], DigitalLevel.Low),
+                    new CompiledPinCondition(CpuM2, DigitalLevel.High),
+                    new CompiledPinCondition(CpuRomSelectBar, DigitalLevel.High),
                     new CompiledPinCondition(CpuAddress.Pins[14], DigitalLevel.High),
                     new CompiledPinCondition(CpuAddress.Pins[13], DigitalLevel.High)
                 },
@@ -741,34 +823,31 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
                 address => ReadCpuCompiled((ushort)address),
                 (address, value) => WriteCpuCompiled((ushort)address, value),
                 ObserveCompiledCpuBusCycle,
-                (_, _) => PrgRamEnabled);
+                (_, _) => PrgRamEnabled,
+                CompiledBusWritePhase.Complete);
         }
 
-        var ppuAddressPins = new DigitalPin[PpuAddressData.Width + PpuHighAddress.Width];
-        for (var bit = 0; bit < PpuAddressData.Width; bit++) ppuAddressPins[bit] = PpuAddressData.Pins[bit];
-        for (var bit = 0; bit < PpuHighAddress.Width; bit++) ppuAddressPins[bit + PpuAddressData.Width] = PpuHighAddress.Pins[bit];
         Action<int, byte>? ppuWrite = _chrRam ? (address, value) => WritePpuCompiled((ushort)address, value) : null;
         yield return new CompiledBusTargetDescriptor(
             this,
-            ppuAddressPins,
-            PpuAddressData.Pins,
+            PpuAddress.Pins,
+            PpuData.Pins,
             new[]
             {
-                new CompiledPinCondition(PpuHighAddress.Pins[5], DigitalLevel.Low),
-                new CompiledPinCondition(PpuAle, DigitalLevel.Low),
+                new CompiledPinCondition(PpuAddress.Pins[13], DigitalLevel.Low),
                 new CompiledPinCondition(PpuReadBar, DigitalLevel.Low)
             },
             _chrRam
                 ? new[]
                 {
-                    new CompiledPinCondition(PpuHighAddress.Pins[5], DigitalLevel.Low),
-                    new CompiledPinCondition(PpuAle, DigitalLevel.Low),
+                    new CompiledPinCondition(PpuAddress.Pins[13], DigitalLevel.Low),
                     new CompiledPinCondition(PpuWriteBar, DigitalLevel.Low)
                 }
                 : Array.Empty<CompiledPinCondition>(),
             CompiledBusReadPhase.Complete,
             address => ReadPpuCompiled((ushort)address),
-            ppuWrite);
+            ppuWrite,
+            observeReadBegin: ObserveCompiledPpuReadBegin);
     }
 
     bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(
@@ -778,7 +857,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     {
         if (ReferenceEquals(output, CiramChipEnableBar))
         {
-            drive = new CompiledDriveState(sampleInput(PpuHighAddress.Pins[5]) switch
+            drive = new CompiledDriveState(sampleInput(PpuAddress.Pins[13]) switch
             {
                 DigitalLevel.Low => DigitalLevel.High,
                 DigitalLevel.High => DigitalLevel.Low,
@@ -792,7 +871,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             var mode = _control & 0x03;
             if (mode == 0) drive = new CompiledDriveState(DigitalLevel.Low);
             else if (mode == 1) drive = new CompiledDriveState(DigitalLevel.High);
-            else drive = new CompiledDriveState(sampleInput(PpuHighAddress.Pins[mode == 2 ? 2 : 3]));
+            else drive = new CompiledDriveState(sampleInput(PpuAddress.Pins[mode == 2 ? 10 : 11]));
             return true;
         }
 

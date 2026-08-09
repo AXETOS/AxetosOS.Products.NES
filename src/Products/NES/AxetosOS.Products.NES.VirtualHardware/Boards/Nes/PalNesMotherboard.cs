@@ -104,10 +104,12 @@ public sealed class PalNesMotherboard
 
     public IReadOnlyList<DigitalNet> CpuAddressNets { get; private set; } = [];
     public IReadOnlyList<DigitalNet> CpuDataNets { get; private set; } = [];
-    public IReadOnlyList<DigitalNet> PpuAddressDataNets { get; private set; } = [];
+    public IReadOnlyList<DigitalNet> PpuDataNets { get; private set; } = [];
+    public IReadOnlyList<DigitalNet> PpuLowAddressNets { get; private set; } = [];
     public IReadOnlyList<DigitalNet> PpuHighAddressNets { get; private set; } = [];
     public DigitalNet CpuReadWriteNet { get; private set; } = null!;
     public DigitalNet CpuM2Net { get; private set; } = null!;
+    public DigitalNet CpuRomSelectBarNet { get; private set; } = null!;
     public DigitalNet CartridgeIrqNet { get; private set; } = null!;
     public DigitalNet PpuReadBarNet { get; private set; } = null!;
     public DigitalNet PpuWriteBarNet { get; private set; } = null!;
@@ -205,12 +207,18 @@ public sealed class PalNesMotherboard
         CpuReadWriteNet = Board.Connect("CPU.RW", Cpu.ReadWrite, CpuRam.WriteEnableBar, Ppu.CpuReadWrite, BusInverter.A[0]);
         CpuM2Net = Board.Connect("CPU.M2", Cpu.M2);
 
-        // A15 enables both decoder halves. A14:A13 select the mirrored 8 KiB
-        // CPU regions: Y0 selects internal RAM and Y1 selects PPU registers.
-        Board.Connect("CPU.A15", AddressDecoder.Enable1Bar, AddressDecoder.Enable2Bar);
-        Board.Connect("CPU.A13", AddressDecoder.A1, AddressDecoder.A2);
-        Board.Connect("CPU.A14", AddressDecoder.B1, AddressDecoder.B2);
-        Board.Connect("DECODE.RAM_BAR", AddressDecoder.Y10Bar, CpuRam.ChipSelectBar);
+        // The first half of the LS139 qualifies the CPU map with M2. With 1A=M2
+        // and 1B=A15, 1Y1 is active only for M2=1/A15=0 (/M07) and 1Y3
+        // is active only for M2=1/A15=1 (/ROMSEL). /M07 then enables the
+        // second half, where A14:A13 select the mirrored 8 KiB internal regions.
+        Board.Connect("GND", AddressDecoder.Enable1Bar);
+        Board.Connect("CPU.M2", AddressDecoder.A1);
+        Board.Connect("CPU.A15", AddressDecoder.B1);
+        Board.Connect("DECODE.M07_BAR", AddressDecoder.Y11Bar, AddressDecoder.Enable2Bar);
+        CpuRomSelectBarNet = Board.Connect("CPU.ROMSEL_BAR", AddressDecoder.Y13Bar);
+        Board.Connect("CPU.A13", AddressDecoder.A2);
+        Board.Connect("CPU.A14", AddressDecoder.B2);
+        Board.Connect("DECODE.RAM_BAR", AddressDecoder.Y20Bar, CpuRam.ChipSelectBar);
         Board.Connect("DECODE.PPU_BAR", AddressDecoder.Y21Bar, Ppu.ChipSelectBar);
 
         // One LS368 channel supplies active-low CPU read enable to work RAM.
@@ -225,17 +233,26 @@ public sealed class PalNesMotherboard
 
     private void WirePpuMemoryBus()
     {
-        var adNets = new DigitalNet[8];
+        // RP2C0x AD0-AD7 are multiplexed only on the PPU package side.
+        // The motherboard's 74LS373 demultiplexes the low address byte. The
+        // cartridge connector therefore sees separate PPU A0-A7 and D0-D7
+        // conductors, just like the physical console.
+        var dataNets = new DigitalNet[8];
+        var lowAddressNets = new DigitalNet[8];
         for (var bit = 0; bit < 8; bit++)
         {
-            adNets[bit] = Board.Connect(
-                $"PPU.AD{bit}",
+            dataNets[bit] = Board.Connect(
+                $"PPU.D{bit}",
                 Ppu.MultiplexedAddressData.Pins[bit],
                 PpuAddressLatch.D.Pins[bit],
                 Ciram.Data.Pins[bit]);
-            Board.Connect($"CIRAM.A{bit}", PpuAddressLatch.Q.Pins[bit], Ciram.Address.Pins[bit]);
+            lowAddressNets[bit] = Board.Connect(
+                $"PPU.A{bit}",
+                PpuAddressLatch.Q.Pins[bit],
+                Ciram.Address.Pins[bit]);
         }
-        PpuAddressDataNets = adNets;
+        PpuDataNets = dataNets;
+        PpuLowAddressNets = lowAddressNets;
 
         var highNets = new DigitalNet[6];
         for (var bit = 0; bit < 6; bit++)

@@ -30,10 +30,13 @@ public sealed class VirtualHardwareNtscNesMotherboardTests
 
         Assert.Equal(16, board.CpuAddressNets.Count);
         Assert.Equal(8, board.CpuDataNets.Count);
-        Assert.Equal(8, board.PpuAddressDataNets.Count);
+        Assert.Equal(8, board.PpuDataNets.Count);
+        Assert.Equal(8, board.PpuLowAddressNets.Count);
         Assert.Equal(6, board.PpuHighAddressNets.Count);
         Assert.Same(board.CpuDataNets[0], board.Cpu.Data.Pins[0].Net);
-        Assert.Same(board.PpuAddressDataNets[0], board.Ppu.MultiplexedAddressData.Pins[0].Net);
+        Assert.Same(board.PpuDataNets[0], board.Ppu.MultiplexedAddressData.Pins[0].Net);
+        Assert.Same(board.PpuLowAddressNets[0], board.PpuAddressLatch.Q.Pins[0].Net);
+        Assert.NotSame(board.PpuDataNets[0], board.PpuLowAddressNets[0]);
         Assert.Same(board.CartridgeIrqNet, board.Cpu.IrqBar.Net);
     }
 

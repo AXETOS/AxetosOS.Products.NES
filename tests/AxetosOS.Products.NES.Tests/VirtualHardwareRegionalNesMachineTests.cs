@@ -54,7 +54,7 @@ public sealed class VirtualHardwareRegionalNesMachineTests
     [Fact]
     public void Slot_has_one_normalized_bus_shape_for_all_regions()
     {
-        Assert.Equal(16, SharedVirtualRomSlot.CpuAddressWidth);
+        Assert.Equal(15, SharedVirtualRomSlot.CpuAddressWidth);
         Assert.Equal(8, SharedVirtualRomSlot.CpuDataWidth);
         Assert.Equal(14, SharedVirtualRomSlot.PpuAddressWidth);
         Assert.Equal(8, SharedVirtualRomSlot.PpuDataWidth);
@@ -81,8 +81,14 @@ public sealed class VirtualHardwareRegionalNesMachineTests
         var cartridge = machine.Slot.Cartridge;
         Assert.NotNull(cartridge);
         Assert.Contains(cartridge!, machine.Famicom.Board.Components);
-        Assert.Same(machine.Famicom.CpuAddressNets[15], cartridge!.CpuAddress.Pins[15].Net);
-        Assert.Same(machine.Famicom.PpuAddressDataNets[0], cartridge!.PpuAddressData.Pins[0].Net);
+        Assert.Equal(15, cartridge!.CpuAddress.Pins.Count);
+        Assert.Same(machine.Famicom.CpuAddressNets[14], cartridge.CpuAddress.Pins[14].Net);
+        Assert.Same(machine.Famicom.CpuM2Net, cartridge.CpuM2.Net);
+        Assert.Same(machine.Famicom.CpuRomSelectBarNet, cartridge.CpuRomSelectBar.Net);
+        Assert.Same(machine.Famicom.PpuDataNets[0], cartridge!.PpuData.Pins[0].Net);
+        Assert.Same(machine.Famicom.PpuLowAddressNets[0], cartridge.PpuAddress.Pins[0].Net);
+        Assert.NotSame(cartridge.PpuData.Pins[0].Net, cartridge.PpuAddress.Pins[0].Net);
+        Assert.DoesNotContain(cartridge.Pins, pin => ReferenceEquals(pin.Net, machine.Famicom.PpuAleNet));
         Assert.Same(machine.Famicom.CiramChipEnableBarNet, cartridge!.CiramChipEnableBar.Net);
         Assert.Same(machine.Famicom.CiramA10Net, cartridge!.CiramA10.Net);
     }
@@ -103,7 +109,7 @@ public sealed class VirtualHardwareRegionalNesMachineTests
         // longer dispatches through them.
         Assert.Same(machine.Famicom.CpuAddressNets[0], machine.Famicom.Cpu.Address.Pins[0].Net);
         Assert.Same(machine.Famicom.CpuDataNets[0], machine.Slot.Cartridge!.CpuData.Pins[0].Net);
-        Assert.Same(machine.Famicom.PpuAddressDataNets[0], machine.Famicom.Ppu.MultiplexedAddressData.Pins[0].Net);
+        Assert.Same(machine.Famicom.PpuDataNets[0], machine.Famicom.Ppu.MultiplexedAddressData.Pins[0].Net);
     }
 
     [Fact]
@@ -117,7 +123,7 @@ public sealed class VirtualHardwareRegionalNesMachineTests
 
         Assert.False(machine.Famicom.CompiledPhysicalMachineEnabled);
         Assert.Same(machine.Famicom.CpuDataNets[0], machine.Famicom.Cpu.Data.Pins[0].Net);
-        Assert.Same(machine.Famicom.PpuAddressDataNets[0], machine.Famicom.Ppu.MultiplexedAddressData.Pins[0].Net);
+        Assert.Same(machine.Famicom.PpuDataNets[0], machine.Famicom.Ppu.MultiplexedAddressData.Pins[0].Net);
     }
 
     [Fact]
@@ -177,7 +183,8 @@ public sealed class VirtualHardwareRegionalNesMachineTests
         Assert.True(machine.Famicom.CompiledLabBoundaryTraceCount > 0);
         Assert.Contains(cartridge, machine.Famicom.Board.Components);
         Assert.Same(machine.Famicom.CpuDataNets[0], cartridge.CpuData.Pins[0].Net);
-        Assert.Same(machine.Famicom.PpuAddressDataNets[0], cartridge.PpuAddressData.Pins[0].Net);
+        Assert.Same(machine.Famicom.PpuDataNets[0], cartridge.PpuData.Pins[0].Net);
+        Assert.Same(machine.Famicom.PpuLowAddressNets[0], cartridge.PpuAddress.Pins[0].Net);
     }
 
     [Fact]
@@ -356,6 +363,55 @@ public sealed class VirtualHardwareRegionalNesMachineTests
 
 
     [Fact]
+    public void Compiled_and_physical_mmc1_chr_commits_land_on_the_same_ppu_read_boundary()
+    {
+        var image = CreateMmc1ChrSwitchTimingImage();
+        var compiled = new RegionalNesVirtualMachine();
+        var reference = new RegionalNesVirtualMachine();
+
+        compiled.SetCompiledLabExecutionEnabled(true);
+        compiled.InsertRom(image, "MMC1 CHR Timing (Japan).nes");
+        reference.InsertRom(image, "MMC1 CHR Timing (Japan).nes");
+        reference.Famicom.SetCompiledPhysicalMachineEnabled(false);
+
+        var compiledCartridge = Assert.IsType<Mmc1Cartridge>(compiled.Slot.Cartridge);
+        var referenceCartridge = Assert.IsType<Mmc1Cartridge>(reference.Slot.Cartridge);
+        compiledCartridge.RegisterTraceOutput.SetCaptureEnabled(true);
+        referenceCartridge.RegisterTraceOutput.SetCaptureEnabled(true);
+
+        compiled.PowerOn();
+        reference.PowerOn();
+        compiled.ReleaseReset();
+        reference.ReleaseReset();
+
+        const int masterCycles = 80_000;
+        compiled.AdvanceMasterCycles(masterCycles);
+        reference.AdvanceMasterCycles(masterCycles);
+
+        var compiledCommits = compiledCartridge.RegisterTraceOutput.Drain()
+            .Where(evt => evt.Operation == Mmc1RegisterOperation.ChrBank1)
+            .ToArray();
+        var referenceCommits = referenceCartridge.RegisterTraceOutput.Drain()
+            .Where(evt => evt.Operation == Mmc1RegisterOperation.ChrBank1)
+            .ToArray();
+
+        Assert.True(referenceCommits.Length >= 8);
+        Assert.Equal(referenceCommits.Length, compiledCommits.Length);
+        for (var index = 0; index < referenceCommits.Length; index++)
+        {
+            Assert.Equal(referenceCommits[index].MapperWriteCount, compiledCommits[index].MapperWriteCount);
+            Assert.Equal(referenceCommits[index].ChrBank1, compiledCommits[index].ChrBank1);
+            Assert.Equal(referenceCommits[index].PpuReadCountAtCommit, compiledCommits[index].PpuReadCountAtCommit);
+        }
+
+        Assert.Equal(reference.Famicom.Cpu.ProgramCounter, compiled.Famicom.Cpu.ProgramCounter);
+        Assert.Equal(reference.Famicom.Ppu.Scanline, compiled.Famicom.Ppu.Scanline);
+        Assert.Equal(reference.Famicom.Ppu.Dot, compiled.Famicom.Ppu.Dot);
+        Assert.Equal(reference.Famicom.Ppu.InspectDiagnosticState(), compiled.Famicom.Ppu.InspectDiagnosticState());
+        Assert.Equal(reference.Famicom.Ciram.InspectStateHash(), compiled.Famicom.Ciram.InspectStateHash());
+    }
+
+    [Fact]
     public void Compiled_and_physical_mmc1_ignore_second_rmw_serial_write_cycle()
     {
         var image = CreateMmc1RmwExecutionImage();
@@ -400,6 +456,62 @@ public sealed class VirtualHardwareRegionalNesMachineTests
 
 
 
+
+    private static VirtualHardwareNesRomImage CreateMmc1ChrSwitchTimingImage()
+    {
+        var prg = new byte[4 * 16 * 1024];
+        for (var bank = 0; bank < 3; bank++)
+            Array.Fill(prg, (byte)(0x40 + bank), bank * 16 * 1024, 16 * 1024);
+
+        var program = new List<byte>
+        {
+            0x78,                         // SEI
+            0xA9, 0x10,                   // LDA #$10 - background pattern table at $1000
+            0x8D, 0x00, 0x20,             // STA $2000
+            0xA9, 0x08,                   // LDA #$08 - background rendering on
+            0x8D, 0x01, 0x20              // STA $2001
+        };
+
+        var loopAddress = (ushort)(0xC000 + program.Count);
+        program.AddRange(new byte[]
+        {
+            0xA9, 0x00,
+            0x8D, 0x00, 0xC0,
+            0x8D, 0x00, 0xC0,
+            0x8D, 0x00, 0xC0,
+            0x8D, 0x00, 0xC0,
+            0x8D, 0x00, 0xC0,             // commit CHR1=$00
+            0xA9, 0x01,
+            0x8D, 0x00, 0xC0,
+            0x8D, 0x00, 0xC0,
+            0x8D, 0x00, 0xC0,
+            0x8D, 0x00, 0xC0,
+            0x8D, 0x00, 0xC0,             // commit CHR1=$1F
+            0x4C, (byte)loopAddress, (byte)(loopAddress >> 8)
+        });
+
+        var fixedBank = 3 * 16 * 1024;
+        program.CopyTo(prg, fixedBank);
+        prg[fixedBank + 0x3FFA] = 0x00; prg[fixedBank + 0x3FFB] = 0xC0;
+        prg[fixedBank + 0x3FFC] = 0x00; prg[fixedBank + 0x3FFD] = 0xC0;
+        prg[fixedBank + 0x3FFE] = 0x00; prg[fixedBank + 0x3FFF] = 0xC0;
+
+        var chr = new byte[8 * 1024];
+        Array.Fill(chr, (byte)0x55, 0, 4 * 1024);
+        Array.Fill(chr, (byte)0xAA, 4 * 1024, 4 * 1024);
+        return new VirtualHardwareNesRomImage(
+            VirtualHardwareNesHeaderFormat.INes,
+            MapperNumber: 1,
+            SubmapperNumber: null,
+            PrgRomSizeBytes: prg.Length,
+            ChrRomSizeBytes: chr.Length,
+            HasTrainer: false,
+            HasBatteryBackedMemory: false,
+            VirtualHardwareNesMirroring.Horizontal,
+            VirtualHardwareNesHeaderTiming.Unknown,
+            prg,
+            chr);
+    }
 
     private static VirtualHardwareNesRomImage CreateMmc1RmwExecutionImage()
     {

@@ -1,0 +1,7 @@
+AxetosOS Products / NES v2.24.3 xUnit analyzer hotfix
+
+Fixes the three xUnit2009 analyzer errors in the MMC1 connector conformance test by using Assert.EndsWith directly.
+
+No hardware implementation changes from v2.24.2.
+Expected local test total: 276.
+Do not Git-push until local dotnet test passes.
