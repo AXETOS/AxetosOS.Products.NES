@@ -1,8 +1,0 @@
-v2.13.3 MMC1 physical-bus regression fixture hotfix
-
-Apply over v2.13.2.
-
-The only code change is to the new standalone MMC1 physical PPU-bus regression. Its synthetic VirtualHardwareBoard was wired but never topology-compiled, so signal-source drive changes could not propagate through the fixture nets. The test now creates VirtualHardwareSimulator after wiring and before driving its sources.
-
-No production hardware/compiler behavior changes from v2.13.2.
-Expected test total remains 250.

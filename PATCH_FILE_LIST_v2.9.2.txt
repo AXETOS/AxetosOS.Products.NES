@@ -1,7 +1,0 @@
-Directory.Build.props
-README.md
-RELEASE_NOTES_v2.9.2.md
-PATCH_NOTES_v2.9.2.txt
-PATCH_FILE_LIST_v2.9.2.txt
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Electrical/DigitalNet.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledPackageOutputTransport.cs

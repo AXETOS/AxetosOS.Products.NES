@@ -6,6 +6,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
-    <Version>2.13.4</Version>
+    <Version>2.16.2</Version>
   </PropertyGroup>
 </Project>

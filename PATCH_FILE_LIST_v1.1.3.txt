@@ -1,6 +1,0 @@
-AxetosOS/AxetosOS.Products.NES/Apply-v1.1.3.ps1
-AxetosOS/AxetosOS.Products.NES/Directory.Build.props
-AxetosOS/AxetosOS.Products.NES/PATCH_FILE_LIST_v1.1.3.txt
-AxetosOS/AxetosOS.Products.NES/PATCH_NOTES_v1.1.3.txt
-AxetosOS/AxetosOS.Products.NES/README.md
-AxetosOS/AxetosOS.Products.NES/tests/AxetosOS.Products.NES.Tests/VirtualHardwareChipBoundaryTests.cs

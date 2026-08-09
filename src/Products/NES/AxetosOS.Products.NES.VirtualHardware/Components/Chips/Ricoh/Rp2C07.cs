@@ -17,6 +17,10 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private const int ScanlinesPerFrame = 312;
     private const int VblankStartScanline = 241;
     private const int PreRenderScanline = 311;
+    // CPU-side VRAM address changes reach the internal address generators on
+    // later PPU clock phases rather than at the instant /CS selects the port.
+    private const int CpuVramAddressCommitDelayDots = 3;
+    private const int CpuVramIncrementDelayDots = 6;
     // Four 16-bit background shift-register lanes are physically clocked in
     // parallel. Keep the same four retained hardware lanes in one 64-bit word
     // so one host operation advances all of them without changing PPU state.
@@ -65,6 +69,11 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     private ushort _temporaryAddress;
     private byte _fineX;
     private bool _writeToggle;
+    private ulong _ppuDotEpoch;
+    private ulong _cpuVramIncrementSchedule;
+    private bool _vramAddressCommitPending;
+    private ulong _vramAddressCommitDueEpoch;
+    private ushort _pendingVramAddressCommit;
     private VramTransaction _transaction;
     private int _transactionPhase;
     private byte _renderReadPhase;
@@ -180,6 +189,8 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     public ulong MasterClockRisingEdgeCount => Clock.InputActivationEdgeCount;
     public ulong CompletedVramReadCount { get; private set; }
     public ulong CompletedVramWriteCount { get; private set; }
+    public ulong DelayedVramAddressCommitCount { get; private set; }
+    public ulong DelayedPpudataIncrementCount { get; private set; }
     public bool Vblank => _vblank;
     public bool NmiEnabled => _nmiEnabled;
     public byte ControlRegister => _control;
@@ -194,6 +205,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     public ulong BackgroundNametableFetchCount { get; private set; }
     public ulong BackgroundAttributeFetchCount { get; private set; }
     public ulong BackgroundPatternFetchCount { get; private set; }
+    public ulong DummyNametableFetchCount { get; private set; }
     public byte BackgroundPixelIndex { get; private set; }
     public byte NextTileId => _nextTileId;
     public byte NextTileAttribute => _nextTileAttribute;
@@ -273,9 +285,12 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         Clock.ResetInputActivationCounter();
         CompletedVramReadCount = 0;
         CompletedVramWriteCount = 0;
+        DelayedVramAddressCommitCount = 0;
+        DelayedPpudataIncrementCount = 0;
         BackgroundNametableFetchCount = 0;
         BackgroundAttributeFetchCount = 0;
         BackgroundPatternFetchCount = 0;
+        DummyNametableFetchCount = 0;
         BackgroundPixelIndex = 0;
         SpritePixelIndex = 0;
         PixelPaletteIndex = 0;
@@ -317,6 +332,11 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _temporaryAddress = 0;
         _fineX = 0;
         _writeToggle = false;
+        _ppuDotEpoch = 0;
+        _cpuVramIncrementSchedule = 0;
+        _vramAddressCommitPending = false;
+        _vramAddressCommitDueEpoch = 0;
+        _pendingVramAddressCommit = 0;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
         _renderReadPhase = 0;
@@ -344,6 +364,10 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         _mask = 0;
         DecodeMaskRegister();
         _writeToggle = false;
+        _cpuVramIncrementSchedule = 0;
+        _vramAddressCommitPending = false;
+        _vramAddressCommitDueEpoch = 0;
+        _pendingVramAddressCommit = 0;
         _cpuSelectedLast = false;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
@@ -528,6 +552,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
     {
         AdvanceRaster();
         var vramTransactionCompleted = AdvanceVramTransaction();
+        AdvanceDelayedCpuAddressCircuits();
 
         var visibleScanline = Scanline < 240;
         var executionPlan = PpuDotDecoder.ExecutionPlan[Dot];
@@ -569,6 +594,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
         var vramStarted = sample.BeginSection();
         var vramTransactionCompleted = AdvanceVramTransaction();
+        AdvanceDelayedCpuAddressCircuits();
         sample.EndSection(VirtualHardwareProfileSection.Rp2C02Vram, vramStarted);
 
         var visibleScanline = Scanline < 240;
@@ -658,6 +684,12 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             case PpuDotDecoder.BackgroundIncrementCoarseX:
                 ShiftBackgroundRegisters();
                 IncrementCoarseX();
+                break;
+
+            case PpuDotDecoder.BackgroundDummyNametable:
+                BeginBackgroundRead(
+                    (ushort)(0x2000 | (_vramAddress & 0x0FFF)),
+                    VramTransactionPurpose.DummyNametable);
                 break;
         }
 
@@ -868,7 +900,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                         {
                             StartVramTransactionAt((ushort)(_vramAddress & 0x2FFF), VramTransaction.Read, 0);
                         }
-                        IncrementVramAddressAfterCpuAccess();
+                        ScheduleVramAddressIncrementAfterCpuAccess();
                     }
                 }
                 else
@@ -880,7 +912,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                         {
                             StartVramTransaction(VramTransaction.Read, 0);
                         }
-                        IncrementVramAddressAfterCpuAccess();
+                        ScheduleVramAddressIncrementAfterCpuAccess();
                     }
                 }
                 break;
@@ -944,7 +976,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                 else
                 {
                     _temporaryAddress = (ushort)((_temporaryAddress & 0x7F00) | value);
-                    _vramAddress = (ushort)(_temporaryAddress & 0x3FFF);
+                    ScheduleVramAddressCommit((ushort)(_temporaryAddress & 0x3FFF));
                 }
                 _writeToggle = !_writeToggle;
                 break;
@@ -952,7 +984,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                 if ((_vramAddress & 0x3F00) == 0x3F00)
                 {
                     WritePalette(_vramAddress, value);
-                    IncrementVramAddressAfterCpuAccess();
+                    ScheduleVramAddressIncrementAfterCpuAccess();
                 }
                 else
                 {
@@ -960,7 +992,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
                     {
                         StartVramTransaction(VramTransaction.Write, value);
                     }
-                    IncrementVramAddressAfterCpuAccess();
+                    ScheduleVramAddressIncrementAfterCpuAccess();
                 }
                 break;
         }
@@ -982,6 +1014,41 @@ public sealed class Rp2C07 : VirtualHardwareComponent
 
     private ushort _transactionAddress;
     private byte _transactionWriteData;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ScheduleVramAddressCommit(ushort address)
+    {
+        _pendingVramAddressCommit = (ushort)(address & 0x3FFF);
+        _vramAddressCommitDueEpoch = _ppuDotEpoch + CpuVramAddressCommitDelayDots;
+        _vramAddressCommitPending = true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ScheduleVramAddressIncrementAfterCpuAccess()
+    {
+        var dueEpoch = _ppuDotEpoch + CpuVramIncrementDelayDots;
+        _cpuVramIncrementSchedule |= 1UL << (int)(dueEpoch & 63);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AdvanceDelayedCpuAddressCircuits()
+    {
+        _ppuDotEpoch++;
+
+        if (_vramAddressCommitPending && _ppuDotEpoch >= _vramAddressCommitDueEpoch)
+        {
+            _vramAddress = _pendingVramAddressCommit;
+            _vramAddressCommitPending = false;
+            DelayedVramAddressCommitCount++;
+        }
+
+        var incrementBit = 1UL << (int)(_ppuDotEpoch & 63);
+        if ((_cpuVramIncrementSchedule & incrementBit) == 0) return;
+
+        _cpuVramIncrementSchedule &= ~incrementBit;
+        IncrementVramAddressAfterCpuAccess();
+        DelayedPpudataIncrementCount++;
+    }
 
     private void IncrementVramAddressAfterCpuAccess()
     {
@@ -1115,6 +1182,9 @@ public sealed class Rp2C07 : VirtualHardwareComponent
             case VramTransactionPurpose.BackgroundPatternHigh:
                 _nextBackgroundLoad = (_nextBackgroundLoad & ~(0xFFUL << 16)) | ((ulong)data << 16);
                 BackgroundPatternFetchCount++;
+                break;
+            case VramTransactionPurpose.DummyNametable:
+                DummyNametableFetchCount++;
                 break;
             case VramTransactionPurpose.SpritePatternLow:
                 if (_spriteFetchSlot < _nextSpriteCount)
@@ -1515,6 +1585,7 @@ public sealed class Rp2C07 : VirtualHardwareComponent
         BackgroundAttribute,
         BackgroundPatternLow,
         BackgroundPatternHigh,
+        DummyNametable,
         SpritePatternLow,
         SpritePatternHigh
     }

@@ -350,6 +350,8 @@ public sealed class VirtualHardwareRegionalNesMachineTests
         Assert.Equal(reference.Famicom.Cpu.CompletedInstructionCount, compiled.Famicom.Cpu.CompletedInstructionCount);
         Assert.Equal(reference.Famicom.Ppu.Scanline, compiled.Famicom.Ppu.Scanline);
         Assert.Equal(reference.Famicom.Ppu.Dot, compiled.Famicom.Ppu.Dot);
+        Assert.Equal(reference.Famicom.Ppu.InspectDiagnosticState(), compiled.Famicom.Ppu.InspectDiagnosticState());
+        Assert.Equal(reference.Famicom.Ciram.InspectStateHash(), compiled.Famicom.Ciram.InspectStateHash());
     }
 
 

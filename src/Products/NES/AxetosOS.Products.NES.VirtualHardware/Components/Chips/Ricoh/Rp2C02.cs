@@ -15,6 +15,66 @@ public sealed record Rp2C02SplitTraceEvent(
     byte FineX,
     bool WriteToggle);
 
+public enum Rp2C02RenderingFetchKind
+{
+    BackgroundNametable,
+    BackgroundAttribute,
+    BackgroundPatternLow,
+    BackgroundPatternHigh,
+    DummyNametable,
+    SpritePatternLow,
+    SpritePatternHigh
+}
+
+public readonly record struct Rp2C02RenderingFetchTraceEvent(
+    ulong Frame,
+    int Scanline,
+    int Dot,
+    Rp2C02RenderingFetchKind Kind,
+    ushort Address,
+    byte Data,
+    ushort VramAddress,
+    ushort TemporaryAddress);
+
+public sealed record Rp2C02DiagnosticSnapshot(
+    ulong Frame,
+    int Scanline,
+    int Dot,
+    byte Control,
+    byte Mask,
+    byte OamAddress,
+    byte OpenBus,
+    byte ReadBuffer,
+    ushort VramAddress,
+    ushort TemporaryAddress,
+    byte FineX,
+    bool WriteToggle,
+    byte NextTileId,
+    byte NextTileAttribute,
+    ulong NextBackgroundLoad,
+    ulong BackgroundShifters,
+    int SecondarySpriteCount,
+    int ActiveSpriteCount,
+    int NextSpriteCount,
+    byte BackgroundPixelIndex,
+    byte SpritePixelIndex,
+    byte PixelPaletteIndex,
+    byte OutputColorCode,
+    byte ColorEmphasis,
+    ulong PaletteRamHash,
+    ulong PrimaryOamHash,
+    ulong SecondaryOamHash,
+    ulong ActiveSpriteHash,
+    ulong NextSpriteHash,
+    ulong PipelineStateHash,
+    ulong CompletedVramReads,
+    ulong CompletedVramWrites,
+    ulong BackgroundNametableFetches,
+    ulong BackgroundAttributeFetches,
+    ulong BackgroundPatternFetches,
+    ulong DummyNametableFetches,
+    ulong SpritePatternFetches);
+
 /// <summary>
 /// Standalone NTSC Ricoh RP2C02 package. All observable behaviour is driven by
 /// package power, reset, clock and bus pins. The chip owns only physical
@@ -24,10 +84,16 @@ public sealed record Rp2C02SplitTraceEvent(
 /// </summary>
 public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvider, ICompiledBusTargetProvider, ICompiledClockedComponent
 {
+    private const ulong DiagnosticHashOffset = 14_695_981_039_346_656_037UL;
+    private const ulong DiagnosticHashPrime = 1_099_511_628_211UL;
     private const int DotsPerScanline = 341;
     private const int ScanlinesPerFrame = 262;
     private const int VblankStartScanline = 241;
     private const int PreRenderScanline = 261;
+    // CPU-side VRAM address changes reach the internal address generators on
+    // later PPU clock phases rather than at the instant /CS selects the port.
+    private const int CpuVramAddressCommitDelayDots = 3;
+    private const int CpuVramIncrementDelayDots = 6;
     // Four 16-bit background shift-register lanes are physically clocked in
     // parallel. Keep the same four retained hardware lanes in one 64-bit word
     // so one host operation advances all of them without changing PPU state.
@@ -77,6 +143,11 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
     private ushort _temporaryAddress;
     private byte _fineX;
     private bool _writeToggle;
+    private ulong _ppuDotEpoch;
+    private ulong _cpuVramIncrementSchedule;
+    private bool _vramAddressCommitPending;
+    private ulong _vramAddressCommitDueEpoch;
+    private ushort _pendingVramAddressCommit;
     private VramTransaction _transaction;
     private int _transactionPhase;
     private byte _renderReadPhase;
@@ -149,6 +220,8 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
             new RicohVideoPixelSample(0, 0, 0, 0, 0));
         SplitTraceOutput = new BufferedOutputPin<Rp2C02SplitTraceEvent>(
             $"{componentId}.SPLIT_TRACE");
+        RenderingFetchTraceOutput = new BufferedOutputPin<Rp2C02RenderingFetchTraceEvent>(
+            $"{componentId}.RENDER_FETCH_TRACE");
     
         _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
         _clockInputMask = Clock.InputChangeMask;
@@ -195,6 +268,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
     public DigitalBus Extension { get; }
     public BufferedOutputPin<RicohVideoPixelSample> VideoOutput { get; }
     public BufferedOutputPin<Rp2C02SplitTraceEvent> SplitTraceOutput { get; }
+    public BufferedOutputPin<Rp2C02RenderingFetchTraceEvent> RenderingFetchTraceOutput { get; }
 
     public int Dot { get; private set; }
     public int Scanline { get; private set; }
@@ -202,6 +276,8 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
     public ulong MasterClockRisingEdgeCount => _compiledBusFabric?.ClockRisingEdges ?? Clock.InputActivationEdgeCount;
     public ulong CompletedVramReadCount { get; private set; }
     public ulong CompletedVramWriteCount { get; private set; }
+    public ulong DelayedVramAddressCommitCount { get; private set; }
+    public ulong DelayedPpudataIncrementCount { get; private set; }
     public bool Vblank => _vblank;
     public bool NmiEnabled => _nmiEnabled;
     public byte ControlRegister => _control;
@@ -216,6 +292,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
     public ulong BackgroundNametableFetchCount { get; private set; }
     public ulong BackgroundAttributeFetchCount { get; private set; }
     public ulong BackgroundPatternFetchCount { get; private set; }
+    public ulong DummyNametableFetchCount { get; private set; }
     public byte BackgroundPixelIndex { get; private set; }
     public byte NextTileId => _nextTileId;
     public byte NextTileAttribute => _nextTileAttribute;
@@ -275,6 +352,93 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
     public byte InspectOam(byte address) => _primaryOam[address];
     public byte InspectPalette(ushort address) => ReadPalette(address);
 
+    /// <summary>
+    /// Inspection-only snapshot of retained RP2C02 circuitry. This never feeds
+    /// execution and exists so physical and compiled paths can be compared at
+    /// one exact master-clock boundary without exposing software-emulator state.
+    /// </summary>
+    public Rp2C02DiagnosticSnapshot InspectDiagnosticState()
+    {
+        var paletteHash = HashBytes(_paletteRam);
+        var primaryOamHash = HashBytes(_primaryOam);
+        var secondaryOamHash = HashWords(_secondaryOam);
+        var activeSpriteHash = HashWords(_activeSprites);
+        var nextSpriteHash = HashWords(_nextSprites);
+
+        var pipelineHash = DiagnosticHashOffset;
+        HashWord(ref pipelineHash, Frame);
+        HashWord(ref pipelineHash, (ulong)(uint)Scanline);
+        HashWord(ref pipelineHash, (ulong)(uint)Dot);
+        HashByte(ref pipelineHash, _control);
+        HashByte(ref pipelineHash, _mask);
+        HashByte(ref pipelineHash, _oamAddress);
+        HashByte(ref pipelineHash, _openBus);
+        HashByte(ref pipelineHash, _readBuffer);
+        HashWord(ref pipelineHash, _vramAddress);
+        HashWord(ref pipelineHash, _temporaryAddress);
+        HashByte(ref pipelineHash, _fineX);
+        HashByte(ref pipelineHash, _writeToggle ? (byte)1 : (byte)0);
+        HashWord(ref pipelineHash, _cpuVramIncrementSchedule);
+        HashByte(ref pipelineHash, _vramAddressCommitPending ? (byte)1 : (byte)0);
+        HashWord(ref pipelineHash, _pendingVramAddressCommit);
+        HashByte(ref pipelineHash, _nextTileId);
+        HashByte(ref pipelineHash, _nextTileAttribute);
+        HashWord(ref pipelineHash, _nextBackgroundLoad);
+        HashWord(ref pipelineHash, _backgroundShifters);
+        HashWord(ref pipelineHash, (ulong)(uint)_secondarySpriteCount);
+        HashWord(ref pipelineHash, (ulong)(uint)_activeSpriteCount);
+        HashWord(ref pipelineHash, (ulong)(uint)_nextSpriteCount);
+        HashByte(ref pipelineHash, BackgroundPixelIndex);
+        HashByte(ref pipelineHash, SpritePixelIndex);
+        HashByte(ref pipelineHash, PixelPaletteIndex);
+        HashByte(ref pipelineHash, OutputColorCode);
+        HashByte(ref pipelineHash, ColorEmphasis);
+        HashWord(ref pipelineHash, paletteHash);
+        HashWord(ref pipelineHash, primaryOamHash);
+        HashWord(ref pipelineHash, secondaryOamHash);
+        HashWord(ref pipelineHash, activeSpriteHash);
+        HashWord(ref pipelineHash, nextSpriteHash);
+
+        return new Rp2C02DiagnosticSnapshot(
+            Frame, Scanline, Dot, _control, _mask, _oamAddress, _openBus, _readBuffer,
+            _vramAddress, _temporaryAddress, _fineX, _writeToggle, _nextTileId,
+            _nextTileAttribute, _nextBackgroundLoad, _backgroundShifters,
+            _secondarySpriteCount, _activeSpriteCount, _nextSpriteCount,
+            BackgroundPixelIndex, SpritePixelIndex, PixelPaletteIndex, OutputColorCode,
+            ColorEmphasis, paletteHash, primaryOamHash, secondaryOamHash, activeSpriteHash,
+            nextSpriteHash, pipelineHash, CompletedVramReadCount, CompletedVramWriteCount,
+            BackgroundNametableFetchCount, BackgroundAttributeFetchCount,
+            BackgroundPatternFetchCount, DummyNametableFetchCount, SpritePatternFetchCount);
+    }
+
+    private static ulong HashBytes(ReadOnlySpan<byte> values)
+    {
+        var hash = DiagnosticHashOffset;
+        foreach (var value in values) HashByte(ref hash, value);
+        return hash;
+    }
+
+    private static ulong HashWords(ReadOnlySpan<ulong> values)
+    {
+        var hash = DiagnosticHashOffset;
+        foreach (var value in values) HashWord(ref hash, value);
+        return hash;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void HashByte(ref ulong hash, byte value)
+    {
+        hash ^= value;
+        hash *= DiagnosticHashPrime;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void HashWord(ref ulong hash, ulong value)
+    {
+        for (var shift = 0; shift < 64; shift += 8)
+            HashByte(ref hash, (byte)(value >> shift));
+    }
+
     private void InitializePackageState()
     {
         Dot = 0;
@@ -283,9 +447,12 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
         Clock.ResetInputActivationCounter();
         CompletedVramReadCount = 0;
         CompletedVramWriteCount = 0;
+        DelayedVramAddressCommitCount = 0;
+        DelayedPpudataIncrementCount = 0;
         BackgroundNametableFetchCount = 0;
         BackgroundAttributeFetchCount = 0;
         BackgroundPatternFetchCount = 0;
+        DummyNametableFetchCount = 0;
         BackgroundPixelIndex = 0;
         SpritePixelIndex = 0;
         PixelPaletteIndex = 0;
@@ -328,6 +495,11 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
         _temporaryAddress = 0;
         _fineX = 0;
         _writeToggle = false;
+        _ppuDotEpoch = 0;
+        _cpuVramIncrementSchedule = 0;
+        _vramAddressCommitPending = false;
+        _vramAddressCommitDueEpoch = 0;
+        _pendingVramAddressCommit = 0;
         _transaction = VramTransaction.None;
         _transactionPhase = 0;
         _renderReadPhase = 0;
@@ -355,6 +527,10 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
         _mask = 0;
         DecodeMaskRegister();
         _writeToggle = false;
+        _cpuVramIncrementSchedule = 0;
+        _vramAddressCommitPending = false;
+        _vramAddressCommitDueEpoch = 0;
+        _pendingVramAddressCommit = 0;
         _cpuTransactionActive = false;
         _cpuTransactionRead = false;
         _cpuTransactionRegister = 0;
@@ -604,6 +780,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
     {
         AdvanceRaster();
         var vramTransactionCompleted = AdvanceVramTransaction();
+        AdvanceDelayedCpuAddressCircuits();
 
         var visibleScanline = Scanline < 240;
         var executionPlan = PpuDotDecoder.ExecutionPlan[Dot];
@@ -645,6 +822,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
 
         var vramStarted = sample.BeginSection();
         var vramTransactionCompleted = AdvanceVramTransaction();
+        AdvanceDelayedCpuAddressCircuits();
         sample.EndSection(VirtualHardwareProfileSection.Rp2C02Vram, vramStarted);
 
         var visibleScanline = Scanline < 240;
@@ -734,6 +912,12 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
             case PpuDotDecoder.BackgroundIncrementCoarseX:
                 ShiftBackgroundRegisters();
                 IncrementCoarseX();
+                break;
+
+            case PpuDotDecoder.BackgroundDummyNametable:
+                BeginBackgroundRead(
+                    (ushort)(0x2000 | (_vramAddress & 0x0FFF)),
+                    VramTransactionPurpose.DummyNametable);
                 break;
         }
 
@@ -960,7 +1144,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
                         {
                             StartVramTransactionAt((ushort)(_vramAddress & 0x2FFF), VramTransaction.Read, 0);
                         }
-                        IncrementVramAddressAfterCpuAccess();
+                        ScheduleVramAddressIncrementAfterCpuAccess();
                     }
                 }
                 else
@@ -972,7 +1156,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
                         {
                             StartVramTransaction(VramTransaction.Read, 0);
                         }
-                        IncrementVramAddressAfterCpuAccess();
+                        ScheduleVramAddressIncrementAfterCpuAccess();
                     }
                 }
                 break;
@@ -1037,7 +1221,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
                 else
                 {
                     _temporaryAddress = (ushort)((_temporaryAddress & 0x7F00) | value);
-                    _vramAddress = (ushort)(_temporaryAddress & 0x3FFF);
+                    ScheduleVramAddressCommit((ushort)(_temporaryAddress & 0x3FFF));
                 }
                 _writeToggle = !_writeToggle;
                 TraceSplit("PPUADDR write", value);
@@ -1046,7 +1230,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
                 if ((_vramAddress & 0x3F00) == 0x3F00)
                 {
                     WritePalette(_vramAddress, value);
-                    IncrementVramAddressAfterCpuAccess();
+                    ScheduleVramAddressIncrementAfterCpuAccess();
                 }
                 else
                 {
@@ -1054,7 +1238,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
                     {
                         StartVramTransaction(VramTransaction.Write, value);
                     }
-                    IncrementVramAddressAfterCpuAccess();
+                    ScheduleVramAddressIncrementAfterCpuAccess();
                 }
                 break;
         }
@@ -1076,6 +1260,47 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
 
     private ushort _transactionAddress;
     private byte _transactionWriteData;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ScheduleVramAddressCommit(ushort address)
+    {
+        _pendingVramAddressCommit = (ushort)(address & 0x3FFF);
+        _vramAddressCommitDueEpoch = _ppuDotEpoch + CpuVramAddressCommitDelayDots;
+        _vramAddressCommitPending = true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ScheduleVramAddressIncrementAfterCpuAccess()
+    {
+        // Keep this timing entirely chip-local. CPU register selection may land
+        // anywhere between PPU edges; six following PPU edges reproduce the
+        // observed five/six-dot propagation interval without a global scheduler.
+        var dueEpoch = _ppuDotEpoch + CpuVramIncrementDelayDots;
+        _cpuVramIncrementSchedule |= 1UL << (int)(dueEpoch & 63);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AdvanceDelayedCpuAddressCircuits()
+    {
+        _ppuDotEpoch++;
+
+        // The second $2006 write reaches v before the rendering decoder for the
+        // same dot. Horizontal/vertical copy circuitry can therefore overwrite
+        // the corresponding bits on collision, as on the physical address path.
+        if (_vramAddressCommitPending && _ppuDotEpoch >= _vramAddressCommitDueEpoch)
+        {
+            _vramAddress = _pendingVramAddressCommit;
+            _vramAddressCommitPending = false;
+            DelayedVramAddressCommitCount++;
+        }
+
+        var incrementBit = 1UL << (int)(_ppuDotEpoch & 63);
+        if ((_cpuVramIncrementSchedule & incrementBit) == 0) return;
+
+        _cpuVramIncrementSchedule &= ~incrementBit;
+        IncrementVramAddressAfterCpuAccess();
+        DelayedPpudataIncrementCount++;
+    }
 
     private void IncrementVramAddressAfterCpuAccess()
     {
@@ -1203,8 +1428,38 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryGetRenderingFetchKind(VramTransactionPurpose purpose, out Rp2C02RenderingFetchKind kind)
+    {
+        kind = purpose switch
+        {
+            VramTransactionPurpose.BackgroundNametable => Rp2C02RenderingFetchKind.BackgroundNametable,
+            VramTransactionPurpose.BackgroundAttribute => Rp2C02RenderingFetchKind.BackgroundAttribute,
+            VramTransactionPurpose.BackgroundPatternLow => Rp2C02RenderingFetchKind.BackgroundPatternLow,
+            VramTransactionPurpose.BackgroundPatternHigh => Rp2C02RenderingFetchKind.BackgroundPatternHigh,
+            VramTransactionPurpose.DummyNametable => Rp2C02RenderingFetchKind.DummyNametable,
+            VramTransactionPurpose.SpritePatternLow => Rp2C02RenderingFetchKind.SpritePatternLow,
+            VramTransactionPurpose.SpritePatternHigh => Rp2C02RenderingFetchKind.SpritePatternHigh,
+            _ => default
+        };
+        return purpose != VramTransactionPurpose.None;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CompleteRenderingRead(byte data)
     {
+        if (RenderingFetchTraceOutput.CaptureEnabled && TryGetRenderingFetchKind(_renderReadPurpose, out var kind))
+        {
+            RenderingFetchTraceOutput.Drive(new Rp2C02RenderingFetchTraceEvent(
+                Frame,
+                Scanline,
+                Dot,
+                kind,
+                _renderReadAddress,
+                data,
+                _vramAddress,
+                _temporaryAddress));
+        }
+
         switch (_renderReadPurpose)
         {
             case VramTransactionPurpose.BackgroundNametable:
@@ -1228,6 +1483,12 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
             case VramTransactionPurpose.BackgroundPatternHigh:
                 _nextBackgroundLoad = (_nextBackgroundLoad & ~(0xFFUL << 16)) | ((ulong)data << 16);
                 BackgroundPatternFetchCount++;
+                break;
+            case VramTransactionPurpose.DummyNametable:
+                // Dots 337 and 339 perform real nametable bus reads but do not
+                // feed a visible tile latch. Keeping them as package-owned bus
+                // activity matters to cartridge hardware that observes PPU A-lines.
+                DummyNametableFetchCount++;
                 break;
             case VramTransactionPurpose.SpritePatternLow:
                 if (_spriteFetchSlot < _nextSpriteCount)
@@ -1652,6 +1913,7 @@ public sealed class Rp2C02 : VirtualHardwareComponent, ICompiledBusMasterProvide
         BackgroundAttribute,
         BackgroundPatternLow,
         BackgroundPatternHigh,
+        DummyNametable,
         SpritePatternLow,
         SpritePatternHigh
     }

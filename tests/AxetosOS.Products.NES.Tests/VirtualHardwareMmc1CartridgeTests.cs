@@ -193,6 +193,59 @@ public sealed class VirtualHardwareMmc1CartridgeTests
     }
 
     [Fact]
+    public void Diagnostic_mapping_reports_selected_chr_bank_and_physical_ciram_page()
+    {
+        var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 8);
+        var cpuRom = CpuRomTarget(cartridge);
+
+        WriteSerial(cpuRom, 0x8000, 0x1E); // vertical mirroring + 4 KiB CHR + fixed-last PRG
+        WriteSerial(cpuRom, 0xA000, 0x02);
+        WriteSerial(cpuRom, 0xC000, 0x03);
+
+        var lowPattern = cartridge.InspectPpuMapping(0x0123);
+        var highPattern = cartridge.InspectPpuMapping(0x1456);
+        var nametable0 = cartridge.InspectPpuMapping(0x2000);
+        var nametable1 = cartridge.InspectPpuMapping(0x2400);
+        var nametable2 = cartridge.InspectPpuMapping(0x2800);
+        var nametable3 = cartridge.InspectPpuMapping(0x2C00);
+
+        Assert.Equal(Mmc1PpuMappingKind.Chr, lowPattern.Kind);
+        Assert.Equal(0x2123, lowPattern.PhysicalAddress);
+        Assert.Equal(2, lowPattern.Bank4K);
+        Assert.Equal(Mmc1PpuMappingKind.Chr, highPattern.Kind);
+        Assert.Equal(0x3456, highPattern.PhysicalAddress);
+        Assert.Equal(3, highPattern.Bank4K);
+
+        Assert.Equal((0, 0x000), (nametable0.CiramPage, nametable0.PhysicalAddress));
+        Assert.Equal((1, 0x400), (nametable1.CiramPage, nametable1.PhysicalAddress));
+        Assert.Equal((0, 0x000), (nametable2.CiramPage, nametable2.PhysicalAddress));
+        Assert.Equal((1, 0x400), (nametable3.CiramPage, nametable3.PhysicalAddress));
+    }
+
+    [Fact]
+    public void Register_diagnostic_output_reports_only_reset_or_completed_serial_register_actions()
+    {
+        var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 4);
+        var cpuRom = CpuRomTarget(cartridge);
+        cartridge.RegisterTraceOutput.SetCaptureEnabled(true);
+
+        for (var bit = 0; bit < 4; bit++)
+            cpuRom.Write!(0xA000, (byte)((0x03 >> bit) & 1));
+        Assert.Equal(0, cartridge.RegisterTraceOutput.CapturedCount);
+
+        cpuRom.Write!(0xA000, (byte)((0x03 >> 4) & 1));
+        var commit = Assert.Single(cartridge.RegisterTraceOutput.Drain());
+        Assert.Equal(Mmc1RegisterOperation.ChrBank0, commit.Operation);
+        Assert.Equal((byte)0x03, commit.ChrBank0);
+        Assert.Equal(5UL, commit.MapperWriteCount);
+
+        cpuRom.Write!(0x8000, 0x80);
+        var reset = Assert.Single(cartridge.RegisterTraceOutput.Drain());
+        Assert.Equal(Mmc1RegisterOperation.Reset, reset.Operation);
+        Assert.Equal((byte)0x0C, (byte)(reset.Control & 0x0C));
+    }
+
+    [Fact]
     public void Consecutive_cpu_write_cycle_suppresses_second_serial_bit_but_never_bit7_reset()
     {
         var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 2);

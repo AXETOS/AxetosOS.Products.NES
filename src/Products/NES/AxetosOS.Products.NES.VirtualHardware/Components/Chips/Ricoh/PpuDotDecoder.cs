@@ -24,6 +24,7 @@ internal static class PpuDotDecoder
     internal const uint BackgroundPatternLow = 4u;
     internal const uint BackgroundPatternHigh = 5u;
     internal const uint BackgroundIncrementCoarseX = 6u;
+    internal const uint BackgroundDummyNametable = 7u;
 
     internal const uint VisibleDot = 1u << 3;
     internal const uint IncrementY = 1u << 4;
@@ -68,6 +69,12 @@ internal static class PpuDotDecoder
                     7 => BackgroundIncrementCoarseX,
                     _ => BackgroundShift
                 };
+            }
+            else if (dot is 337 or 339)
+            {
+                // The two end-of-scanline nametable fetches are genuine PPU
+                // bus activity even though their data is not loaded for output.
+                word |= BackgroundDummyNametable;
             }
 
             if (dot == 1) word |= SpriteActivate;

@@ -1,5 +1,0 @@
-Directory.Build.props
-README.md
-RELEASE_NOTES_v2.12.1.md
-PATCH_NOTES_v2.12.1.txt
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledLabMotherboardExecutionPlan.cs

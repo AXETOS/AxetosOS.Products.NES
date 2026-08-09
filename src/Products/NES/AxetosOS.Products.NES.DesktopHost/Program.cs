@@ -18,6 +18,7 @@ var boardSelection = NesRegionSelection.NtscJapan;
 var palCic = PalCicVariant.PalA3195;
 var profileSimulation = false;
 var ppuSplitTrace = false;
+(ulong Start, ulong End)? cartridgeVideoTrace = null;
 var referenceRuntime = false;
 var compiledLabRuntime = false;
 var uncappedRuntime = false;
@@ -27,6 +28,17 @@ for (var index = 0; index < args.Length; index++)
     if (args[index].Equals("--ppu-split-trace", StringComparison.OrdinalIgnoreCase))
     {
         ppuSplitTrace = true;
+        continue;
+    }
+
+    if (args[index].Equals("--cartridge-video-trace", StringComparison.OrdinalIgnoreCase))
+    {
+        if (++index >= args.Length || !TryParseFrameRange(args[index], out var traceStart, out var traceEnd))
+        {
+            Console.Error.WriteLine("--cartridge-video-trace requires START:END PPU frames, for example 1450:1850.");
+            return 2;
+        }
+        cartridgeVideoTrace = (traceStart, traceEnd);
         continue;
     }
 
@@ -77,12 +89,15 @@ for (var index = 0; index < args.Length; index++)
 
     if (romArgument is not null)
     {
-        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--reference-runtime|--compiled-lab] [--uncapped] [--stop-frame N] [--ppu-split-trace]");
+        Console.Error.WriteLine("Usage: DesktopHost [rom-path] [--board famicom|ntsc|pal-a|pal-b|auto] [--profile] [--reference-runtime|--compiled-lab] [--uncapped] [--stop-frame N] [--ppu-split-trace] [--cartridge-video-trace START:END]");
         return 2;
     }
 
     romArgument = args[index];
 }
+
+if (cartridgeVideoTrace is { } requestedTrace && !stopFrame.HasValue && requestedTrace.End < ulong.MaxValue)
+    stopFrame = requestedTrace.End + 1;
 
 var selectedRomPath = romArgument ?? NativeFileDialog.OpenFile(
     "Open NES cartridge image",
@@ -163,7 +178,7 @@ var activeSimulator = host.Machine.ActiveMotherboard switch
 };
 if (profileSimulation) activeSimulator.SetProfilingEnabled(true);
 Rp2C02? tracedPpu = null;
-if (ppuSplitTrace)
+if (ppuSplitTrace || cartridgeVideoTrace.HasValue)
 {
     tracedPpu = host.Machine.ActiveMotherboard switch
     {
@@ -171,7 +186,19 @@ if (ppuSplitTrace)
         ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.Ppu,
         _ => null
     };
-    tracedPpu?.SplitTraceOutput.SetCaptureEnabled(true);
+    if (ppuSplitTrace) tracedPpu?.SplitTraceOutput.SetCaptureEnabled(true);
+}
+
+CartridgeVideoTraceCollector? cartridgeTraceCollector = null;
+if (cartridgeVideoTrace is { } traceRange)
+{
+    if (tracedPpu is null || host.Machine.Slot.Cartridge is not Mmc1Cartridge traceMmc1)
+    {
+        Console.Error.WriteLine("--cartridge-video-trace currently requires an RP2C02 board with an MMC1 cartridge.");
+        return 6;
+    }
+
+    cartridgeTraceCollector = new CartridgeVideoTraceCollector(traceMmc1, tracedPpu, traceRange.Start, traceRange.End);
 }
 var initial = host.Snapshot();
 Console.WriteLine("AxetosOS Products / NES — virtual hardware desktop host");
@@ -211,6 +238,8 @@ Console.WriteLine(realTimePacing
     : "Timing:      uncapped host throughput");
 if (profileSimulation) Console.WriteLine("Profiler:    enabled; component/net/internal-IC timing sampled 1/256; host timing exact; results every 5 seconds");
 if (ppuSplitTrace) Console.WriteLine("PPU trace:   sprite-zero and $2002/$2005/$2006 split-screen events enabled");
+if (cartridgeVideoTrace is { } activeTrace)
+    Console.WriteLine($"Cart trace:  MMC1 CHR/CIRAM mapping + framebuffer quarters for frames {activeTrace.Start:N0}-{activeTrace.End:N0}");
 if (stopFrame.HasValue) Console.WriteLine($"Stop target: PPU frame {stopFrame.Value:N0}");
 
 const int MasterCyclesPerVideoBatch = 16_384;
@@ -250,8 +279,10 @@ while (presenter.IsOpen)
     if (profileSimulation) profileEventPumpTicks += Stopwatch.GetTimestamp() - profileStarted;
     if (!presenter.IsOpen) break;
 
+    cartridgeTraceCollector?.UpdateFetchCapture(host.Snapshot().PpuFrames);
     profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
     host.AdvanceMasterCycles(MasterCyclesPerVideoBatch);
+    cartridgeTraceCollector?.DrainCapturedSignals();
     pacedMasterCycles += MasterCyclesPerVideoBatch;
     var reachedStopFrame = stopFrame.HasValue && host.Snapshot().PpuFrames >= stopFrame.Value;
     if (profileSimulation)
@@ -267,6 +298,7 @@ while (presenter.IsOpen)
 
     if (videoSink.CompletedFrame != lastPresentedFrame)
     {
+        cartridgeTraceCollector?.OnCompletedFrame(videoSink.CompletedFrame, videoSink.CompletedPixels.Span);
         profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
         videoSink.CompletedPixels.Span.CopyTo(surface.PixelSpan);
         presenter.Present(surface, ScalingMode.IntegerNearest);
@@ -389,6 +421,7 @@ while (presenter.IsOpen)
     if (audio.BufferedMilliseconds > 120) Thread.Sleep(1);
 }
 
+cartridgeTraceCollector?.Finish();
 var final = host.Snapshot();
 var finalAverageFps = fpsStatisticsStarted && timer.Elapsed > fpsStatisticsStartTime
     ? (final.PpuFrames - fpsStatisticsStartFrame) / (timer.Elapsed - fpsStatisticsStartTime).TotalSeconds
@@ -410,6 +443,33 @@ if (finalCpu is not null)
     Console.WriteLine(
         $"Audio core:  apu-cycles={finalCpu.ApuCpuCycleCount:N0}, dac-events={finalCpu.AudioDacOutput.DriveCount:N0}, " +
         $"dac-level={finalCpu.AudioDacLevel}");
+}
+var finalPpu = host.Machine.ActiveMotherboard switch
+{
+    ActiveNesMotherboard.Famicom => host.Machine.Famicom.Ppu,
+    ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.Ppu,
+    _ => null
+};
+if (finalPpu is not null)
+{
+    var ppuState = finalPpu.InspectDiagnosticState();
+    var ciramHash = host.Machine.ActiveMotherboard switch
+    {
+        ActiveNesMotherboard.Famicom => host.Machine.Famicom.Ciram.InspectStateHash(),
+        ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.Ciram.InspectStateHash(),
+        _ => 0UL
+    };
+    Console.WriteLine(
+        $"PPU core:    raster={ppuState.Frame:N0}:{ppuState.Scanline}:{ppuState.Dot}, ctrl=${ppuState.Control:X2}, mask=${ppuState.Mask:X2}, " +
+        $"v=${ppuState.VramAddress:X4}, t=${ppuState.TemporaryAddress:X4}, x={ppuState.FineX}, w={(ppuState.WriteToggle ? 1 : 0)}, oam=${ppuState.OamAddress:X2}");
+    Console.WriteLine(
+        $"PPU pipe:    state=${ppuState.PipelineStateHash:X16}, palette=${ppuState.PaletteRamHash:X16}, oam=${ppuState.PrimaryOamHash:X16}, " +
+        $"ciram=${ciramHash:X16}, frame={videoSink.CompletedFrame:N0}:${videoSink.CompletedFrameHash:X16}");
+    Console.WriteLine(
+        $"PPU fetch:   reads={ppuState.CompletedVramReads:N0}, writes={ppuState.CompletedVramWrites:N0}, nt={ppuState.BackgroundNametableFetches:N0}, " +
+        $"attr={ppuState.BackgroundAttributeFetches:N0}, pattern={ppuState.BackgroundPatternFetches:N0}, dummy-nt={ppuState.DummyNametableFetches:N0}, sprite-pattern={ppuState.SpritePatternFetches:N0}");
+    Console.WriteLine(
+        $"PPU CPU-IO:  delayed-v-commits={finalPpu.DelayedVramAddressCommitCount:N0}, delayed-$2007-increments={finalPpu.DelayedPpudataIncrementCount:N0}");
 }
 if (host.Machine.Slot.Cartridge is Mmc1Cartridge finalMmc1)
 {
@@ -522,6 +582,18 @@ static void PrintProfile(AxetosOS.Products.NES.VirtualHardware.Simulation.Virtua
     }
 }
 
+static bool TryParseFrameRange(string value, out ulong start, out ulong end)
+{
+    start = 0;
+    end = 0;
+    var separator = value.IndexOf(':');
+    if (separator <= 0 || separator == value.Length - 1) return false;
+    return ulong.TryParse(value.AsSpan(0, separator), out start)
+        && ulong.TryParse(value.AsSpan(separator + 1), out end)
+        && start > 0
+        && end >= start;
+}
+
 static bool TryParseBoard(string value, out NesRegionSelection selection, out PalCicVariant palCic)
 {
     palCic = PalCicVariant.PalA3195;
@@ -554,6 +626,7 @@ sealed class NativeFrameVideoSink : IVirtualNesVideoSink
     /// </summary>
     public ReadOnlyMemory<uint> CompletedPixels => _completedPixels;
     public ulong CompletedFrame { get; private set; } = ulong.MaxValue;
+    public ulong CompletedFrameHash => HashPixels(_completedPixels);
 
     public void AcceptPixel(ulong frame, int x, int y, byte colorCode, byte emphasis)
     {
@@ -583,6 +656,21 @@ sealed class NativeFrameVideoSink : IVirtualNesVideoSink
         // this robust against duplicate observations of the final PPU pixel.
         (_renderPixels, _completedPixels) = (_completedPixels, _renderPixels);
         CompletedFrame = frame;
+    }
+
+    private static ulong HashPixels(ReadOnlySpan<uint> pixels)
+    {
+        const ulong offset = 14_695_981_039_346_656_037UL;
+        const ulong prime = 1_099_511_628_211UL;
+        var hash = offset;
+        foreach (var pixel in pixels)
+        {
+            hash ^= (byte)pixel; hash *= prime;
+            hash ^= (byte)(pixel >> 8); hash *= prime;
+            hash ^= (byte)(pixel >> 16); hash *= prime;
+            hash ^= (byte)(pixel >> 24); hash *= prime;
+        }
+        return hash;
     }
 
     private static uint[] BuildPalette()

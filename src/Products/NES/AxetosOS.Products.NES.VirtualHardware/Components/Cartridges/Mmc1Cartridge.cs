@@ -6,6 +6,44 @@ using AxetosOS.Products.NES.VirtualHardware.Simulation;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 
+public enum Mmc1PpuMappingKind
+{
+    Chr,
+    Ciram,
+    Unmapped
+}
+
+public enum Mmc1RegisterOperation
+{
+    Reset,
+    Control,
+    ChrBank0,
+    ChrBank1,
+    PrgBank
+}
+
+public readonly record struct Mmc1PpuMappingDiagnostic(
+    ushort PpuAddress,
+    Mmc1PpuMappingKind Kind,
+    int PhysicalAddress,
+    int Bank4K,
+    int CiramPage,
+    byte Control,
+    byte ChrBank0,
+    byte ChrBank1,
+    byte PrgBank);
+
+public readonly record struct Mmc1RegisterTraceEvent(
+    ulong MapperWriteCount,
+    ushort Address,
+    byte Data,
+    Mmc1RegisterOperation Operation,
+    byte Control,
+    byte ChrBank0,
+    byte ChrBank1,
+    byte PrgBank,
+    byte ShiftRegister);
+
 /// <summary>
 /// MMC1 cartridge hardware unit. Bank selection, serial register loading,
 /// nametable wiring and ROM/RAM decoding are entirely cartridge-local. The
@@ -72,6 +110,8 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         CiramChipEnableBar = AddPin("CIRAM.CE_BAR", PinDirection.Output);
         CiramA10 = AddPin("CIRAM.A10", PinDirection.Output);
         IrqBar = AddPin("IRQ_BAR", PinDirection.Output);
+        RegisterTraceOutput = new BufferedOutputPin<Mmc1RegisterTraceEvent>(
+            $"{componentId}.REGISTER_TRACE");
 
         _powerInputMask = Vcc.InputChangeMask | Gnd.InputChangeMask;
         _cpuAddressControlInputMask = CpuAddress.InputChangeMask | CpuReadWrite.InputChangeMask;
@@ -124,6 +164,58 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     public ushort LastMapperWriteAddress { get; private set; }
     public byte LastMapperWriteData { get; private set; }
     public ulong MapperWriteHash => _mapperWriteHash;
+    public BufferedOutputPin<Mmc1RegisterTraceEvent> RegisterTraceOutput { get; }
+
+    /// <summary>
+    /// Inspects the cartridge-local PPU address translation without mutating
+    /// hardware state. This is a laboratory diagnostic surface only: the
+    /// motherboard and compiler never consume it.
+    /// </summary>
+    public Mmc1PpuMappingDiagnostic InspectPpuMapping(ushort ppuAddress)
+    {
+        ppuAddress &= 0x3FFF;
+        if (ppuAddress < 0x2000)
+        {
+            var physical = ChrIndex(ppuAddress);
+            return new Mmc1PpuMappingDiagnostic(
+                ppuAddress,
+                Mmc1PpuMappingKind.Chr,
+                physical,
+                physical / ChrBankSize,
+                -1,
+                _control,
+                _chrBank0,
+                _chrBank1,
+                _prgBank);
+        }
+
+        if (ppuAddress < 0x3F00)
+        {
+            var mode = _control & 0x03;
+            var ciramA10 = mode switch
+            {
+                0 => 0,
+                1 => 1,
+                2 => (ppuAddress >> 10) & 1,
+                _ => (ppuAddress >> 11) & 1
+            };
+            var physical = (ppuAddress & 0x03FF) | (ciramA10 << 10);
+            return new Mmc1PpuMappingDiagnostic(
+                ppuAddress,
+                Mmc1PpuMappingKind.Ciram,
+                physical,
+                -1,
+                ciramA10,
+                _control,
+                _chrBank0,
+                _chrBank1,
+                _prgBank);
+        }
+
+        return new Mmc1PpuMappingDiagnostic(
+            ppuAddress, Mmc1PpuMappingKind.Unmapped, -1, -1, -1,
+            _control, _chrBank0, _chrBank1, _prgBank);
+    }
 
     public void LoadImage(VirtualHardwareNesRomImage image)
     {
@@ -466,6 +558,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             MapperResetWriteCount++;
             _shiftRegister = 0x10;
             _control |= 0x0C;
+            NotifyRegisterDiagnostic(address, value, Mmc1RegisterOperation.Reset);
             return;
         }
 
@@ -481,12 +574,46 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         if (!complete) return;
 
         var registerValue = (byte)(_shiftRegister & 0x1F);
-        if (address <= 0x9FFF) _control = registerValue;
-        else if (address <= 0xBFFF) _chrBank0 = registerValue;
-        else if (address <= 0xDFFF) _chrBank1 = registerValue;
-        else _prgBank = registerValue;
+        Mmc1RegisterOperation operation;
+        if (address <= 0x9FFF)
+        {
+            _control = registerValue;
+            operation = Mmc1RegisterOperation.Control;
+        }
+        else if (address <= 0xBFFF)
+        {
+            _chrBank0 = registerValue;
+            operation = Mmc1RegisterOperation.ChrBank0;
+        }
+        else if (address <= 0xDFFF)
+        {
+            _chrBank1 = registerValue;
+            operation = Mmc1RegisterOperation.ChrBank1;
+        }
+        else
+        {
+            _prgBank = registerValue;
+            operation = Mmc1RegisterOperation.PrgBank;
+        }
         MapperCommitCount++;
         _shiftRegister = 0x10;
+        NotifyRegisterDiagnostic(address, value, operation);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void NotifyRegisterDiagnostic(ushort address, byte data, Mmc1RegisterOperation operation)
+    {
+        if (!RegisterTraceOutput.CaptureEnabled) return;
+        RegisterTraceOutput.Drive(new Mmc1RegisterTraceEvent(
+            MapperWriteCount,
+            address,
+            data,
+            operation,
+            _control,
+            _chrBank0,
+            _chrBank1,
+            _prgBank,
+            _shiftRegister));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

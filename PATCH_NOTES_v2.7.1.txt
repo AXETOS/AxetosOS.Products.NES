@@ -1,6 +1,0 @@
-AxetosOS Products / NES v2.7.1 selective RP2A0x core patch
-
-Based on v2.6.0 + selected v2.7.0 CPU/APU optimizations.
-Removes v2.7.0 external package-output mirror/cache bookkeeping.
-Keeps opcode PLA, compact CPU state, direct ALU flags, RP2A03 clock fast path, APU write filter and packed mixer-change state.
-Expected tests: 228.

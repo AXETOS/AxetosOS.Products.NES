@@ -1,7 +1,0 @@
-Directory.Build.props
-PATCH_FILE_LIST_v2.13.1.txt
-PATCH_NOTES_v2.13.1.txt
-README.md
-RELEASE_NOTES_v2.13.1.md
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Cartridges/Mmc1Cartridge.cs
-tests/AxetosOS.Products.NES.Tests/VirtualHardwareNesBootHostTests.cs

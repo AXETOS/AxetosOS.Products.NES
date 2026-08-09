@@ -1,8 +1,0 @@
-Directory.Build.props
-README.md
-RELEASE_NOTES_v2.6.0.md
-PATCH_NOTES_v2.6.0.txt
-PATCH_FILE_LIST_v2.6.0.txt
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/PpuDotDecoder.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C02.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2C07.cs

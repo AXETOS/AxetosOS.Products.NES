@@ -55,11 +55,30 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
     }
 
     [Fact]
+    public void Second_ppuaddr_write_reaches_v_after_three_ppu_edges()
+    {
+        var fixture = new Fixture();
+
+        fixture.WriteRegister(6, 0x23);
+        fixture.WriteRegister(6, 0x45);
+
+        Assert.Equal((ushort)0x2345, fixture.Chip.TemporaryVramAddress);
+        Assert.Equal((ushort)0x0000, fixture.Chip.VramAddress);
+        Assert.Equal(0UL, fixture.Chip.DelayedVramAddressCommitCount);
+
+        fixture.PulseClock(2);
+        Assert.Equal((ushort)0x0000, fixture.Chip.VramAddress);
+
+        fixture.PulseClock(1);
+        Assert.Equal((ushort)0x2345, fixture.Chip.VramAddress);
+        Assert.Equal(1UL, fixture.Chip.DelayedVramAddressCommitCount);
+    }
+
+    [Fact]
     public void Ppudata_write_is_emitted_as_a_multiplexed_external_vram_bus_transaction()
     {
         var fixture = new Fixture();
-        fixture.WriteRegister(6, 0x23);
-        fixture.WriteRegister(6, 0x45);
+        fixture.WriteVramAddress(0x2345);
 
         fixture.WriteRegister(7, 0xA6);
 
@@ -81,7 +100,15 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
 
         Assert.False(fixture.Chip.VramTransactionActive);
         Assert.Equal(1UL, fixture.Chip.CompletedVramWriteCount);
+        Assert.Equal((ushort)0x2345, fixture.Chip.VramAddress);
+
+        // The external write has completed, but the CPU-side $2007 increment
+        // reaches the internal v address generator on a later PPU phase.
+        fixture.PulseClock(2);
+        Assert.Equal((ushort)0x2345, fixture.Chip.VramAddress);
+        fixture.PulseClock(1);
         Assert.Equal((ushort)0x2346, fixture.Chip.VramAddress);
+        Assert.Equal(1UL, fixture.Chip.DelayedPpudataIncrementCount);
         Assert.Equal(DigitalLevel.Low, fixture.Chip.AddressLatchEnable.DriveLevel);
         Assert.Equal(DigitalLevel.High, fixture.Chip.VramReadBar.DriveLevel);
         Assert.Equal(DigitalLevel.High, fixture.Chip.VramWriteBar.DriveLevel);
@@ -94,8 +121,7 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
     public void Ppudata_read_returns_the_old_buffer_then_refills_it_from_external_pins()
     {
         var fixture = new Fixture();
-        fixture.WriteRegister(6, 0x20);
-        fixture.WriteRegister(6, 0x00);
+        fixture.WriteVramAddress(0x2000);
 
         var first = fixture.ReadRegister(7);
         Assert.Equal((byte)0x00, first);
@@ -136,6 +162,17 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
         Assert.Equal((byte)0x12, fixture.Chip.NextTileId);
         Assert.Equal((byte)0x03, fixture.Chip.NextTileAttribute);
         Assert.NotEqual((ushort)0, (ushort)(fixture.Chip.PatternShiftLow | fixture.Chip.PatternShiftHigh));
+    }
+
+    [Fact]
+    public void Pal_rendering_pipeline_performs_two_real_dummy_nametable_bus_reads_at_scanline_end()
+    {
+        var fixture = new Fixture();
+        fixture.WriteRegister(1, 0x08);
+
+        fixture.PulseClockWithVram(341, _ => 0x00);
+
+        Assert.Equal(2UL, fixture.Chip.DummyNametableFetchCount);
     }
 
     [Fact]
@@ -231,8 +268,7 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
     public void Palette_ram_is_internal_mirrored_and_masks_color_values()
     {
         var fixture = new Fixture();
-        fixture.WriteRegister(6, 0x3F);
-        fixture.WriteRegister(6, 0x10);
+        fixture.WriteVramAddress(0x3F10);
         fixture.WriteRegister(7, 0xFF);
 
         Assert.Equal((byte)0x3F, fixture.Chip.InspectPalette(0x3F00));
@@ -244,11 +280,9 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
     public void Palette_ppudata_read_bypasses_the_delayed_read_buffer()
     {
         var fixture = new Fixture();
-        fixture.WriteRegister(6, 0x3F);
-        fixture.WriteRegister(6, 0x04);
+        fixture.WriteVramAddress(0x3F04);
         fixture.WriteRegister(7, 0x2A);
-        fixture.WriteRegister(6, 0x3F);
-        fixture.WriteRegister(6, 0x04);
+        fixture.WriteVramAddress(0x3F04);
 
         Assert.Equal((byte)0x2A, fixture.ReadRegister(7));
         Assert.True(fixture.Chip.VramTransactionActive);
@@ -317,28 +351,68 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
     public void Palette_ppudata_read_preserves_open_bus_high_bits()
     {
         var fixture = new Fixture();
-        fixture.WriteRegister(6, 0x3F);
-        fixture.WriteRegister(6, 0x04);
+        fixture.WriteVramAddress(0x3F04);
         fixture.WriteRegister(7, 0x2A);
-        fixture.WriteRegister(6, 0x3F);
-        fixture.WriteRegister(6, 0x04);
+        fixture.WriteVramAddress(0x3F04);
         fixture.WriteRegister(2, 0xC0); // refresh open-bus D6-D7 without changing v
 
         Assert.Equal((byte)0xEA, fixture.ReadRegister(7));
     }
 
     [Fact]
-    public void Ppudata_access_during_rendering_clocks_horizontal_and_vertical_incrementers()
+    public void Ppudata_access_during_rendering_clocks_horizontal_and_vertical_incrementers_on_delayed_ppu_phase()
     {
         var fixture = new Fixture();
-        fixture.WriteRegister(6, 0x20);
-        fixture.WriteRegister(6, 0x00);
+        fixture.WriteVramAddress(0x2000);
         fixture.WriteRegister(1, 0x08);
         fixture.PulseClock(1);
 
         fixture.WriteRegister(7, 0x55);
 
-        Assert.Equal((ushort)0x3001, fixture.Chip.VramAddress);
+        // $2007 does not asynchronously mutate v on the CPU package edge.
+        Assert.Equal((ushort)0x2000, fixture.Chip.VramAddress);
+        Assert.Equal(0UL, fixture.Chip.DelayedPpudataIncrementCount);
+
+        // Normal rendering reaches dot 8 and advances coarse X first.
+        fixture.PulseClock(5);
+        Assert.Equal((ushort)0x2001, fixture.Chip.VramAddress);
+
+        // On the sixth following PPU edge the delayed CPU access clocks both
+        // horizontal and vertical increment paths.
+        fixture.PulseClock(1);
+        Assert.Equal((ushort)0x3002, fixture.Chip.VramAddress);
+        Assert.Equal(1UL, fixture.Chip.DelayedPpudataIncrementCount);
+    }
+
+    [Fact]
+    public void Delayed_ppudata_increment_precedes_dot257_horizontal_reload_on_collision()
+    {
+        var fixture = new Fixture();
+        fixture.WriteVramAddress(0x2000);
+
+        // Keep t's horizontal scroll deliberately different from the live v
+        // address so the dot-257 horizontal reload is observable.
+        fixture.WriteRegister(5, 0x50); // coarse X = 10, fine X = 0
+        fixture.WriteRegister(5, 0x00);
+        fixture.WriteRegister(1, 0x08);
+
+        // WriteVramAddress consumed three PPU dots; advance to dot 251 so the
+        // six-edge $2007 path lands on dot 257.
+        fixture.PulseClock(248);
+        Assert.Equal(251, fixture.Chip.Dot);
+
+        fixture.WriteRegister(7, 0x55);
+        fixture.PulseClock(5);
+        Assert.Equal(256, fixture.Chip.Dot);
+        Assert.Equal(0UL, fixture.Chip.DelayedPpudataIncrementCount);
+
+        fixture.PulseClock(1);
+        Assert.Equal(257, fixture.Chip.Dot);
+        Assert.Equal(1UL, fixture.Chip.DelayedPpudataIncrementCount);
+        Assert.Equal(
+            (ushort)(fixture.Chip.TemporaryVramAddress & 0x041F),
+            (ushort)(fixture.Chip.VramAddress & 0x041F));
+        Assert.Equal((ushort)10, (ushort)(fixture.Chip.VramAddress & 0x001F));
     }
 
     [Fact]
@@ -362,11 +436,9 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
     public void Forced_blank_outputs_palette_entry_selected_by_vram_address()
     {
         var fixture = new Fixture();
-        fixture.WriteRegister(6, 0x3F);
-        fixture.WriteRegister(6, 0x05);
+        fixture.WriteVramAddress(0x3F05);
         fixture.WriteRegister(7, 0x2B);
-        fixture.WriteRegister(6, 0x3F);
-        fixture.WriteRegister(6, 0x05);
+        fixture.WriteVramAddress(0x3F05);
 
         fixture.PulseClock(1);
 
@@ -535,6 +607,13 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
             Release(_externalAd);
             _sim.Settle();
             return addresses;
+        }
+
+        public void WriteVramAddress(ushort address)
+        {
+            WriteRegister(6, (byte)(address >> 8));
+            WriteRegister(6, (byte)address);
+            PulseClock(3);
         }
 
         public void WriteRegister(byte register, byte value)

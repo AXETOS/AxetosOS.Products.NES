@@ -1,8 +1,0 @@
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/IClockEdgeDrivenVirtualHardwareComponent.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/ICombinationalVirtualHardwareComponent.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/ICompiledInputDrivenVirtualHardwareComponent.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/IEventDrivenVirtualHardwareComponent.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/IInputActivationContractProvider.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/IInputDrivenVirtualHardwareComponent.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/ISelectiveInputDrivenVirtualHardwareComponent.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/PinActivationContract.cs

@@ -317,3 +317,59 @@ MMC1 now constructs a CPU $6000-$7FFF RAM target only when the image describes a
 The desktop host adds `--stop-frame N` for deterministic physical-vs-compiled comparisons. Final MMC1 diagnostics now include RAM presence/enable, serial commit/reset counts, the last mapper write and an FNV-1a hash over the complete mapper-write address/data stream. Running both runtimes to the same PPU frame therefore reveals whether they received identical cartridge transactions. ROM startup diagnostics also print parsed header/submapper and PRG/CHR RAM/NVRAM capacities.
 
 Three new conformance tests cover NES 2.0 RAM-size decoding, physical absence of an MMC1 PRG-RAM target, and mapper-local dynamic RAM chip-enable behavior. Existing compiled/reference MMC1 execution tests additionally compare the mapper write-stream hash. Expected suite total: **253**.
+
+## v2.14.0 RP2C0x deterministic video-state conformance
+
+v2.14.0 moves the real-ROM correctness investigation past the cartridge boundary. Alien Syndrome's v2.13.4 same-frame A/B run reached PPU frame 500 with identical master cycles, CPU state, APU counters, MMC1 registers, complete mapper-write stream hash and cartridge PPU-read count. The next diagnostic boundary is therefore the RP2C02 itself and the completed video frame, not mapper semantics.
+
+The RP2C02 now exposes an inspection-only deterministic snapshot of retained chip circuitry: CPU-facing register latches, v/t/x/w scrolling state, background tile/attribute/fetch latches, packed background shifters, sprite pipeline state, palette/OAM hashes, current pixel/color state and PPU bus transaction counters. CIRAM exposes a corresponding inspection hash, and DesktopHost prints those hashes together with an FNV-1a hash of the completed 256x240 ARGB frame. None of these hashes feeds execution or changes the compiled hot path; they exist only to compare two physical executions stopped at the same master-clock boundary.
+
+The shared RP2C0x horizontal decoder also gains the two real nametable bus reads performed at dots 337-340 of each rendering scanline. Their returned bytes are intentionally discarded by the pixel pipeline, but the address/read activity remains physically visible at the PPU package and cartridge connector. RP2C02 and RP2C07 both execute these bus cycles from the same chip-local decoder.
+
+The existing compiled/reference MMC1 conformance test now also requires exact RP2C02 diagnostic-snapshot and CIRAM-state equality. Three new standalone tests cover the two end-of-scanline nametable reads on NTSC/PAL PPUs and verify that RP2C02 state inspection observes palette/OAM changes without mutating execution.
+
+Expected test total: **256**. Local `dotnet test` remains the acceptance gate.
+
+## v2.15.0 RP2C0x delayed CPU VRAM address-generator timing
+
+v2.15.0 corrects a deterministic RP2C0x timing error exposed after v2.14.0 proved that the physical reference and whole-circuit compiled paths reach identical CPU, mapper, CIRAM, OAM, PPU-pipeline and framebuffer state. The remaining artifact therefore belongs to the shared PPU hardware model rather than the compiler or cartridge boundary.
+
+CPU register accesses no longer mutate the internal PPU VRAM address generator asynchronously on the CPU package edge. The second `$2006` write updates the temporary address latch immediately but reaches the live `v` address through a three-PPU-edge internal path. `$2007` reads/writes still perform their existing package memory transaction, but their address increment is now retained as a chip-local delayed edge and clocks `v` six following PPU edges later. Because the CPU transaction can occur between PPU edges, this models the measured five/six-dot propagation interval rather than imposing an NES-level scheduler.
+
+The delayed `$2007` edge is applied before the hardwired rendering decoder for that dot. This matters when it lands on dot 257: horizontal increment can occur electrically and the dot-257 `hori(t) -> hori(v)` reload then wins for the horizontal bits, matching the physical address-generator collision instead of the previous immediate software-style mutation.
+
+The same address-generator circuitry is implemented in RP2C02 and RP2C07. It is entirely chip-local; no game, mapper, board, address-range or product semantics were added to the motherboard or whole-circuit compiler. DesktopHost now reports delayed `$2006` commit and `$2007` increment counts so real-ROM runs can confirm that the hardware path is being exercised.
+
+Four new standalone conformance tests cover NTSC/PAL delayed `$2006` transfer timing and the dot-257 delayed `$2007`/horizontal-reload collision. Existing PPUDATA package-bus tests now separately verify that the external memory transaction can complete before the internal `v` increment reaches the address generator.
+
+Expected test total: **260**. Local `dotnet test` remains the acceptance gate.
+
+
+## v2.16.0 MMC1 cartridge-video correlation trace
+
+Alien Syndrome exposed deterministic tile corruption that does not occur in the validated Mapper 0 titles. v2.16.0 therefore adds a diagnostic-only cartridge/PPU correlation path before making another speculative hardware change.
+
+`--cartridge-video-trace START:END` observes the RP2C02's actual rendering fetch completions and asks the inserted MMC1 cartridge how each physical PPU address maps to CHR ROM or CIRAM at that exact moment. The trace records mapper-visible register changes at the current PPU frame/scanline/dot and emits compact per-frame signatures for CHR/CIRAM mapping plus four generic 60-scanline framebuffer bands.
+
+The observer is disabled outside the requested frame window and is not used by normal execution, the motherboard, or the whole-circuit compiler. MMC1 exposes inspection-only mapping/register diagnostics; the physical hardware behavior remains unchanged.
+
+Example focused capture:
+
+```powershell
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- "C:\ROMs\game.nes" --board famicom --compiled-lab --uncapped --cartridge-video-trace 1450:1850
+```
+
+If no explicit `--stop-frame` is supplied, a cartridge-video trace stops automatically immediately after its requested window.
+
+## v2.16.1 diagnostic output-boundary hotfix
+
+v2.16.1 preserves the v2.16.0 MMC1 cartridge-video trace but removes the two host callback references that the first diagnostic implementation accidentally retained inside physical hardware components. RP2C02 rendering-fetch diagnostics and MMC1 register diagnostics now leave their owning hardware through package-owned `BufferedOutputPin<T>` diagnostic outputs. DesktopHost enables and drains those outputs only inside the requested trace window.
+
+This changes no PPU, mapper, motherboard, cartridge-bus or compiler behavior. It restores the architectural rule that concrete hardware packages retain no board, simulator, peer-package or callback references. The expected suite remains **262** tests.
+
+## v2.16.2 diagnostic test consumer hotfix
+
+v2.16.2 completes the v2.16.1 diagnostic-boundary migration by updating the MMC1 regression test itself to consume `RegisterTraceOutput` through `BufferedOutputPin<T>` capture/drain semantics. The stale test-side reference to the removed `RegisterDiagnosticObserver` callback is gone.
+
+Production RP2C02, MMC1, cartridge, motherboard, electrical and compiler behavior is unchanged from v2.16.1. The expected suite remains **262 tests**.
+

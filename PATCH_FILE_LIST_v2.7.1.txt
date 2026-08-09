@@ -1,7 +1,0 @@
-Directory.Build.props
-README.md
-RELEASE_NOTES_v2.7.1.md
-PATCH_NOTES_v2.7.1.txt
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A03.cs
-src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A07.cs
-PATCH_FILE_LIST_v2.7.1.txt

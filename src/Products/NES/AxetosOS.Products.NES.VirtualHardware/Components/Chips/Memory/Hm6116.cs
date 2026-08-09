@@ -204,6 +204,22 @@ public sealed class Hm6116 : VirtualHardwareComponent, ICompiledBusTargetProvide
         return _knownMasks[address] == byte.MaxValue;
     }
 
+    /// <summary>Inspection-only deterministic hash of all retained SRAM cells and known masks.</summary>
+    public ulong InspectStateHash()
+    {
+        const ulong offset = 14_695_981_039_346_656_037UL;
+        const ulong prime = 1_099_511_628_211UL;
+        var hash = offset;
+        for (var address = 0; address < _memory.Length; address++)
+        {
+            hash ^= _memory[address];
+            hash *= prime;
+            hash ^= _knownMasks[address];
+            hash *= prime;
+        }
+        return hash;
+    }
+
 
     private void InitializePowerUpState()
     {
