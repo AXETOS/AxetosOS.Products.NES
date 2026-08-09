@@ -117,6 +117,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
     private bool _compiledResetAsserted;
     private byte _compiledDataBusValue;
     private bool _compiledDataBusKnown;
+    private bool _compiledWritePending;
     // The NMOS CPU has a retained internal data-bus value, while the external
     // D0-D7 package bus has its own charge/history. Internal APU/controller
     // reads can change the former without driving the latter.
@@ -335,12 +336,14 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         _compiledBusFabric = fabric ?? throw new ArgumentNullException(nameof(fabric));
         _compiledResetAsserted = ResetBar.SampledLevel == DigitalLevel.Low;
         _compiledDataBusKnown = false;
+        _compiledWritePending = false;
     }
 
     internal void DetachCompiledBusFabric()
     {
         _compiledBusFabric = null;
         _compiledDataBusKnown = false;
+        _compiledWritePending = false;
     }
 
     internal void SetCompiledResetAsserted(bool asserted)
@@ -365,10 +368,15 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
             CaptureCompletedReadData();
             _m2Level = DigitalLevel.Low;
 
-            // The physical M2 falling edge also closes writes. Compiled targets
-            // that advertise end-of-cycle write latching observe the transaction
-            // here, before any downstream clock-domain activation on this edge.
-            _compiledBusFabric?.CompleteCycle();
+            // The physical M2 falling edge closes a compiled write only when
+            // this package actually drove one during the preceding high phase.
+            // Read cycles have no completion work, so do not cross the compiled
+            // fabric boundary just to discover an empty write latch.
+            if (_compiledWritePending)
+            {
+                _compiledWritePending = false;
+                _compiledBusFabric?.CompleteCycle();
+            }
             return;
         }
 
@@ -1395,6 +1403,7 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
         var compiled = _compiledBusFabric;
         if (compiled is not null)
         {
+            _compiledWritePending = true;
             compiled.Write(address, value);
             return;
         }

@@ -172,6 +172,21 @@ public interface ICompiledCombinationalComponent
         out CompiledDriveState drive);
 }
 
+/// <summary>
+/// Optional subset of combinational package outputs whose behavior is guaranteed
+/// not to depend on mutable internal state while the device remains attached.
+/// The whole-circuit compiler may use these facets when rebuilding dispatch for
+/// the currently bound replaceable hardware, but never folds the package into
+/// the immutable motherboard unit. Replacing the package rebuilds the proof.
+/// </summary>
+public interface ICompiledStaticCombinationalComponent
+{
+    bool TryEvaluateCompiledStaticOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive);
+}
+
 public interface ICompiledBitProjectionComponent
 {
     bool TryTraceCompiledOutput(

@@ -9,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 /// Standalone mapper-0 cartridge board. PRG and CHR devices react only to the
 /// normalized cartridge connector pins; no CPU, PPU, or motherboard calls are used.
 /// </summary>
-public sealed class NromCartridge : VirtualHardwareComponent, IReplaceableCartridgeHardware, ICompiledBusTargetProvider, ICompiledCombinationalComponent
+public sealed class NromCartridge : VirtualHardwareComponent, IReplaceableCartridgeHardware, ICompiledBusTargetProvider, ICompiledCombinationalComponent, ICompiledStaticCombinationalComponent
 {
     private byte[] _prg = [];
     private byte[] _chr = [];
@@ -370,6 +370,39 @@ public sealed class NromCartridge : VirtualHardwareComponent, IReplaceableCartri
             CompiledBusReadPhase.Complete,
             address => ReadPpuCompiled((ushort)address),
             compiledPpuWrite);
+    }
+
+    bool ICompiledStaticCombinationalComponent.TryEvaluateCompiledStaticOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive)
+    {
+        if (ReferenceEquals(output, CiramChipEnableBar))
+        {
+            drive = new CompiledDriveState(sampleInput(PpuAddress.Pins[13]) switch
+            {
+                DigitalLevel.Low => DigitalLevel.High,
+                DigitalLevel.High => DigitalLevel.Low,
+                _ => DigitalLevel.Unknown
+            });
+            return true;
+        }
+
+        if (ReferenceEquals(output, CiramA10))
+        {
+            var sourceBit = _mirroring == VirtualHardwareNesMirroring.Horizontal ? 11 : 10;
+            drive = new CompiledDriveState(sampleInput(PpuAddress.Pins[sourceBit]));
+            return true;
+        }
+
+        if (ReferenceEquals(output, IrqBar))
+        {
+            drive = new CompiledDriveState(DigitalLevel.HighImpedance);
+            return true;
+        }
+
+        drive = default;
+        return false;
     }
 
     bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(

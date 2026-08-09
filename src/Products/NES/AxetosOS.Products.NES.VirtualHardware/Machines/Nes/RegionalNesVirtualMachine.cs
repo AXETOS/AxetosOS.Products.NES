@@ -196,9 +196,13 @@ public sealed class RegionalNesVirtualMachine
         switch (ActiveMotherboard)
         {
             case ActiveNesMotherboard.Famicom:
-                Famicom.DetachCompiledExternalDevice(cartridge);
+                // Remove the package from the physical netlist first, then rebuild
+                // the compiled external binding. Bind-time topology proofs and
+                // cached signal samplers must observe the post-ejection circuit,
+                // not the connector state that existed one instruction earlier.
                 Famicom.Board.Remove(cartridge);
                 Famicom.RecompileTopology();
+                Famicom.DetachCompiledExternalDevice(cartridge);
                 break;
             case ActiveNesMotherboard.NtscNes:
                 NtscNes.Board.Remove(cartridge);

@@ -1,0 +1,12 @@
+Directory.Build.props
+README.md
+RELEASE_NOTES_v2.27.0.md
+PATCH_NOTES_v2.27.0.txt
+PATCH_FILE_LIST_v2.27.0.txt
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Cartridges/Mmc1Cartridge.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Cartridges/NromCartridge.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Components/Chips/Ricoh/Rp2A03.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Machines/Nes/RegionalNesVirtualMachine.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledHardwareContracts.cs
+src/Products/NES/AxetosOS.Products.NES.VirtualHardware/Simulation/CompiledLabMotherboardExecutionPlan.cs
+tests/AxetosOS.Products.NES.Tests/VirtualHardwareMmc1CartridgeTests.cs

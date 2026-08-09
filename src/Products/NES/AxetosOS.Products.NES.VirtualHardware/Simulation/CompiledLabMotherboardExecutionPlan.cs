@@ -479,6 +479,49 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             return true;
         }
 
+        /// <summary>
+        /// Classifies the physical pin conditions for one dynamic target/address
+        /// using only the immutable motherboard plus state-independent facets of
+        /// the currently attached replaceable hardware. 0 = proven rejected,
+        /// 1 = all physical conditions proven selected, 2 = runtime evaluation
+        /// is still required. No mutable mapper state is sampled by this proof.
+        /// </summary>
+        public byte ClassifyBoundStaticConditions(
+            CompiledBusMasterDescriptor master,
+            CompiledBusTargetRuntime target,
+            ushort masterAddress,
+            bool readCycle)
+        {
+            var descriptor = target.Descriptor;
+            var conditions = readCycle ? descriptor.ReadConditions : descriptor.WriteConditions;
+            var address = (uint)masterAddress;
+
+            for (var conditionIndex = 0; conditionIndex < conditions.Count; conditionIndex++)
+            {
+                DigitalLevel level;
+                try
+                {
+                    level = EvaluateInput(
+                        conditions[conditionIndex].Pin,
+                        address,
+                        readCycle,
+                        master,
+                        0,
+                        allowExternalDevices: false,
+                        allowStaticExternalDevices: true);
+                }
+                catch (NotSupportedException)
+                {
+                    return 2;
+                }
+
+                if (level is not (DigitalLevel.Low or DigitalLevel.High)) return 2;
+                if (level != conditions[conditionIndex].RequiredLevel) return 0;
+            }
+
+            return 1;
+        }
+
         public bool TryResolveRuntimeTarget(
             CompiledBusMasterDescriptor master,
             CompiledBusTargetRuntime target,
@@ -487,7 +530,6 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             bool readCycle,
             out int localAddress)
         {
-            localAddress = 0;
             var descriptor = target.Descriptor;
             var conditions = readCycle ? descriptor.ReadConditions : descriptor.WriteConditions;
             var address = (uint)masterAddress;
@@ -501,10 +543,37 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 }
                 catch (NotSupportedException)
                 {
+                    localAddress = 0;
                     return false;
                 }
-                if (level != conditions[conditionIndex].RequiredLevel) return false;
+                if (level != conditions[conditionIndex].RequiredLevel)
+                {
+                    localAddress = 0;
+                    return false;
+                }
             }
+
+            return TryResolveRuntimeAddress(
+                master,
+                target,
+                addressSources,
+                masterAddress,
+                writeCycle: !readCycle,
+                out localAddress);
+        }
+
+        public bool TryResolveRuntimeAddress(
+            CompiledBusMasterDescriptor master,
+            CompiledBusTargetRuntime target,
+            int[] addressSources,
+            ushort masterAddress,
+            bool writeCycle,
+            out int localAddress)
+        {
+            localAddress = 0;
+            var descriptor = target.Descriptor;
+            var address = (uint)masterAddress;
+            var readCycle = !writeCycle;
 
             for (var bit = 0; bit < addressSources.Length; bit++)
             {
@@ -530,7 +599,41 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 else if (level != DigitalLevel.Low) return false;
             }
 
-            return descriptor.IsSelected?.Invoke(localAddress, !readCycle) ?? true;
+            return descriptor.IsSelected?.Invoke(localAddress, writeCycle) ?? true;
+        }
+
+        public bool TryResolveRuntimeAddressFromPlan(
+            CompiledBusMasterDescriptor master,
+            CompiledBusTargetRuntime target,
+            int localAddressBase,
+            int[] runtimeAddressBits,
+            ushort masterAddress,
+            bool writeCycle,
+            out int localAddress)
+        {
+            localAddress = localAddressBase;
+            var descriptor = target.Descriptor;
+            var address = (uint)masterAddress;
+            var readCycle = !writeCycle;
+
+            for (var index = 0; index < runtimeAddressBits.Length; index++)
+            {
+                var bit = runtimeAddressBits[index];
+                DigitalLevel level;
+                try
+                {
+                    level = EvaluateInput(descriptor.AddressPins[bit], address, readCycle, master, 0);
+                }
+                catch (NotSupportedException)
+                {
+                    return false;
+                }
+
+                if (level == DigitalLevel.High) localAddress |= 1 << bit;
+                else if (level != DigitalLevel.Low) return false;
+            }
+
+            return descriptor.IsSelected?.Invoke(localAddress, writeCycle) ?? true;
         }
 
         private static void ValidateDataBusCoverage(
@@ -724,14 +827,15 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             bool readCycle,
             CompiledBusMasterDescriptor? master,
             int depth,
-            bool allowExternalDevices = true)
+            bool allowExternalDevices = true,
+            bool allowStaticExternalDevices = false)
         {
             if (depth > 16)
                 throw new InvalidOperationException("Combinational topology recursion exceeded the hardware compiler limit.");
             var net = input.Net;
             return net is null
                 ? DigitalLevel.Unknown
-                : EvaluateNet(net, address, readCycle, master, depth + 1, allowExternalDevices);
+                : EvaluateNet(net, address, readCycle, master, depth + 1, allowExternalDevices, allowStaticExternalDevices);
         }
 
         private DigitalLevel EvaluateNet(
@@ -740,7 +844,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             bool readCycle,
             CompiledBusMasterDescriptor? master,
             int depth,
-            bool allowExternalDevices = true)
+            bool allowExternalDevices = true,
+            bool allowStaticExternalDevices = false)
         {
             var haveStrong = false;
             var strongLow = false;
@@ -754,7 +859,14 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             foreach (var driver in net.Pins)
             {
                 if (!driver.IsOutputCapable) continue;
-                var drive = EvaluateDriver(driver, address, readCycle, master, depth + 1, allowExternalDevices);
+                var drive = EvaluateDriver(
+                    driver,
+                    address,
+                    readCycle,
+                    master,
+                    depth + 1,
+                    allowExternalDevices,
+                    allowStaticExternalDevices);
                 if (drive.Level == DigitalLevel.HighImpedance) continue;
                 if (drive.Strength == DigitalDriveStrength.Strong)
                 {
@@ -783,10 +895,30 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             bool readCycle,
             CompiledBusMasterDescriptor? master,
             int depth,
-            bool allowExternalDevices = true)
+            bool allowExternalDevices = true,
+            bool allowStaticExternalDevices = false)
         {
             if (!allowExternalDevices && driver.OwnerComponent is ICompiledExternalDevice)
-                throw new NotSupportedException("Replaceable hardware remains outside the fixed-circuit compilation unit.");
+            {
+                if (!allowStaticExternalDevices
+                    || driver.OwnerComponent is not ICompiledStaticCombinationalComponent staticCombinational
+                    || !staticCombinational.TryEvaluateCompiledStaticOutput(
+                        driver,
+                        pin => EvaluateInput(
+                            pin,
+                            address,
+                            readCycle,
+                            master,
+                            depth + 1,
+                            allowExternalDevices: false,
+                            allowStaticExternalDevices: true),
+                        out var staticDrive))
+                {
+                    throw new NotSupportedException("Replaceable hardware remains outside the immutable fixed-circuit compilation unit.");
+                }
+
+                return staticDrive;
+            }
             if (master is not null)
             {
                 var masterDrive = master.EvaluateDrivenPin(driver, address, readCycle);
@@ -796,7 +928,14 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             if (driver.OwnerComponent is ICompiledCombinationalComponent combinational
                 && combinational.TryEvaluateCompiledOutput(
                     driver,
-                    pin => EvaluateInput(pin, address, readCycle, master, depth + 1, allowExternalDevices),
+                    pin => EvaluateInput(
+                        pin,
+                        address,
+                        readCycle,
+                        master,
+                        depth + 1,
+                        allowExternalDevices,
+                        allowStaticExternalDevices),
                     out var drive))
             {
                 return drive;
@@ -918,6 +1057,32 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public CompiledTargetSet Targets { get; }
     }
 
+    private sealed class CompiledDynamicTargetBinding
+    {
+        public CompiledDynamicTargetBinding(
+            CompiledBusTargetRuntime target,
+            int[] addressSources,
+            int[] localAddressBases,
+            int[] runtimeAddressBits,
+            byte[] readConditionClasses,
+            byte[] writeConditionClasses)
+        {
+            Target = target;
+            AddressSources = addressSources;
+            LocalAddressBases = localAddressBases;
+            RuntimeAddressBits = runtimeAddressBits;
+            ReadConditionClasses = readConditionClasses;
+            WriteConditionClasses = writeConditionClasses;
+        }
+
+        public CompiledBusTargetRuntime Target { get; }
+        public int[] AddressSources { get; }
+        public int[] LocalAddressBases { get; }
+        public int[] RuntimeAddressBits { get; }
+        public byte[] ReadConditionClasses { get; }
+        public byte[] WriteConditionClasses { get; }
+    }
+
     private sealed class CompiledBusFabric : ICompiledBusFabric
     {
         private readonly HardwareCompiler _compiler;
@@ -926,8 +1091,19 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         private readonly CompiledSerialBinding[] _serialBindings;
         private readonly Func<ulong> _clockEdgeProvider;
         private readonly CompiledSignalRouter _signalRouter;
-        private Action<bool>[] _busCycleObservers;
-        private CompiledTargetSet[] _dynamicTargetSets = [];
+        private CompiledSignalSampler? _interruptRequestSampler;
+        private Action<bool>? _singleBusCycleObserver;
+        private const byte DynamicReadBeginFlag = 1 << 0;
+        private const byte DynamicReadCompleteFlag = 1 << 1;
+        private const byte DynamicReadObserverFlag = 1 << 2;
+        private const byte DynamicWriteBeginFlag = 1 << 3;
+        private const byte DynamicWriteCompleteFlag = 1 << 4;
+
+        private Action<bool>[] _busCycleObservers = [];
+        private CompiledDynamicTargetBinding[] _dynamicTargets = [];
+        private byte[] _dynamicRouteFlags = [];
+        private bool _hasReadBeginData;
+        private bool _hasReadBeginObservers;
         private CompiledDirectRoute[] _readBeginRoutes = [];
         private CompiledDirectRoute[] _readCompleteRoutes = [];
         private CompiledDirectRoute[] _readObserverRoutes = [];
@@ -955,15 +1131,13 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _serialBindings = serialBindings;
             _clockEdgeProvider = clockEdgeProvider;
             _signalRouter = signalRouter;
-            _busCycleObservers = internalTargets.BusCycleObservers;
             RebuildCompiledDispatch();
         }
 
         public CompiledBusMasterDescriptor Master { get; }
         public ulong ClockRisingEdges => _clockEdgeProvider();
         public bool InterruptRequestLow =>
-            Master.InterruptRequestPin is not null
-            && _signalRouter.SampleNet(Master.InterruptRequestPin.Net) == DigitalLevel.Low;
+            _interruptRequestSampler?.Sample() == DigitalLevel.Low;
 
         public void BindExternalDevice(IVirtualHardwareComponent component)
         {
@@ -995,18 +1169,17 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         /// </summary>
         private void RebuildCompiledDispatch()
         {
+            // A replaceable package can add or remove a physical driver from a
+            // motherboard net, so signal samplers are rebound together with the
+            // cartridge dispatch rather than being frozen in the motherboard unit.
+            _interruptRequestSampler = Master.InterruptRequestPin?.Net is { } interruptNet
+                ? _signalRouter.CompileSampler(interruptNet)
+                : null;
+
             var sets = new CompiledTargetSet[1 + _externalBindings.Count];
             sets[0] = _internalTargets;
             for (var index = 0; index < _externalBindings.Count; index++)
                 sets[index + 1] = _externalBindings[index].Targets;
-
-            var dynamicSets = new List<CompiledTargetSet>(sets.Length);
-            for (var index = 0; index < sets.Length; index++)
-            {
-                if (sets[index].DynamicIndices.Length != 0)
-                    dynamicSets.Add(sets[index]);
-            }
-            _dynamicTargetSets = dynamicSets.ToArray();
 
             _readBeginRoutes = CompileDirectRoutes(sets, static set => set.ReadBeginRoutes);
             _readCompleteRoutes = CompileDirectRoutes(sets, static set => set.ReadCompleteRoutes);
@@ -1019,6 +1192,19 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 sets,
                 static set => set.WriteRoutes,
                 CompiledBusWritePhase.Complete);
+
+            // Dynamic targets remain package/live-state owned, but their fixed
+            // physical select conditions can be classified for every bus address
+            // when a replaceable device is bound. This creates a tiny per-address
+            // candidate mask without freezing mutable mapper state such as MMC1
+            // CIRAM A10. The mask is rebuilt whenever the cartridge changes.
+            _dynamicTargets = CompileDynamicTargets(sets, _readBeginRoutes.Length);
+            _dynamicRouteFlags = CompileDynamicRouteFlags(_dynamicTargets, _readBeginRoutes.Length);
+
+            // Collapse transaction-shape decisions once at bind time. The hot
+            // runtime can now skip entire empty phases and dynamic passes.
+            _hasReadBeginData = HasAnyRoute(_readBeginRoutes) || HasAnyDynamicFlag(DynamicReadBeginFlag);
+            _hasReadBeginObservers = HasAnyRoute(_readObserverRoutes) || HasAnyDynamicFlag(DynamicReadObserverFlag);
             RebuildBusCycleObservers();
         }
 
@@ -1078,6 +1264,134 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             addresses.Add(address);
         }
 
+        private static bool HasAnyRoute(CompiledDirectRoute[] routes)
+        {
+            for (var index = 0; index < routes.Length; index++)
+            {
+                if (routes[index].Count != 0) return true;
+            }
+            return false;
+        }
+
+        private CompiledDynamicTargetBinding[] CompileDynamicTargets(
+            IReadOnlyList<CompiledTargetSet> sets,
+            int addressCount)
+        {
+            var bindings = new List<CompiledDynamicTargetBinding>();
+            for (var setIndex = 0; setIndex < sets.Count; setIndex++)
+            {
+                var set = sets[setIndex];
+                var dynamic = set.DynamicIndices;
+                for (var index = 0; index < dynamic.Length; index++)
+                {
+                    var targetIndex = dynamic[index];
+                    var target = set.Runtimes[targetIndex];
+                    var descriptor = target.Descriptor;
+                    var readClasses = descriptor.Read is not null || target.ObserveReadBegin is not null
+                        ? CompileConditionClasses(target, addressCount, readCycle: true)
+                        : [];
+                    var writeClasses = descriptor.Write is not null
+                        ? CompileConditionClasses(target, addressCount, readCycle: false)
+                        : [];
+                    var addressSources = set.AddressSources[targetIndex];
+                    bindings.Add(new CompiledDynamicTargetBinding(
+                        target,
+                        addressSources,
+                        CompileLocalAddressBases(addressSources, addressCount),
+                        CompileRuntimeAddressBits(addressSources),
+                        readClasses,
+                        writeClasses));
+                }
+            }
+            return bindings.ToArray();
+        }
+
+        private static int[] CompileLocalAddressBases(int[] addressSources, int addressCount)
+        {
+            var bases = new int[addressCount];
+            for (var raw = 0; raw < addressCount; raw++)
+            {
+                var local = 0;
+                for (var bit = 0; bit < addressSources.Length; bit++)
+                {
+                    var root = addressSources[bit];
+                    if (root >= 0 && (raw & (1 << root)) != 0) local |= 1 << bit;
+                }
+                bases[raw] = local;
+            }
+            return bases;
+        }
+
+        private static int[] CompileRuntimeAddressBits(int[] addressSources)
+        {
+            var bits = new List<int>();
+            for (var bit = 0; bit < addressSources.Length; bit++)
+            {
+                if (addressSources[bit] < 0) bits.Add(bit);
+            }
+            return bits.Count == 0 ? [] : bits.ToArray();
+        }
+
+        private byte[] CompileConditionClasses(
+            CompiledBusTargetRuntime target,
+            int addressCount,
+            bool readCycle)
+        {
+            var classes = new byte[addressCount];
+            for (var raw = 0; raw < addressCount; raw++)
+                classes[raw] = _compiler.ClassifyBoundStaticConditions(
+                    Master,
+                    target,
+                    (ushort)raw,
+                    readCycle);
+            return classes;
+        }
+
+        private static byte[] CompileDynamicRouteFlags(
+            IReadOnlyList<CompiledDynamicTargetBinding> targets,
+            int addressCount)
+        {
+            var flags = new byte[addressCount];
+            for (var targetIndex = 0; targetIndex < targets.Count; targetIndex++)
+            {
+                var binding = targets[targetIndex];
+                var descriptor = binding.Target.Descriptor;
+                for (var raw = 0; raw < addressCount; raw++)
+                {
+                    if (binding.ReadConditionClasses.Length != 0
+                        && binding.ReadConditionClasses[raw] != 0)
+                    {
+                        if (descriptor.Read is not null)
+                            flags[raw] |= descriptor.ReadPhase == CompiledBusReadPhase.Begin
+                                ? DynamicReadBeginFlag
+                                : DynamicReadCompleteFlag;
+                        if (binding.Target.ObserveReadBegin is not null)
+                            flags[raw] |= DynamicReadObserverFlag;
+                    }
+
+                    if (binding.WriteConditionClasses.Length != 0
+                        && binding.WriteConditionClasses[raw] != 0
+                        && descriptor.Write is not null)
+                    {
+                        flags[raw] |= descriptor.WritePhase == CompiledBusWritePhase.Begin
+                            ? DynamicWriteBeginFlag
+                            : DynamicWriteCompleteFlag;
+                    }
+                }
+            }
+            return flags;
+        }
+
+        private bool HasAnyDynamicFlag(byte flag)
+        {
+            var flags = _dynamicRouteFlags;
+            for (var index = 0; index < flags.Length; index++)
+            {
+                if ((flags[index] & flag) != 0) return true;
+            }
+            return false;
+        }
+
         private void RebuildBusCycleObservers()
         {
             var observers = new List<Action<bool>>(_internalTargets.BusCycleObservers);
@@ -1090,7 +1404,16 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                     if (!observers.Contains(observer)) observers.Add(observer);
                 }
             }
-            _busCycleObservers = observers.ToArray();
+
+            if (observers.Count == 1)
+            {
+                _singleBusCycleObserver = observers[0];
+                _busCycleObservers = [];
+                return;
+            }
+
+            _singleBusCycleObserver = null;
+            _busCycleObservers = observers.Count == 0 ? [] : observers.ToArray();
         }
 
         public void ResetTransientState()
@@ -1108,29 +1431,62 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public void BeginRead(ushort address)
         {
             ObserveBusCycle(writeCycle: false);
+
+            var observerIndex = address & (_readObserverRoutes.Length - 1);
+            var dynamicFlags = _dynamicRouteFlags[observerIndex];
+            if (_hasReadBeginObservers)
+            {
+                ObserveDirectReadBeginRoute(_readObserverRoutes[observerIndex]);
+                if ((dynamicFlags & DynamicReadObserverFlag) != 0) ObserveDynamicReadBegins(address);
+            }
+
+            // If topology proves no target drives data during the begin phase,
+            // there is no latch state to clear or address to remember. This is
+            // the normal PPU memory-bus shape and removes bookkeeping from every
+            // pattern/nametable fetch while preserving begin-edge observers.
+            if (!_hasReadBeginData) return;
+
             _latchedAddress = address;
             _latchedValueValid = false;
             _latchedConflict = false;
             var routeIndex = address & (_readBeginRoutes.Length - 1);
-            ObserveDirectReadBeginRoute(_readObserverRoutes[routeIndex]);
-            ObserveDynamicReadBegins(address);
             AccumulateDirectRouteReads(
                 _readBeginRoutes[routeIndex],
                 ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
-            AccumulateDynamicReads(
-                address, CompiledBusReadPhase.Begin,
-                ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
+            if ((dynamicFlags & DynamicReadBeginFlag) != 0)
+            {
+                AccumulateDynamicReads(
+                    address, CompiledBusReadPhase.Begin,
+                    ref _latchedValue, ref _latchedValueValid, ref _latchedConflict);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool CompleteRead(ushort address, out byte value)
         {
-            var any = _latchedValueValid && address == _latchedAddress;
+            var routeIndex = address & (_readCompleteRoutes.Length - 1);
+            var route = _readCompleteRoutes[routeIndex];
+
+            var dynamicComplete = (_dynamicRouteFlags[routeIndex] & DynamicReadCompleteFlag) != 0;
+
+            // The dominant compiled-memory case is one statically resolved
+            // physical target and no begin-phase driver. Return that target
+            // directly instead of constructing generic contention state. A
+            // dynamic target elsewhere in the address space no longer blocks
+            // this fast route.
+            if (!_hasReadBeginData && !dynamicComplete && route.Count == 1)
+            {
+                value = route.Target0!.Read(route.Address0);
+                return true;
+            }
+
+            var beginValueValid = _hasReadBeginData && _latchedValueValid && address == _latchedAddress;
+            var any = beginValueValid;
             var conflict = any && _latchedConflict;
             var result = any ? _latchedValue : (byte)0;
-            var routeIndex = address & (_readCompleteRoutes.Length - 1);
-            AccumulateDirectRouteReads(_readCompleteRoutes[routeIndex], ref result, ref any, ref conflict);
-            AccumulateDynamicReads(address, CompiledBusReadPhase.Complete, ref result, ref any, ref conflict);
+            AccumulateDirectRouteReads(route, ref result, ref any, ref conflict);
+            if (dynamicComplete)
+                AccumulateDynamicReads(address, CompiledBusReadPhase.Complete, ref result, ref any, ref conflict);
             _latchedValueValid = false;
             _latchedConflict = false;
             value = result;
@@ -1148,7 +1504,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _pendingWriteCompletion = true;
             var routeIndex = address & (_writeBeginRoutes.Length - 1);
             WriteDirectRoute(_writeBeginRoutes[routeIndex], value);
-            WriteDynamicTargets(address, value, CompiledBusWritePhase.Begin);
+            if ((_dynamicRouteFlags[routeIndex] & DynamicWriteBeginFlag) != 0)
+                WriteDynamicTargets(address, value, CompiledBusWritePhase.Begin);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1160,12 +1517,20 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             _pendingWriteCompletion = false;
             var routeIndex = address & (_writeCompleteRoutes.Length - 1);
             WriteDirectRoute(_writeCompleteRoutes[routeIndex], value);
-            WriteDynamicTargets(address, value, CompiledBusWritePhase.Complete);
+            if ((_dynamicRouteFlags[routeIndex] & DynamicWriteCompleteFlag) != 0)
+                WriteDynamicTargets(address, value, CompiledBusWritePhase.Complete);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ObserveBusCycle(bool writeCycle)
         {
+            var single = _singleBusCycleObserver;
+            if (single is not null)
+            {
+                single(writeCycle);
+                return;
+            }
+
             var observers = _busCycleObservers;
             for (var index = 0; index < observers.Length; index++)
                 observers[index](writeCycle);
@@ -1207,22 +1572,18 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ObserveDynamicReadBegins(ushort address)
         {
-            var sets = _dynamicTargetSets;
-            for (var setIndex = 0; setIndex < sets.Length; setIndex++)
+            var targets = _dynamicTargets;
+            var routeIndex = address & (_dynamicRouteFlags.Length - 1);
+            for (var index = 0; index < targets.Length; index++)
             {
-                var set = sets[setIndex];
-                var dynamic = set.DynamicIndices;
-                for (var index = 0; index < dynamic.Length; index++)
-                {
-                    var targetIndex = dynamic[index];
-                    var target = set.Runtimes[targetIndex];
-                    var observer = target.Descriptor.ObserveReadBegin;
-                    if (observer is null) continue;
-                    if (!_compiler.TryResolveRuntimeTarget(
-                        Master, target, set.AddressSources[targetIndex], address, readCycle: true, out var localAddress))
-                        continue;
-                    observer(localAddress);
-                }
+                var binding = targets[index];
+                var observer = binding.Target.ObserveReadBegin;
+                if (observer is null || binding.ReadConditionClasses.Length == 0) continue;
+                var conditionClass = binding.ReadConditionClasses[routeIndex];
+                if (conditionClass == 0) continue;
+                if (!TryResolveDynamicTarget(binding, address, readCycle: true, conditionClass, out var localAddress))
+                    continue;
+                observer(localAddress);
             }
         }
 
@@ -1234,56 +1595,84 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             ref bool any,
             ref bool conflict)
         {
-            var sets = _dynamicTargetSets;
-            for (var setIndex = 0; setIndex < sets.Length; setIndex++)
+            var targets = _dynamicTargets;
+            var routeIndex = address & (_dynamicRouteFlags.Length - 1);
+            for (var index = 0; index < targets.Length; index++)
             {
-                var set = sets[setIndex];
-                var dynamic = set.DynamicIndices;
-                for (var index = 0; index < dynamic.Length; index++)
-                {
-                    var targetIndex = dynamic[index];
-                    var target = set.Runtimes[targetIndex];
-                    if (target.Descriptor.Read is null || target.Descriptor.ReadPhase != phase) continue;
-                    if (!_compiler.TryResolveRuntimeTarget(
-                        Master, target, set.AddressSources[targetIndex], address, readCycle: true, out var localAddress))
-                        continue;
-                    AccumulateReadValue(target.Read(localAddress), ref value, ref any, ref conflict);
-                }
+                var binding = targets[index];
+                var target = binding.Target;
+                var descriptor = target.Descriptor;
+                if (descriptor.Read is null || descriptor.ReadPhase != phase || binding.ReadConditionClasses.Length == 0)
+                    continue;
+                var conditionClass = binding.ReadConditionClasses[routeIndex];
+                if (conditionClass == 0) continue;
+                if (!TryResolveDynamicTarget(binding, address, readCycle: true, conditionClass, out var localAddress))
+                    continue;
+                AccumulateReadValue(target.Read(localAddress), ref value, ref any, ref conflict);
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void WriteDynamicTargets(ushort address, byte value, CompiledBusWritePhase phase)
         {
-            var sets = _dynamicTargetSets;
-            for (var setIndex = 0; setIndex < sets.Length; setIndex++)
+            var targets = _dynamicTargets;
+            var routeIndex = address & (_dynamicRouteFlags.Length - 1);
+            for (var index = 0; index < targets.Length; index++)
             {
-                var set = sets[setIndex];
-                var dynamic = set.DynamicIndices;
-                for (var index = 0; index < dynamic.Length; index++)
-                {
-                    var targetIndex = dynamic[index];
-                    var target = set.Runtimes[targetIndex];
-                    if (target.Descriptor.Write is null || target.Descriptor.WritePhase != phase) continue;
-                    if (!_compiler.TryResolveRuntimeTarget(
-                        Master, target, set.AddressSources[targetIndex], address, readCycle: false, out var localAddress))
-                        continue;
-                    target.Write(localAddress, value);
-                }
+                var binding = targets[index];
+                var target = binding.Target;
+                var descriptor = target.Descriptor;
+                if (descriptor.Write is null || descriptor.WritePhase != phase || binding.WriteConditionClasses.Length == 0)
+                    continue;
+                var conditionClass = binding.WriteConditionClasses[routeIndex];
+                if (conditionClass == 0) continue;
+                if (!TryResolveDynamicTarget(binding, address, readCycle: false, conditionClass, out var localAddress))
+                    continue;
+                target.Write(localAddress, value);
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool TryResolveDynamicTarget(
+            CompiledDynamicTargetBinding binding,
+            ushort address,
+            bool readCycle,
+            byte conditionClass,
+            out int localAddress)
+        {
+            if (conditionClass == 1)
+            {
+                var routeIndex = address & (binding.LocalAddressBases.Length - 1);
+                return _compiler.TryResolveRuntimeAddressFromPlan(
+                    Master,
+                    binding.Target,
+                    binding.LocalAddressBases[routeIndex],
+                    binding.RuntimeAddressBits,
+                    address,
+                    writeCycle: !readCycle,
+                    out localAddress);
+            }
+
+            return _compiler.TryResolveRuntimeTarget(
+                Master,
+                binding.Target,
+                binding.AddressSources,
+                address,
+                readCycle,
+                out localAddress);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void ObserveDirectReadBeginRoute(CompiledDirectRoute route)
         {
             if (route.Count == 0) return;
-            route.Target0!.Descriptor.ObserveReadBegin?.Invoke(route.Address0);
+            route.Target0!.ObserveReadBegin?.Invoke(route.Address0);
             if (route.Count == 1) return;
-            route.Target1!.Descriptor.ObserveReadBegin?.Invoke(route.Address1);
+            route.Target1!.ObserveReadBegin?.Invoke(route.Address1);
             if (route.Count == 2) return;
             var overflow = route.Overflow!;
             for (var index = 0; index < overflow.Targets.Length; index++)
-                overflow.Targets[index].Descriptor.ObserveReadBegin?.Invoke(overflow.Addresses[index]);
+                overflow.Targets[index].ObserveReadBegin?.Invoke(overflow.Addresses[index]);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1335,10 +1724,15 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
     {
         private readonly byte[]? _targetToMaster;
         private readonly byte[]? _masterToTarget;
+        private readonly Func<int, byte>? _read;
+        private readonly Action<int, byte>? _write;
 
         public CompiledBusTargetRuntime(CompiledBusTargetDescriptor descriptor, int[] targetToMaster)
         {
             Descriptor = descriptor;
+            _read = descriptor.Read;
+            _write = descriptor.Write;
+            ObserveReadBegin = descriptor.ObserveReadBegin;
             var identity = true;
             for (var bit = 0; bit < targetToMaster.Length; bit++)
                 identity &= targetToMaster[bit] == bit;
@@ -1349,19 +1743,21 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         }
 
         public CompiledBusTargetDescriptor Descriptor { get; }
+        public Action<int>? ObserveReadBegin { get; }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public byte Read(int address)
         {
-            var value = Descriptor.Read!(address);
+            var value = _read!(address);
             return _targetToMaster is null ? value : _targetToMaster[value];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(int address, byte masterValue)
         {
-            if (Descriptor.Write is null) return;
-            Descriptor.Write(address, _masterToTarget is null ? masterValue : _masterToTarget[masterValue]);
+            var write = _write;
+            if (write is null) return;
+            write(address, _masterToTarget is null ? masterValue : _masterToTarget[masterValue]);
         }
 
         private static byte[] BuildPermutation(int[] targetToMaster, bool reverse)
@@ -1533,6 +1929,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public DigitalLevel SampleNet(DigitalNet? net) =>
             net is null ? DigitalLevel.Unknown : ResolveNet(net, null, DigitalLevel.Unknown);
 
+        public CompiledSignalSampler CompileSampler(DigitalNet net) => new(net);
+
         private static DigitalLevel ResolveNet(DigitalNet net, DigitalPin? overriddenPin, DigitalLevel overriddenLevel)
         {
             var haveStrong = false;
@@ -1571,6 +1969,65 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             return DigitalLevel.Unknown;
         }
 
+        private static DigitalLevel Finish(bool low, bool high, bool unknown)
+        {
+            if (low && high) return DigitalLevel.Contention;
+            if (unknown) return DigitalLevel.Unknown;
+            if (low) return DigitalLevel.Low;
+            if (high) return DigitalLevel.High;
+            return DigitalLevel.Unknown;
+        }
+    }
+
+    private sealed class CompiledSignalSampler
+    {
+        private readonly DigitalPin[] _drivers;
+
+        public CompiledSignalSampler(DigitalNet net)
+        {
+            _drivers = net.Pins.Where(static pin => pin.IsOutputCapable).ToArray();
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public DigitalLevel Sample()
+        {
+            var haveStrong = false;
+            var strongLow = false;
+            var strongHigh = false;
+            var strongUnknown = false;
+            var haveWeak = false;
+            var weakLow = false;
+            var weakHigh = false;
+            var weakUnknown = false;
+
+            var drivers = _drivers;
+            for (var index = 0; index < drivers.Length; index++)
+            {
+                var pin = drivers[index];
+                var level = pin.DriveLevel;
+                if (level == DigitalLevel.HighImpedance) continue;
+                if (pin.DriveStrength == DigitalDriveStrength.Strong)
+                {
+                    haveStrong = true;
+                    strongLow |= level == DigitalLevel.Low;
+                    strongHigh |= level == DigitalLevel.High;
+                    strongUnknown |= level is not (DigitalLevel.Low or DigitalLevel.High);
+                }
+                else
+                {
+                    haveWeak = true;
+                    weakLow |= level == DigitalLevel.Low;
+                    weakHigh |= level == DigitalLevel.High;
+                    weakUnknown |= level is not (DigitalLevel.Low or DigitalLevel.High);
+                }
+            }
+
+            if (haveStrong) return Finish(strongLow, strongHigh, strongUnknown);
+            if (haveWeak) return Finish(weakLow, weakHigh, weakUnknown);
+            return DigitalLevel.Unknown;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static DigitalLevel Finish(bool low, bool high, bool unknown)
         {
             if (low && high) return DigitalLevel.Contention;

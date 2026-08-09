@@ -62,6 +62,72 @@ public sealed class VirtualHardwareMmc1CartridgeTests
     }
 
     [Fact]
+    public void Predecoded_bank_outputs_preserve_all_prg_and_chr_mapping_modes_across_commits()
+    {
+        var cartridge = CreateCartridge(prgBanks: 8, chrBanks4K: 8);
+        var cpuRom = CpuRomTarget(cartridge);
+        var ppuChr = PpuChrTarget(cartridge);
+
+        // PRG modes 0/1: one switchable 32 KiB pair.
+        WriteSerial(cpuRom, 0x8000, 0x00);
+        WriteSerial(cpuRom, 0xE000, 0x04);
+        Assert.Equal((byte)0x44, cpuRom.Read!(0x8000));
+        Assert.Equal((byte)0x45, cpuRom.Read!(0xC000));
+
+        // PRG mode 2: fixed first 16 KiB + switchable upper bank.
+        WriteSerial(cpuRom, 0x8000, 0x08);
+        WriteSerial(cpuRom, 0xE000, 0x06);
+        Assert.Equal((byte)0x40, cpuRom.Read!(0x8000));
+        Assert.Equal((byte)0x46, cpuRom.Read!(0xC000));
+
+        // PRG mode 3: switchable lower bank + fixed last 16 KiB.
+        WriteSerial(cpuRom, 0x8000, 0x0C);
+        WriteSerial(cpuRom, 0xE000, 0x02);
+        Assert.Equal((byte)0x42, cpuRom.Read!(0x8000));
+        Assert.Equal((byte)0x47, cpuRom.Read!(0xC000));
+
+        // 8 KiB CHR mode forces bank 0 even and exposes its adjacent 4 KiB half.
+        WriteSerial(cpuRom, 0x8000, 0x0C);
+        WriteSerial(cpuRom, 0xA000, 0x06);
+        Assert.Equal((byte)0x56, ppuChr.Read!(0x0000));
+        Assert.Equal((byte)0x57, ppuChr.Read!(0x1000));
+
+        // 4 KiB CHR mode exposes independent low/high bank mux outputs.
+        WriteSerial(cpuRom, 0x8000, 0x1C);
+        WriteSerial(cpuRom, 0xA000, 0x05);
+        WriteSerial(cpuRom, 0xC000, 0x02);
+        Assert.Equal((byte)0x55, ppuChr.Read!(0x0000));
+        Assert.Equal((byte)0x52, ppuChr.Read!(0x1000));
+    }
+
+    [Fact]
+    public void Compiled_static_cartridge_facet_exposes_only_state_independent_mmc1_outputs()
+    {
+        var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 4);
+        var staticFacet = Assert.IsAssignableFrom<ICompiledStaticCombinationalComponent>(cartridge);
+
+        Assert.True(staticFacet.TryEvaluateCompiledStaticOutput(
+            cartridge.CiramChipEnableBar,
+            pin => SamplePpuAddress(cartridge, pin, 0x0000),
+            out var chrSelect));
+        Assert.Equal(DigitalLevel.High, chrSelect.Level);
+
+        Assert.True(staticFacet.TryEvaluateCompiledStaticOutput(
+            cartridge.CiramChipEnableBar,
+            pin => SamplePpuAddress(cartridge, pin, 0x2000),
+            out var nametableSelect));
+        Assert.Equal(DigitalLevel.Low, nametableSelect.Level);
+
+        // MMC1 mirroring is controlled by the live mapper register. A bind-time
+        // topology proof must never freeze CIRAM A10 even though /CIRAM-CE is
+        // safe to classify from PPU A13.
+        Assert.False(staticFacet.TryEvaluateCompiledStaticOutput(
+            cartridge.CiramA10,
+            pin => SamplePpuAddress(cartridge, pin, 0x2400),
+            out _));
+    }
+
+    [Fact]
     public void Compiled_ppu_target_observes_read_assertion_separately_from_data_resolution()
     {
         var cartridge = CreateCartridge(prgBanks: 4, chrBanks4K: 4);

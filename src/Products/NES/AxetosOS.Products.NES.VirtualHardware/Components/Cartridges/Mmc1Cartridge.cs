@@ -64,7 +64,7 @@ public readonly record struct Mmc1RegisterTraceEvent(
 /// present.
 /// </summary>
 public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartridgeHardware,
-    ICompiledBusTargetProvider, ICompiledCombinationalComponent
+    ICompiledBusTargetProvider, ICompiledCombinationalComponent, ICompiledStaticCombinationalComponent
 {
     private const int PrgBankSize = 16 * 1024;
     private const int ChrBankSize = 4 * 1024;
@@ -82,6 +82,15 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     private byte _chrBank0;
     private byte _chrBank1;
     private byte _prgBank;
+    // The mapper's bank registers feed address-line muxes continuously. Host-side
+    // execution can therefore predecode their resulting ROM base addresses when
+    // a register commits instead of repeating bank-count/modulo arithmetic on
+    // every CPU/PPU memory access. These are purely cartridge-internal cached
+    // representations of the same physical address-line outputs.
+    private int _prgLowBankBase;
+    private int _prgHighBankBase;
+    private int _chrLowBankBase;
+    private int _chrHighBankBase;
     private bool _cpuReadAddressSelected;
     private ushort _cpuSelectedAddress;
     private byte _cpuSelectedData;
@@ -310,6 +319,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         _chrBank0 = 0;
         _chrBank1 = 0;
         _prgBank = 0;
+        RefreshDecodedBankBases();
         _cpuReadAddressSelected = false;
         _cpuSelectedAddress = 0;
         _cpuSelectedData = 0;
@@ -533,41 +543,66 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private byte ReadPrg(ushort address)
     {
-        var bankCount = _prg.Length / PrgBankSize;
-        var mode = (_control >> 2) & 0x03;
-        int bank;
-        int offset;
-        if (mode <= 1)
-        {
-            var pairCount = Math.Max(1, bankCount / 2);
-            var pair = ((_prgBank & 0x0E) >> 1) % pairCount;
-            offset = (pair * 2 * PrgBankSize) + (address & 0x7FFF);
-        }
-        else
-        {
-            var selected = (_prgBank & 0x0F) % bankCount;
-            bank = mode == 2
-                ? (address < 0xC000 ? 0 : selected)
-                : (address < 0xC000 ? selected : bankCount - 1);
-            offset = (bank * PrgBankSize) + (address & 0x3FFF);
-        }
-        return _prg[offset % _prg.Length];
+        var baseAddress = address < 0xC000 ? _prgLowBankBase : _prgHighBankBase;
+        return _prg[baseAddress + (address & 0x3FFF)];
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int ChrIndex(ushort address)
     {
-        var bankCount = Math.Max(1, _chr.Length / ChrBankSize);
-        if ((_control & 0x10) == 0)
+        var baseAddress = address < 0x1000 ? _chrLowBankBase : _chrHighBankBase;
+        return baseAddress + (address & 0x0FFF);
+    }
+
+    private void RefreshDecodedBankBases()
+    {
+        if (_prg.Length != 0)
         {
-            var bank = (_chrBank0 & 0x1E) % bankCount;
-            if ((bank & 1) != 0) bank--;
-            return ((bank * ChrBankSize) + (address & 0x1FFF)) % _chr.Length;
+            var bankCount = _prg.Length / PrgBankSize;
+            var mode = (_control >> 2) & 0x03;
+            if (mode <= 1)
+            {
+                var pairCount = Math.Max(1, bankCount / 2);
+                var pair = ((_prgBank & 0x0E) >> 1) % pairCount;
+                _prgLowBankBase = pair * 2 * PrgBankSize;
+                _prgHighBankBase = (_prgLowBankBase + PrgBankSize) % _prg.Length;
+            }
+            else
+            {
+                var selected = (_prgBank & 0x0F) % bankCount;
+                var lowBank = mode == 2 ? 0 : selected;
+                var highBank = mode == 2 ? selected : bankCount - 1;
+                _prgLowBankBase = lowBank * PrgBankSize;
+                _prgHighBankBase = highBank * PrgBankSize;
+            }
+        }
+        else
+        {
+            _prgLowBankBase = 0;
+            _prgHighBankBase = 0;
         }
 
-        var selected = address < 0x1000 ? _chrBank0 : _chrBank1;
-        var selectedBank = selected % bankCount;
-        return (selectedBank * ChrBankSize) + (address & 0x0FFF);
+        if (_chr.Length != 0)
+        {
+            var bankCount = Math.Max(1, _chr.Length / ChrBankSize);
+            if ((_control & 0x10) == 0)
+            {
+                var lowBank = (_chrBank0 & 0x1E) % bankCount;
+                if ((lowBank & 1) != 0) lowBank--;
+                _chrLowBankBase = lowBank * ChrBankSize;
+                _chrHighBankBase = (_chrLowBankBase + ChrBankSize) % _chr.Length;
+            }
+            else
+            {
+                _chrLowBankBase = (_chrBank0 % bankCount) * ChrBankSize;
+                _chrHighBankBase = (_chrBank1 % bankCount) * ChrBankSize;
+            }
+        }
+        else
+        {
+            _chrLowBankBase = 0;
+            _chrHighBankBase = 0;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -593,6 +628,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             MapperResetWriteCount++;
             _shiftRegister = 0x10;
             _control |= 0x0C;
+            RefreshDecodedBankBases();
             RefreshMapperControlledPpuOutputs();
             NotifyRegisterDiagnostic(address, value, Mmc1RegisterOperation.Reset);
             return;
@@ -633,6 +669,7 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
         }
         MapperCommitCount++;
         _shiftRegister = 0x10;
+        RefreshDecodedBankBases();
         RefreshMapperControlledPpuOutputs();
         NotifyRegisterDiagnostic(address, value, operation);
     }
@@ -848,6 +885,36 @@ public sealed class Mmc1Cartridge : VirtualHardwareComponent, IReplaceableCartri
             address => ReadPpuCompiled((ushort)address),
             ppuWrite,
             observeReadBegin: ObserveCompiledPpuReadBegin);
+    }
+
+    bool ICompiledStaticCombinationalComponent.TryEvaluateCompiledStaticOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive)
+    {
+        // /CIRAM-CE is a pure connector-level function of PPU A13. It is safe
+        // to prove at cartridge-bind time. CIRAM A10 is intentionally excluded:
+        // MMC1 mirroring changes with the live control register and must remain
+        // a runtime package-owned result.
+        if (ReferenceEquals(output, CiramChipEnableBar))
+        {
+            drive = new CompiledDriveState(sampleInput(PpuAddress.Pins[13]) switch
+            {
+                DigitalLevel.Low => DigitalLevel.High,
+                DigitalLevel.High => DigitalLevel.Low,
+                _ => DigitalLevel.Unknown
+            });
+            return true;
+        }
+
+        if (ReferenceEquals(output, IrqBar))
+        {
+            drive = new CompiledDriveState(DigitalLevel.HighImpedance);
+            return true;
+        }
+
+        drive = default;
+        return false;
     }
 
     bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(
