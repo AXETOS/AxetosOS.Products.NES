@@ -672,6 +672,16 @@ if (host.Machine.Slot.Cartridge is GxromCartridge finalGxrom)
         $"last=${finalGxrom.LastMapperWriteAddress:X4}:${finalGxrom.LastMapperWriteData:X2}->${finalGxrom.LastEffectiveMapperWriteData:X2}, " +
         $"ppu-reads={finalGxrom.PpuReadCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is CamericaCartridge finalCamerica)
+{
+    Console.WriteLine(
+        $"Camerica core: bank=${finalCamerica.BankRegister:X2} selected={finalCamerica.SelectedPrgBank}/{finalCamerica.PrgBankCount} fixed={finalCamerica.FixedPrgBank}, " +
+        $"single-screen={finalCamerica.MapperControlledSingleScreen} nametable={finalCamerica.SelectedNametablePage}, " +
+        $"prg-writes={finalCamerica.PrgBankWriteCount:N0}, mirror-writes={finalCamerica.MirroringWriteCount:N0}, " +
+        $"cic-stun={finalCamerica.CicStunLatch} cic-writes={finalCamerica.CicStunWriteCount:N0}, mapper-writes={finalCamerica.MapperWriteCount:N0}, " +
+        $"last=${finalCamerica.LastMapperWriteAddress:X4}:${finalCamerica.LastMapperWriteData:X2}, " +
+        $"ppu-reads={finalCamerica.PpuReadCount:N0}, ppu-writes={finalCamerica.PpuWriteCount:N0}");
+}
 if (profileSimulation)
 {
     PrintHostProfile(
