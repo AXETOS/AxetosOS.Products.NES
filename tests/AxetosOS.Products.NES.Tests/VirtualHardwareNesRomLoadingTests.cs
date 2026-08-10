@@ -120,12 +120,27 @@ public sealed class VirtualHardwareNesRomLoadingTests
     }
 
     [Fact]
+    public void Factory_constructs_uxrom_hardware_from_rom_metadata_and_attaches_it_to_selected_board()
+    {
+        var machine = VirtualHardwareNesMachineFactory.Load(
+            CreateRom(mapper: 2, prgUnits: 4, chrUnits: 0),
+            "UxROM (USA).nes");
+
+        Assert.Equal(2, machine.CartridgeBoard.MapperNumber);
+        var uxrom = Assert.IsType<UxromCartridge>(machine.CartridgeBoard);
+        Assert.True(uxrom.BusConflictsEnabled);
+        Assert.Equal(8 * 1024, uxrom.ChrRamSizeBytes);
+        Assert.Equal(ActiveNesMotherboard.NtscNes, machine.ActiveMotherboard);
+        Assert.Contains(machine.CartridgeBoard, machine.Hardware.NtscNes.Board.Components);
+    }
+
+    [Fact]
     public void Factory_rejects_mapper_without_physical_cartridge_hardware()
     {
         var error = Assert.Throws<NotSupportedException>(() =>
-            VirtualHardwareNesMachineFactory.Load(CreateRom(mapper: 2), "UxROM.nes"));
+            VirtualHardwareNesMachineFactory.Load(CreateRom(mapper: 3), "CNROM.nes"));
 
-        Assert.Contains("Mapper 2", error.Message);
+        Assert.Contains("Mapper 3", error.Message);
     }
 
     [Fact]

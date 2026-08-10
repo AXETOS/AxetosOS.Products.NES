@@ -8,19 +8,19 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.29.0**
+**v2.30.0**
 
-The validated v2.28.0 baseline is:
+The validated v2.29.0 baseline is:
 
-- **286 / 286 tests passing**
+- **286 / 286 tests passing**;
 - physical Controller 1 input confirmed in real Super Mario Bros. gameplay;
-- normal paced NROM and MMC1 execution both hold approximately 60 FPS on the development machine.
+- normal paced NROM and MMC1 execution both hold approximately 60 FPS on the development machine;
+- true uncapped generic whole-circuit throughput is approximately **152 FPS / 2.54x NTSC real time** for both NROM and MMC1;
+- the specialized fused NROM comparison path reaches approximately **390 FPS / 6.49x NTSC real time**.
 
-v2.29.0 starts the performance-headroom phase by correcting the desktop host's uncapped benchmark path. Earlier `--uncapped` measurements near 60 FPS were contaminated by real-time host output backpressure: PCM was still submitted to the physical WaveOut device and the main loop intentionally slept whenever the audio queue exceeded 120 ms.
+v2.30.0 adds Mapper 2 / UxROM as real replaceable cartridge hardware. The cartridge owns its 16 KiB switchable PRG bank latch, fixed-last 16 KiB PRG window, 8 KiB CHR RAM, fixed H/V CIRAM wiring, optional cartridge-local bus-conflict behavior, and high-impedance IRQ output. Generic compiled execution consumes the same physical hardware facets as NROM/MMC1; there is no UxROM knowledge in the motherboard or hardware compiler.
 
-In v2.29.0 `--uncapped` still executes the complete virtual PPU/APU, captures every generated video/audio sample, converts the framebuffer, and performs PCM resampling, but it no longer allows a real-time sound device or excessive native presentation calls to pace the simulation. Physical video presentation is limited to 60 Hz while the emulated machine is allowed to run as fast as the host can compute it. The exit diagnostics report both FPS and NTSC real-time factor/headroom.
-
-Normal gameplay is unchanged: it remains paced to the physical master-clock rate with ordinary native audio/video output. v2.29.0 is awaiting local Release-suite and throughput validation.
+NES 2.0 Mapper-2 submapper 1 selects a no-bus-conflict board and submapper 2 selects bus-conflict behavior. Legacy/unspecified Mapper 2 uses the classic conflict-capable UxROM behavior. The new release also adds compiled-vs-raw execution parity coverage and desktop UxROM diagnostics. v2.30.0 is awaiting local Release-suite and real-ROM validation.
 
 ## Architecture
 
@@ -89,6 +89,7 @@ Implemented and actively validated areas include:
 - cartridge loading and iNES/NES 2.0 metadata handling;
 - Mapper 0 / NROM cartridges;
 - Mapper 1 / MMC1 cartridges;
+- Mapper 2 / UxROM cartridges with switchable PRG, CHR RAM and fixed mirroring;
 - generic startup whole-circuit compilation;
 - specialized fused NROM execution retained for comparison/performance validation;
 - two standard controller packages with physical strobe/clock/data wiring;
@@ -186,7 +187,7 @@ tests/
 
 ## Direction
 
-Near-term work now proceeds through the remaining tracks: increasing generic compiled-runtime headroom while preserving electrical/package behavior, expanding cartridge hardware, and then building the desktop product shell. Planned host features include:
+Near-term work now proceeds through the remaining tracks: expanding cartridge hardware (CNROM is the next simple discrete mapper, followed by more capable boards such as MMC3), revisiting generic compiler headroom when profiling justifies it, and then building the desktop product shell. Planned host features include:
 
 - ROM loading from the desktop UI;
 - pause/reset/power-cycle controls;

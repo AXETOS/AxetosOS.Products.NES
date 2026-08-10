@@ -14,7 +14,7 @@
       "id": "bank",
       "type": "Latch",
       "width": 8,
-      "role": "prg-bank-select"
+      "role": "prg-bank-select-lines-populated-to-match-fitted-rom"
     },
     {
       "id": "chr",
@@ -24,11 +24,11 @@
     }
   ],
   "connections": [
-    "Cpu.Write & Cpu.Address>=0x8000 -> bank.Load",
+    "Cpu.Write & Cpu.Address>=0x8000 & Cpu.M2.falling -> bank.Load",
     "bank.Output -> prg.SwitchableBank",
     "Cpu.Address[0..13] -> prg.Address[0..13]",
     "Cpu.Address[14] -> prg.FixedLastBankSelect",
     "Ppu.Address[0..12] -> chr.Address[0..12]"
   ],
-  "notes": "Data-driven UxROM board using reusable banked-ROM, latch and CHR-RAM hardware."
+  "notes": "Mapper-2/UxROM physical board intent: 16 KiB switchable PRG plus fixed-last 16 KiB PRG, an end-of-M2 bank latch, 8 KiB CHR RAM, fixed H/V CIRAM wiring, no IRQ, and board-local bus-conflict behavior selected by cartridge metadata."
 }
