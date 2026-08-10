@@ -8,21 +8,26 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.34.1**
+**v2.36.0**
 
-The validated v2.33.0 baseline is:
+The validated v2.34.1 hardware baseline is:
 
-- **346 / 346 tests passing**;
+- **359 / 359 tests passing**;
 - physical Controller 1 input confirmed in real Super Mario Bros. gameplay;
 - normal paced NROM/MMC1/MMC3/AxROM execution holds approximately 60 FPS on the development machine;
 - true uncapped generic whole-circuit throughput is approximately **152 FPS / 2.54x NTSC real time** for NROM and MMC1;
 - Mapper-2/UxROM and Mapper-3/CNROM synthetic hardware smoke machines exceed **5x NTSC real time**;
 - Mapper 4 / MMC3 is real-game validated by sustained Super Mario Bros. 2 and Super Mario Bros. 3 workloads, including thousands of real cartridge IRQ assertions;
 - Mapper 7 / AxROM is real-game validated by Battletoads for 11,600 frames, with sustained mapper writes, cartridge PPU traffic and CHR-RAM writes at real-time pacing.
+- Mapper 11 / Color Dreams is real-game validated by Metal Fighter for 4,523 frames at approximately 60.15 FPS, including thousands of mapper writes and sustained cartridge PPU traffic.
 
 v2.34.0 adds Mapper 11 / Color Dreams as replaceable cartridge hardware: one switchable 32 KiB PRG-ROM window, one switchable 8 KiB CHR-ROM window, a shared 8-bit end-of-M2 latch, fixed H/V CIRAM wiring, no PRG RAM/IRQ, and standard AND-style CPU/ROM bus conflicts. Register D0-D1 select PRG, D4-D7 select CHR, while D2-D3 remain latch outputs associated with the original board's lockout-defeat circuitry rather than memory banking.
 
-No generic compiler or motherboard semantics were added for Mapper 11. v2.34.1 is a validation hotfix for v2.34.0: the Color Dreams compiled/raw parity test now explicitly selects the Famicom region, matching the generic compiled-lab path it is intended to exercise, and zero-duration Stopwatch section samples are counted correctly by the opt-in profiler instead of making its sampling test timing-sensitive. Mapper behavior is unchanged. The expected suite remains **359 tests** pending local Release validation.
+No generic compiler or motherboard semantics were added for Mapper 11. v2.34.1 is validated locally at **359 / 359 tests**; its Color Dreams smoke ROM selects PRG bank 1 and CHR bank 3 correctly at approximately **305.7 FPS / 5.09x NTSC real time** on the development machine.
+
+v2.35.0 improves desktop startup UX without changing virtual-hardware behavior. The native game window is created immediately after ROM selection and displays an animated **Loading ROM** screen while ROM parsing, physical machine assembly and startup compilation run on a worker thread. The Win32 message pump remains active during loading, Escape/window-close remains responsive, the same presenter is reused for gameplay, and startup diagnostics now report total ROM parse + assembly + compilation time. The loading screen has been confirmed in local desktop use.
+
+v2.36.0 adds Mapper 66 / GxROM as replaceable physical cartridge hardware. Standard GNROM/MHROM wiring uses a four-bit latch with CPU D4-D5 selecting up to four 32 KiB PRG-ROM banks and D0-D1 selecting up to four 8 KiB CHR-ROM banks, fixed H/V CIRAM wiring, no cartridge RAM/IRQ, and standard AND-style CPU/ROM bus conflicts. No generic compiler or motherboard semantics are added. The patch adds 13 Mapper-66 test cases, so the expected Release suite is **372 tests** pending local validation.
 
 ## Architecture
 
@@ -86,7 +91,7 @@ Implemented areas include:
 - RP2C02 PPU package behavior;
 - work RAM, CIRAM and discrete support logic;
 - physical CPU and PPU buses;
-- native framebuffer presentation;
+- native framebuffer presentation with responsive startup loading screen;
 - native PCM audio output;
 - cartridge loading and iNES/NES 2.0 metadata handling;
 - Mapper 0 / NROM cartridges;
@@ -96,6 +101,7 @@ Implemented areas include:
 - Mapper 4 / MMC3-family cartridges with PRG/CHR banking, live mirroring, optional RAM and cartridge IRQ circuitry;
 - Mapper 7 / AxROM cartridges with switchable 32 KiB PRG, CHR RAM and live single-screen CIRAM selection;
 - Mapper 11 / Color Dreams cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, fixed mirroring and board-local bus conflicts;
+- Mapper 66 / GxROM cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, fixed mirroring and standard board-local bus conflicts;
 - generic startup whole-circuit compilation;
 - specialized fused NROM execution retained for comparison/performance validation;
 - two standard controller packages with physical strobe/clock/data wiring;

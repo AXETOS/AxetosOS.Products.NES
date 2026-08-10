@@ -28,4 +28,7 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 
 # Mapper 11 / Color Dreams
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-colordreams-bank-switch.nes --board famicom --uncapped --stop-frame 120
+
+# Mapper 66 / GxROM
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-gxrom-bank-switch.nes --board famicom --uncapped --stop-frame 120
 ```

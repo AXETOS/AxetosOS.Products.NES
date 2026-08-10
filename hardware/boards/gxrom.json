@@ -5,14 +5,32 @@
   "mapper": 66,
   "components": [
     {
-      "id": "mapper",
-      "type": "ReusableMapperHardware",
-      "role": "gxrom"
+      "id": "prg",
+      "type": "BankedRom",
+      "source": "PrgRom",
+      "role": "switchable-32k-prg-window"
+    },
+    {
+      "id": "bank",
+      "type": "Latch",
+      "width": 4,
+      "role": "shared-prg-chr-bank-select"
+    },
+    {
+      "id": "chr",
+      "type": "BankedRom",
+      "source": "ChrRom",
+      "role": "switchable-8k-chr-window"
     }
   ],
   "connections": [
-    "Cpu.Bus -> mapper.Cpu",
-    "Ppu.Bus -> mapper.Ppu"
+    "Cpu.Write & Cpu.Address>=0x8000 & Cpu.M2.falling -> bank.Load",
+    "Cpu.Data[4..5] -> bank.Input[2..3]",
+    "Cpu.Data[0..1] -> bank.Input[0..1]",
+    "bank.Output[2..3] -> prg.Bank",
+    "bank.Output[0..1] -> chr.Bank",
+    "Cpu.Address[0..14] -> prg.Address[0..14]",
+    "Ppu.Address[0..12] -> chr.Address[0..12]"
   ],
-  "notes": "Composable GxROM board built from shared PRG, CHR, mirroring, RAM and IRQ components."
+  "notes": "Mapper-66/GxROM physical board intent: GNROM/MHROM-style 74HC161 quad latch, D4-D5 selecting one of up to four 32 KiB PRG-ROM banks, D0-D1 selecting one of up to four 8 KiB CHR-ROM banks, fixed H/V CIRAM wiring, no PRG RAM/IRQ, and standard AND-style CPU/ROM bus conflicts."
 }

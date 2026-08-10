@@ -120,15 +120,66 @@ if (rawHardwareRuntime && compiledLabRuntime)
     return 2;
 }
 
-var host = new VirtualNesBootHost
+using var presenter = new Win32FramePresenter(
+    $"AxetosOS Virtual NES — Loading {Path.GetFileName(romPath)}",
+    ScreenWidth * 3,
+    ScreenHeight * 3);
+var surface = new FrameSurface(ScreenWidth, ScreenHeight);
+VirtualNesBootHost? controllerHost = null;
+
+presenter.KeyStateChanged += (key, pressed) =>
 {
-    AutomaticCompiledExecutionEnabled = !rawHardwareRuntime
+    if (key == NativeKey.Escape)
+    {
+        if (pressed) presenter.Close();
+        return;
+    }
+
+    if (controllerHost is not null && TryMapController1Key(key, out var button))
+        controllerHost.Machine.SetControllerButton(0, button, pressed);
 };
-if (compiledLabRuntime) host.Machine.SetCompiledLabExecutionEnabled(true);
+
+// Show the native window before parsing, assembling and compiling the cartridge.
+// Loading is performed on a worker so the Win32 message pump stays responsive
+// even when startup compilation takes several seconds on a complex cartridge.
+var loadingTimer = Stopwatch.StartNew();
+RenderLoadingScreen(surface, TimeSpan.Zero);
+presenter.Present(surface, ScalingMode.IntegerNearest);
+presenter.PumpEvents();
+
+var loadTask = Task.Run(() =>
+{
+    var loadingHost = new VirtualNesBootHost
+    {
+        AutomaticCompiledExecutionEnabled = !rawHardwareRuntime
+    };
+    if (compiledLabRuntime) loadingHost.Machine.SetCompiledLabExecutionEnabled(true);
+    var loadingImage = loadingHost.LoadRom(romPath, boardSelection, palCic);
+    return (Host: loadingHost, Image: loadingImage);
+});
+
+while (!loadTask.IsCompleted && presenter.IsOpen)
+{
+    presenter.PumpEvents();
+    if (!presenter.IsOpen) break;
+
+    RenderLoadingScreen(surface, loadingTimer.Elapsed);
+    presenter.Present(surface, ScalingMode.IntegerNearest);
+    Thread.Sleep(16);
+}
+
+// Closing the loading window cancels startup from the user's point of view.
+// The worker is a ThreadPool background task and does not own native resources.
+if (!presenter.IsOpen) return 0;
+
+VirtualNesBootHost host;
 VirtualHardwareNesRomImage image;
 try
 {
-    image = host.LoadRom(romPath, boardSelection, palCic);
+    var loaded = loadTask.GetAwaiter().GetResult();
+    host = loaded.Host;
+    image = loaded.Image;
+    controllerHost = host;
 }
 catch (NotSupportedException exception)
 {
@@ -136,6 +187,9 @@ catch (NotSupportedException exception)
     Console.Error.WriteLine(exception.Message);
     return 4;
 }
+
+var startupLoadTime = loadingTimer.Elapsed;
+presenter.SetTitle($"AxetosOS Virtual NES — {Path.GetFileNameWithoutExtension(romPath)}");
 
 var rawHardwareRuntimeActive = rawHardwareRuntime
     && host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom;
@@ -151,11 +205,6 @@ if (host.Machine.ActiveMotherboard == ActiveNesMotherboard.PalNes)
     return 5;
 }
 
-using var presenter = new Win32FramePresenter(
-    $"AxetosOS Virtual NES — {Path.GetFileNameWithoutExtension(romPath)}",
-    ScreenWidth * 3,
-    ScreenHeight * 3);
-var surface = new FrameSurface(ScreenWidth, ScreenHeight);
 var videoSink = new NativeFrameVideoSink();
 host.VideoSink = videoSink;
 
@@ -169,18 +218,6 @@ var audioSink = new NativePcmAudioSink(masterClockHz, AudioSampleRate);
 host.AudioSink = audioSink;
 var physicalAudioPlayback = !uncappedRuntime;
 if (physicalAudioPlayback) audio.Start();
-
-presenter.KeyStateChanged += (key, pressed) =>
-{
-    if (key == NativeKey.Escape)
-    {
-        if (pressed) presenter.Close();
-        return;
-    }
-
-    if (TryMapController1Key(key, out var button))
-        host.Machine.SetControllerButton(0, button, pressed);
-};
 
 host.PowerAndReleaseReset();
 var activeSimulator = host.Machine.ActiveMotherboard switch
@@ -229,6 +266,7 @@ if (cartridgeVideoTrace is { } traceRange)
 var initial = host.Snapshot();
 Console.WriteLine("AxetosOS Products / NES — virtual hardware desktop host");
 Console.WriteLine($"ROM:        {romPath}");
+Console.WriteLine($"Startup:    ROM parse + physical assembly + compilation {startupLoadTime.TotalMilliseconds:N0} ms");
 Console.WriteLine($"Mapper:     {image.MapperNumber}");
 Console.WriteLine($"Board:      {initial.Motherboard}");
 Console.WriteLine($"PRG ROM:    {image.PrgRomSizeBytes:N0} bytes");
@@ -625,6 +663,15 @@ if (host.Machine.Slot.Cartridge is ColorDreamsCartridge finalColorDreams)
         $"last=${finalColorDreams.LastMapperWriteAddress:X4}:${finalColorDreams.LastMapperWriteData:X2}->${finalColorDreams.LastEffectiveMapperWriteData:X2}, " +
         $"ppu-reads={finalColorDreams.PpuReadCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is GxromCartridge finalGxrom)
+{
+    Console.WriteLine(
+        $"GxROM core:  bank=${finalGxrom.BankRegister:X2}, prg={finalGxrom.SelectedPrgBank}/{finalGxrom.PrgBankCount}, " +
+        $"chr={finalGxrom.SelectedChrBank}/{finalGxrom.ChrBankCount}, bus-conflicts={finalGxrom.BusConflictsEnabled}, " +
+        $"mapper-writes={finalGxrom.MapperWriteCount:N0}, conflict-modified={finalGxrom.BusConflictModifiedWriteCount:N0}, " +
+        $"last=${finalGxrom.LastMapperWriteAddress:X4}:${finalGxrom.LastMapperWriteData:X2}->${finalGxrom.LastEffectiveMapperWriteData:X2}, " +
+        $"ppu-reads={finalGxrom.PpuReadCount:N0}");
+}
 if (profileSimulation)
 {
     PrintHostProfile(
@@ -663,6 +710,135 @@ static bool TryMapController1Key(NativeKey key, out NesControllerButton button)
     };
     return (int)button >= 0;
 }
+
+static void RenderLoadingScreen(FrameSurface surface, TimeSpan elapsed)
+{
+    const int width = 256;
+    const uint background = 0xFF0B0B12u;
+    const uint panel = 0xFF171724u;
+    const uint border = 0xFF5C5C72u;
+    const uint text = 0xFFF2F2F7u;
+    const uint dim = 0xFF3C3C50u;
+    const uint active = 0xFFB8B8C8u;
+
+    var pixels = surface.PixelSpan;
+    pixels.Fill(background);
+
+    DrawLoadingRect(pixels, width, 24, 42, 208, 156, panel);
+    DrawLoadingRect(pixels, width, 24, 42, 208, 2, border);
+    DrawLoadingRect(pixels, width, 24, 196, 208, 2, border);
+    DrawLoadingRect(pixels, width, 24, 42, 2, 156, border);
+    DrawLoadingRect(pixels, width, 230, 42, 2, 156, border);
+
+    DrawLoadingTextCentered(pixels, width, "AXETOSOS", 67, 4, text);
+    DrawLoadingTextCentered(pixels, width, "LOADING ROM", 124, 2, text);
+
+    var activeDot = (int)(elapsed.TotalMilliseconds / 125.0) & 7;
+    const int dotSize = 6;
+    const int dotGap = 4;
+    const int dotCount = 8;
+    var dotsWidth = (dotCount * dotSize) + ((dotCount - 1) * dotGap);
+    var dotsX = (width - dotsWidth) / 2;
+    for (var index = 0; index < dotCount; index++)
+    {
+        DrawLoadingRect(
+            pixels,
+            width,
+            dotsX + (index * (dotSize + dotGap)),
+            154,
+            dotSize,
+            dotSize,
+            index == activeDot ? active : dim);
+    }
+
+    DrawLoadingTextCentered(pixels, width, "PLEASE WAIT", 178, 1, border);
+}
+
+static void DrawLoadingTextCentered(
+    Span<uint> pixels,
+    int surfaceWidth,
+    string value,
+    int y,
+    int scale,
+    uint color)
+{
+    var textWidth = (((value.Length * 6) - 1) * scale);
+    DrawLoadingText(pixels, surfaceWidth, value, (surfaceWidth - textWidth) / 2, y, scale, color);
+}
+
+static void DrawLoadingText(
+    Span<uint> pixels,
+    int surfaceWidth,
+    string value,
+    int x,
+    int y,
+    int scale,
+    uint color)
+{
+    for (var characterIndex = 0; characterIndex < value.Length; characterIndex++)
+    {
+        var glyph = GetLoadingGlyph(char.ToUpperInvariant(value[characterIndex]));
+        if (glyph.Length == 0) continue;
+
+        var glyphX = x + (characterIndex * 6 * scale);
+        for (var row = 0; row < 7; row++)
+        {
+            for (var column = 0; column < 5; column++)
+            {
+                if (glyph[(row * 5) + column] != '#') continue;
+                DrawLoadingRect(
+                    pixels,
+                    surfaceWidth,
+                    glyphX + (column * scale),
+                    y + (row * scale),
+                    scale,
+                    scale,
+                    color);
+            }
+        }
+    }
+}
+
+static void DrawLoadingRect(
+    Span<uint> pixels,
+    int surfaceWidth,
+    int x,
+    int y,
+    int width,
+    int height,
+    uint color)
+{
+    const int surfaceHeight = 240;
+    if (width <= 0 || height <= 0) return;
+
+    var left = Math.Max(0, x);
+    var top = Math.Max(0, y);
+    var right = Math.Min(surfaceWidth, x + width);
+    var bottom = Math.Min(surfaceHeight, y + height);
+    for (var row = top; row < bottom; row++)
+        pixels.Slice((row * surfaceWidth) + left, right - left).Fill(color);
+}
+
+static string GetLoadingGlyph(char value) => value switch
+{
+    'A' => ".###." + "#...#" + "#...#" + "#####" + "#...#" + "#...#" + "#...#",
+    'D' => "####." + "#...#" + "#...#" + "#...#" + "#...#" + "#...#" + "####.",
+    'E' => "#####" + "#...." + "#...." + "####." + "#...." + "#...." + "#####",
+    'G' => ".###." + "#...#" + "#...." + "#.###" + "#...#" + "#...#" + ".###.",
+    'I' => "#####" + "..#.." + "..#.." + "..#.." + "..#.." + "..#.." + "#####",
+    'L' => "#...." + "#...." + "#...." + "#...." + "#...." + "#...." + "#####",
+    'M' => "#...#" + "##.##" + "#.#.#" + "#.#.#" + "#...#" + "#...#" + "#...#",
+    'N' => "#...#" + "##..#" + "##..#" + "#.#.#" + "#..##" + "#..##" + "#...#",
+    'O' => ".###." + "#...#" + "#...#" + "#...#" + "#...#" + "#...#" + ".###.",
+    'P' => "####." + "#...#" + "#...#" + "####." + "#...." + "#...." + "#....",
+    'R' => "####." + "#...#" + "#...#" + "####." + "#.#.." + "#..#." + "#...#",
+    'S' => ".####" + "#...." + "#...." + ".###." + "....#" + "....#" + "####.",
+    'T' => "#####" + "..#.." + "..#.." + "..#.." + "..#.." + "..#.." + "..#..",
+    'W' => "#...#" + "#...#" + "#...#" + "#.#.#" + "#.#.#" + "##.##" + "#...#",
+    'X' => "#...#" + "#...#" + ".#.#." + "..#.." + ".#.#." + "#...#" + "#...#",
+    ' ' => "....." + "....." + "....." + "....." + "....." + "....." + ".....",
+    _ => string.Empty
+};
 
 static void PaceToMasterClock(Stopwatch timer, ulong masterCycles, double masterClockHz)
 {
