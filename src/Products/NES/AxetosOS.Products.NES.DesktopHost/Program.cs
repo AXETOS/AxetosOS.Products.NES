@@ -663,6 +663,32 @@ if (host.Machine.Slot.Cartridge is ColorDreamsCartridge finalColorDreams)
         $"last=${finalColorDreams.LastMapperWriteAddress:X4}:${finalColorDreams.LastMapperWriteData:X2}->${finalColorDreams.LastEffectiveMapperWriteData:X2}, " +
         $"ppu-reads={finalColorDreams.PpuReadCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is Mapper34Cartridge finalMapper34)
+{
+    if (finalMapper34.BoardVariant == Mapper34BoardVariant.Bnrom)
+    {
+        var chrDescription = finalMapper34.ChrRamSizeBytes != 0
+            ? $"RAM {finalMapper34.ChrRamSizeBytes:N0}"
+            : $"ROM {finalMapper34.ChrRomSizeBytes:N0}";
+        Console.WriteLine(
+            $"Mapper 34:    variant=BNROM, bank=${finalMapper34.BnromBankRegister:X2}, " +
+            $"prg={finalMapper34.SelectedBnromPrgBank}/{finalMapper34.BnromPrgBankCount}, chr={chrDescription}, " +
+            $"prg-ram={finalMapper34.PrgRamSizeBytes:N0}, bus-conflicts={finalMapper34.BusConflictsEnabled}, " +
+            $"mapper-writes={finalMapper34.MapperWriteCount:N0}, conflict-modified={finalMapper34.BusConflictModifiedWriteCount:N0}, " +
+            $"last=${finalMapper34.LastMapperWriteAddress:X4}:${finalMapper34.LastMapperWriteData:X2}->${finalMapper34.LastEffectiveMapperWriteData:X2}, " +
+            $"cpu-reads={finalMapper34.CpuReadCount:N0}, ppu-reads={finalMapper34.PpuReadCount:N0}, ppu-writes={finalMapper34.PpuWriteCount:N0}");
+    }
+    else
+    {
+        Console.WriteLine(
+            $"Mapper 34:    variant=NINA-001/002, prg=${finalMapper34.NinaPrgRegister:X2} selected={finalMapper34.SelectedNinaPrgBank}/{finalMapper34.NinaPrgBankCount}, " +
+            $"chr0=${finalMapper34.NinaChr0Register:X2} selected={finalMapper34.SelectedNinaChrBank0}/{finalMapper34.NinaChrBankCount}, " +
+            $"chr1=${finalMapper34.NinaChr1Register:X2} selected={finalMapper34.SelectedNinaChrBank1}/{finalMapper34.NinaChrBankCount}, " +
+            $"prg-ram={finalMapper34.PrgRamSizeBytes:N0}, mapper-writes={finalMapper34.MapperWriteCount:N0}, ram-writes={finalMapper34.PrgRamWriteCount:N0}, " +
+            $"last=${finalMapper34.LastMapperWriteAddress:X4}:${finalMapper34.LastMapperWriteData:X2}, " +
+            $"cpu-reads={finalMapper34.CpuReadCount:N0}, ppu-reads={finalMapper34.PpuReadCount:N0}");
+    }
+}
 if (host.Machine.Slot.Cartridge is GxromCartridge finalGxrom)
 {
     Console.WriteLine(

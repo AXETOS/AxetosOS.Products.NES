@@ -21,6 +21,7 @@ public static class VirtualCartridgeHardwareFactory
             4 => new Mmc3Cartridge("SLOT.CARTRIDGE.MMC3"),
             7 => new AxromCartridge("SLOT.CARTRIDGE.AXROM"),
             11 => new ColorDreamsCartridge("SLOT.CARTRIDGE.COLORDREAMS"),
+            34 => new Mapper34Cartridge("SLOT.CARTRIDGE.MAPPER34"),
             66 => new GxromCartridge("SLOT.CARTRIDGE.GXROM"),
             71 => new CamericaCartridge("SLOT.CARTRIDGE.CAMERICA"),
             79 => new Nina0306Cartridge("SLOT.CARTRIDGE.NINA0306"),

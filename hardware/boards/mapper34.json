@@ -1,0 +1,43 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.mapper34",
+  "name": "Mapper 34 / BNROM / NINA-001",
+  "mapper": 34,
+  "variants": [
+    {
+      "id": "bnrom",
+      "submapper": 2,
+      "components": [
+        "32 KiB switchable PRG-ROM window",
+        "2-bit PRG bank latch",
+        "fixed 8 KiB CHR ROM or RAM",
+        "optional 8 KiB PRG RAM on documented extended boards"
+      ]
+    },
+    {
+      "id": "nina001",
+      "submapper": 1,
+      "components": [
+        "32 KiB switchable PRG-ROM window",
+        "two independently switchable 4 KiB CHR-ROM windows",
+        "8 KiB unbanked PRG RAM",
+        "register decode over PRG RAM at $7FFD-$7FFF"
+      ]
+    }
+  ],
+  "components": [
+    { "id": "prg", "type": "BankedRom", "source": "PrgRom", "role": "variant-specific-prg-window" },
+    { "id": "bank", "type": "Latch", "width": 8, "role": "variant-specific-bank-registers" },
+    { "id": "chr", "type": "BankedMemory", "source": "ChrRomOrRam", "role": "variant-specific-pattern-memory" }
+  ],
+  "connections": [
+    "BNROM: Cpu.Write & Cpu.Address>=0x8000 & Cpu.M2.falling -> prg.BankLatch",
+    "BNROM: Cpu.Data[0..1] AND currently-driven PrgRom.Data[0..1] -> prg.BankLatch[0..1]",
+    "NINA-001: Cpu.Write $7FFD & Cpu.M2.falling -> prg.BankLatch[0] and PrgRam[$7FFD]",
+    "NINA-001: Cpu.Write $7FFE & Cpu.M2.falling -> chr.Bank0[0..3] and PrgRam[$7FFE]",
+    "NINA-001: Cpu.Write $7FFF & Cpu.M2.falling -> chr.Bank1[0..3] and PrgRam[$7FFF]",
+    "Cpu.Address[0..14] -> selected PRG/PRG-RAM address pins",
+    "Ppu.Address[0..12] -> selected CHR address pins"
+  ],
+  "notes": "Mapper 34 intentionally resolves to one of two unrelated physical boards. NES 2.0 submapper 1 selects NINA-001/002; submapper 2 selects BNROM/I-IM. Legacy/submapper-0 images use CHR geometry to choose the fitted circuit: more than 8 KiB CHR ROM selects NINA-001, otherwise BNROM. Both variants retain fixed header-selected H/V CIRAM wiring and have no IRQ."
+}
