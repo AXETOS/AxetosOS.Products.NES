@@ -709,6 +709,20 @@ if (host.Machine.Slot.Cartridge is BandaiFcgCartridge finalBandai)
         $"eeprom={finalBandai.EepromSizeBytes:N0}, eeprom-control-writes={finalBandai.EepromControlWriteCount:N0}, " +
         $"eeprom-reads={finalBandai.EepromReadCount:N0}, eeprom-writes={finalBandai.EepromWriteCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is JalecoSs88006Cartridge finalJaleco)
+{
+    Console.WriteLine(
+        $"Jaleco SS88006: prg-reg=[{string.Join(",", finalJaleco.PrgBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"prg-map=[{string.Join(",", finalJaleco.PrgWindowBanks)}], chr-reg=[{string.Join(",", finalJaleco.ChrBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"mirroring={finalJaleco.NametableMode}, wram={finalJaleco.WramSizeBytes:N0}, protect=${finalJaleco.WramProtectRegister:X2}, " +
+        $"mapper-writes={finalJaleco.MapperWriteCount:N0}, last=${finalJaleco.LastMapperWriteAddress:X4}:${finalJaleco.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalJaleco.CpuReadCount:N0}, wram-reads={finalJaleco.WramReadCount:N0}, wram-writes={finalJaleco.WramWriteCount:N0}, ppu-reads={finalJaleco.PpuReadCount:N0}");
+    Console.WriteLine(
+        $"Jaleco IRQ:  latch=${finalJaleco.IrqLatch:X4}, counter=${finalJaleco.IrqCounter:X4}, enabled={finalJaleco.IrqEnabled}, " +
+        $"mode=${finalJaleco.IrqMode:X2}, mask=${finalJaleco.IrqCounterMask:X4}, asserted={finalJaleco.IrqAsserted}, " +
+        $"clocks={finalJaleco.IrqClockCount:N0}, irq-asserts={finalJaleco.IrqAssertCount:N0}, " +
+        $"sample-control=${finalJaleco.SampleControlRegister:X2}, sample-triggers={finalJaleco.SampleTriggerCount:N0}, last-sample={finalJaleco.LastSampleIndex}");
+}
 if (host.Machine.Slot.Cartridge is Mapper34Cartridge finalMapper34)
 {
     if (finalMapper34.BoardVariant == Mapper34BoardVariant.Bnrom)

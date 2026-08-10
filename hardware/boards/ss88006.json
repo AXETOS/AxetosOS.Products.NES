@@ -1,0 +1,29 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.jaleco-ss88006",
+  "name": "Jaleco SS88006",
+  "mapper": 18,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "JalecoSs88006Cartridge",
+      "role": "SS88006 ASIC with split-nibble PRG/CHR bank registers, work-RAM protection, four-mode CIRAM routing and masked CPU-cycle IRQ counter"
+    },
+    {
+      "id": "adpcm",
+      "type": "uPD7755C/uPD7756C",
+      "role": "Optional external Jaleco sample package on selected boards; mapper control output is represented, sample synthesis is not fitted in v2.45.0"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.PrgBank0..2 -> PrgRom bank address inputs",
+    "mapper.ChrBank0..7 -> ChrRom bank address inputs",
+    "mapper.WramEnable/WriteEnable -> optional WorkRam control",
+    "mapper.Ciram -> Motherboard.Ciram",
+    "mapper.IrqBar -> Cpu.IrqBar",
+    "mapper.SampleControl -> optional adpcm.Start/Index"
+  ],
+  "notes": "Mapper 18 uses three switchable 8 KiB PRG windows plus a fixed final bank, eight switchable 1 KiB CHR windows, optional 8 KiB work RAM with a two-bit protection latch, H/V/both single-screen mirroring, and a CPU-cycle down-counter whose 4/8/12/16-bit mask is selected by IRQ mode bits. Some Jaleco boards fit an external uPD7755C/uPD7756C sample package; the SS88006 control output is retained as hardware state without inventing sample ROM data or host-side audio semantics."
+}

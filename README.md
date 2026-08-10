@@ -8,11 +8,11 @@ The longer-term goal is generic virtual-hardware infrastructure that can also ho
 
 ## Current release
 
-**v2.44.0**
+**v2.45.0**
 
-Validated baseline before this release: **514 / 514 Release tests passing through v2.43.0**.
+Validated baseline before this release: **542 / 542 Release tests passing through v2.44.0**.
 
-v2.44.0 adds Mapper 16 / Bandai FCG cartridge hardware and cleans the project README so it focuses on architecture, supported hardware and usage rather than historical performance measurements.
+v2.45.0 adds Mapper 18 / Jaleco SS88006 cartridge hardware, including split-nibble PRG/CHR banking, optional protected work RAM, four-mode CIRAM routing and the ASIC's selectable-width CPU-cycle IRQ counter.
 
 ## Architecture
 
@@ -87,6 +87,7 @@ Implemented cartridge mapper numbers:
 - **10 — MMC4 / FxROM**
 - **11 — Color Dreams**
 - **16 — Bandai FCG-1/2 / LZ93D50**
+- **18 — Jaleco SS88006**
 - **34 — BNROM and NINA-001/002**
 - **66 — GxROM**
 - **71 — Camerica/Codemasters**
@@ -101,6 +102,15 @@ Mapper 16 currently covers the modern NES 2.0 distinctions used by mapper 16 its
 - submapper 0: legacy compatibility response in both documented register ranges.
 
 Deprecated Mapper-16 submappers that represent materially different fitted hardware are intentionally left to their dedicated mapper numbers (153, 157 and 159) rather than approximated as Mapper 16.
+
+Mapper 18 / Jaleco SS88006 includes:
+
+- three switchable 8 KiB PRG windows plus a fixed final bank;
+- eight independently switchable 1 KiB CHR windows;
+- optional 8 KiB work RAM with read/write protection state;
+- horizontal, vertical and both single-screen CIRAM routes;
+- 4-, 8-, 12- and 16-bit masked CPU-cycle IRQ counting;
+- the SS88006 external-sample control output as board state. Optional uPD7755C/uPD7756C sample synthesis remains separate cartridge hardware and is not fabricated from missing sample data.
 
 ## Build and test
 
@@ -204,7 +214,7 @@ tests/
 
 ## Direction
 
-The current mapper-completion tranche is focused on major remaining hardware families rather than exhaustive mapper-number coverage. Planned families include Bandai, Jaleco, Sunsoft, Konami VRC, Namco and MMC5 hardware.
+The current mapper-completion tranche is focused on major remaining hardware families rather than exhaustive mapper-number coverage. After Jaleco SS88006, the remaining planned tranche focuses on Sunsoft, Konami VRC, Namco and MMC5 hardware.
 
 After that tranche, development returns to the desktop product shell and broader system features, including:
 

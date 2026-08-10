@@ -24,6 +24,7 @@ public static class VirtualCartridgeHardwareFactory
             10 => new Mmc4Cartridge("SLOT.CARTRIDGE.MMC4"),
             11 => new ColorDreamsCartridge("SLOT.CARTRIDGE.COLORDREAMS"),
             16 => new BandaiFcgCartridge("SLOT.CARTRIDGE.BANDAI.FCG"),
+            18 => new JalecoSs88006Cartridge("SLOT.CARTRIDGE.JALECO.SS88006"),
             34 => new Mapper34Cartridge("SLOT.CARTRIDGE.MAPPER34"),
             66 => new GxromCartridge("SLOT.CARTRIDGE.GXROM"),
             71 => new CamericaCartridge("SLOT.CARTRIDGE.CAMERICA"),
