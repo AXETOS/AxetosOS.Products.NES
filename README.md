@@ -8,11 +8,11 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.37.1**
+**v2.38.0**
 
-The validated v2.36.0 hardware baseline is:
+The validated v2.37.1 hardware baseline is:
 
-- **372 / 372 tests passing**;
+- **390 / 390 tests passing**;
 - physical Controller 1 input confirmed in real Super Mario Bros. gameplay;
 - normal paced NROM/MMC1/MMC3/AxROM execution holds approximately 60 FPS on the development machine;
 - true uncapped generic whole-circuit throughput is approximately **152 FPS / 2.54x NTSC real time** for NROM and MMC1;
@@ -21,6 +21,7 @@ The validated v2.36.0 hardware baseline is:
 - Mapper 7 / AxROM is real-game validated by Battletoads for 11,600 frames, with sustained mapper writes, cartridge PPU traffic and CHR-RAM writes at real-time pacing.
 - Mapper 11 / Color Dreams is real-game validated by Metal Fighter for 4,523 frames at approximately 60.15 FPS, including thousands of mapper writes and sustained cartridge PPU traffic;
 - Mapper 66 / GxROM is real-game validated by Thunder & Lightning for 9,215 frames at approximately 60.13 FPS, including 15,707 mapper writes and sustained cartridge PPU traffic.
+- Mapper 71 / Camerica-Codemasters is real-game validated by The Fantastic Adventures of Dizzy for 11,593 frames at approximately 60.15 FPS, including more than 412,000 mapper writes and sustained cartridge PPU/CHR-RAM traffic.
 
 v2.34.0 adds Mapper 11 / Color Dreams as replaceable cartridge hardware: one switchable 32 KiB PRG-ROM window, one switchable 8 KiB CHR-ROM window, a shared 8-bit end-of-M2 latch, fixed H/V CIRAM wiring, no PRG RAM/IRQ, and standard AND-style CPU/ROM bus conflicts. Register D0-D1 select PRG, D4-D7 select CHR, while D2-D3 remain latch outputs associated with the original board's lockout-defeat circuitry rather than memory banking.
 
@@ -30,7 +31,9 @@ v2.35.0 improves desktop startup UX without changing virtual-hardware behavior. 
 
 v2.36.0 adds Mapper 66 / GxROM as replaceable physical cartridge hardware. Standard GNROM/MHROM wiring uses a four-bit latch with CPU D4-D5 selecting up to four 32 KiB PRG-ROM banks and D0-D1 selecting up to four 8 KiB CHR-ROM banks, fixed H/V CIRAM wiring, no cartridge RAM/IRQ, and standard AND-style CPU/ROM bus conflicts. It is locally validated at **372 / 372 tests** and by Thunder & Lightning sustained gameplay.
 
-v2.37.1 retains the Mapper 71 / Camerica-Codemasters physical cartridge introduced in v2.37.0 and corrects its no-bus-conflict test fixture. It provides a switchable 16 KiB PRG window at `$8000-$BFFF`, a fixed-last 16 KiB window at `$C000-$FFFF`, 8 KiB CHR RAM, no PRG RAM/IRQ or CPU/ROM bus conflicts, and NES 2.0 submapper-aware nametable wiring. Submapper 0 retains hardwired horizontal/vertical mirroring; submapper 1 models the BF9097/Fire Hawk board whose bit-4 mirroring latch drives CIRAM A10 directly. The board-local CIC-stun latch decode is retained as diagnostic state pending a future normalized CIC cartridge connector. No generic compiler or motherboard semantics are added. v2.37.1 keeps the expected Release suite at **390 tests** pending local validation.
+v2.37.1 retains the Mapper 71 / Camerica-Codemasters physical cartridge introduced in v2.37.0 and corrects its no-bus-conflict test fixture. It provides a switchable 16 KiB PRG window at `$8000-$BFFF`, a fixed-last 16 KiB window at `$C000-$FFFF`, 8 KiB CHR RAM, no PRG RAM/IRQ or CPU/ROM bus conflicts, and NES 2.0 submapper-aware nametable wiring. Submapper 0 retains hardwired horizontal/vertical mirroring; submapper 1 models the BF9097/Fire Hawk board whose bit-4 mirroring latch drives CIRAM A10 directly. The board-local CIC-stun latch decode is retained as diagnostic state pending a future normalized CIC cartridge connector. No generic compiler or motherboard semantics are added. v2.37.1 is locally validated at **390 / 390 tests** and by The Fantastic Adventures of Dizzy for 11,593 frames at approximately 60.15 FPS, with more than 412,000 mapper writes and sustained cartridge PPU/CHR-RAM traffic.
+
+v2.38.0 adds Mapper 79 / NINA-03/NINA-06 as replaceable physical cartridge hardware. The board exposes a switchable 32 KiB PRG-ROM window (up to 64 KiB total), a switchable 8 KiB CHR-ROM window (up to 64 KiB total), fixed H/V CIRAM wiring, no cartridge RAM/IRQ and no CPU/ROM bus conflicts. Its low-address control latch is decoded from the physical CPU connector condition `010x xxx1 xxxx xxxx`: CPU D3 selects PRG and D0-D2 select CHR. The generic compiler receives those address/control requirements only as ordinary package-pin conditions; it contains no mapper-79 semantics. The expected Release suite is **413 tests** pending local validation.
 
 ## Architecture
 
@@ -106,6 +109,7 @@ Implemented areas include:
 - Mapper 11 / Color Dreams cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, fixed mirroring and board-local bus conflicts;
 - Mapper 66 / GxROM cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, fixed mirroring and standard board-local bus conflicts;
 - Mapper 71 / Camerica-Codemasters cartridges with switchable 16 KiB PRG, fixed-last PRG, CHR RAM, no bus conflicts and optional live Fire Hawk single-screen CIRAM selection;
+- Mapper 79 / NINA-03/NINA-06 cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, low-address decoded control latch, fixed mirroring and no bus conflicts;
 - generic startup whole-circuit compilation;
 - specialized fused NROM execution retained for comparison/performance validation;
 - two standard controller packages with physical strobe/clock/data wiring;

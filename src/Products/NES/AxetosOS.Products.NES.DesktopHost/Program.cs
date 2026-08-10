@@ -682,6 +682,14 @@ if (host.Machine.Slot.Cartridge is CamericaCartridge finalCamerica)
         $"last=${finalCamerica.LastMapperWriteAddress:X4}:${finalCamerica.LastMapperWriteData:X2}, " +
         $"ppu-reads={finalCamerica.PpuReadCount:N0}, ppu-writes={finalCamerica.PpuWriteCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is Nina0306Cartridge finalNina)
+{
+    Console.WriteLine(
+        $"NINA-03/06:  bank=${finalNina.BankRegister:X2}, prg={finalNina.SelectedPrgBank}/{finalNina.PrgBankCount}, " +
+        $"chr={finalNina.SelectedChrBank}/{finalNina.ChrBankCount}, bus-conflicts={finalNina.BusConflictsEnabled}, " +
+        $"mapper-writes={finalNina.MapperWriteCount:N0}, last=${finalNina.LastMapperWriteAddress:X4}:${finalNina.LastMapperWriteData:X2}, " +
+        $"ppu-reads={finalNina.PpuReadCount:N0}");
+}
 if (profileSimulation)
 {
     PrintHostProfile(
