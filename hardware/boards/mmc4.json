@@ -1,0 +1,22 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.mmc4",
+  "name": "FxROM / MMC4",
+  "mapper": 10,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "Mmc4Cartridge",
+      "role": "Nintendo MMC4 package with 16 KiB PRG banking, fixed 8 KiB PRG RAM, PPU-address tile-trigger CHR latches and mirroring control"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Cpu $6000-$7FFF -> mapper.PrgRam",
+    "Ppu.Bus -> mapper.Ppu",
+    "PPU A0..A13 + RD -> mapper tile-trigger decode",
+    "mapper.Ciram -> Motherboard.Ciram",
+    "mapper.IrqBar -> Cpu.IrqBar (not driven)"
+  ],
+  "notes": "Mapper 10 / FxROM is replaceable external hardware. CPU $8000-$BFFF is one switchable 16 KiB PRG window and $C000-$FFFF is fixed to the final 16 KiB bank; $6000-$7FFF is fixed 8 KiB PRG RAM/NVRAM. Each 4 KiB CHR window selects between FD/FE registers. MMC4 decodes both low and high PPU trigger ranges ($xFD8-$xFDF / $xFE8-$xFEF) and switches after the triggering read. Mirroring is live mapper state; there is no IRQ, CHR RAM or CPU/ROM bus conflict."
+}

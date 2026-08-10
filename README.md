@@ -8,9 +8,9 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.42.2**
+**v2.43.0**
 
-The validated v2.41.0 hardware baseline is:
+The validated v2.42.2 hardware baseline is:
 
 - **476 / 476 tests passing**;
 - physical Controller 1 input confirmed in real Super Mario Bros. gameplay;
@@ -26,6 +26,7 @@ The validated v2.41.0 hardware baseline is:
 - Mapper 227 is real-game validated against the user-owned 1200-in-1 dump for 8,635 frames at approximately 60.16 FPS, including 61,870 mapper writes, about 195 million cartridge CPU reads, about 173 million cartridge PPU reads and sustained CHR-RAM writes.
 - Mapper 206 / DxROM is real-game validated by Ring King for 4,947 frames at approximately 60.11 FPS, including 101,575 mapper writes, about 111 million cartridge CPU reads and about 100 million cartridge PPU reads.
 - Mapper 34 is real-game validated across both physical board families: Impossible Mission II exercises NINA-001/002 banking and overlapping PRG-RAM/register writes, while Deadly Towers exercises BNROM for 11,771 frames at approximately 60.15 FPS with 181,100 mapper writes and sustained CHR-RAM traffic.
+- Mapper 9 / MMC2 is real-game validated by Mike Tyson's Punch-Out!! for 13,031 frames at approximately 60.10 FPS, including 112,371 mapper writes, more than 256 million cartridge PPU reads and more than 45 million physical FD/FE latch triggers.
 
 v2.34.0 adds Mapper 11 / Color Dreams as replaceable cartridge hardware: one switchable 32 KiB PRG-ROM window, one switchable 8 KiB CHR-ROM window, a shared 8-bit end-of-M2 latch, fixed H/V CIRAM wiring, no PRG RAM/IRQ, and standard AND-style CPU/ROM bus conflicts. Register D0-D1 select PRG, D4-D7 select CHR, while D2-D3 remain latch outputs associated with the original board's lockout-defeat circuitry rather than memory banking.
 
@@ -45,7 +46,9 @@ v2.40.1 carries the Mapper 206 / DxROM / Namco-108-family hardware from v2.40.0 
 
 v2.41.0 adds Mapper 34 by resolving its two unrelated physical board families rather than pretending they are one combined mapper. NES 2.0 submapper 1 selects NINA-001/002; submapper 2 selects BNROM/I-IM; legacy/submapper-0 images are resolved from fitted CHR geometry. BNROM provides a switchable 32 KiB PRG window, fixed 8 KiB CHR ROM or RAM, board-local CPU/ROM bus conflicts and optional documented 8 KiB PRG-RAM extension. NINA-001/002 provides a switchable 32 KiB PRG window, two independently switchable 4 KiB CHR-ROM windows, 8 KiB PRG RAM and overlapping `$7FFD-$7FFF` RAM/register writes. Both retain fixed H/V CIRAM wiring and no IRQ. No compiler or motherboard mapper semantics are added. v2.41.0 is locally validated at **476 / 476 tests**, by Impossible Mission II on NINA-001/002, and by Deadly Towers on BNROM.
 
-v2.42.2 retains the Mapper 9 / Nintendo MMC2 / PxROM hardware from v2.42.0 and corrects the raw physical PPU-latch test fixture by attaching passive high-impedance traces to PPU D0-D7 before sampling the bus. The cartridge had been driving the correct old-bank byte for the trigger access, but the isolated package pins had no physical net on which a resolved sampled level could exist. Mapper hardware is unchanged. v2.42.1 separately fixed the test-project namespace import. v2.42.0 adds Mapper 9 / Nintendo MMC2 / PxROM as replaceable physical cartridge hardware. It models one switchable 8 KiB PRG-ROM window followed by the final three fixed 8 KiB banks, four 5-bit CHR bank registers feeding two independent 4 KiB pattern-table windows, PPU-address-driven FD/FE tile latches, and live mapper-controlled H/V CIRAM wiring. MMC2 latch transitions occur after the triggering CHR read so the current bus access still observes the previously selected bank; the lower latch uses the MMC2 exact `$0FD8`/`$0FE8` trigger addresses while the upper latch decodes `$1FD8-$1FDF`/`$1FE8-$1FEF`. PxROM has no PRG RAM, CHR RAM, IRQ or CPU/ROM bus conflicts. No compiler or motherboard mapper semantics are added. The expected Release suite remains **494 tests** pending local validation.
+v2.42.2 retains the Mapper 9 / Nintendo MMC2 / PxROM hardware from v2.42.0 and corrects the raw physical PPU-latch test fixture by attaching passive high-impedance traces to PPU D0-D7 before sampling the bus. The cartridge had been driving the correct old-bank byte for the trigger access, but the isolated package pins had no physical net on which a resolved sampled level could exist. Mapper hardware is unchanged. v2.42.1 separately fixed the test-project namespace import. v2.42.0 adds Mapper 9 / Nintendo MMC2 / PxROM as replaceable physical cartridge hardware. It models one switchable 8 KiB PRG-ROM window followed by the final three fixed 8 KiB banks, four 5-bit CHR bank registers feeding two independent 4 KiB pattern-table windows, PPU-address-driven FD/FE tile latches, and live mapper-controlled H/V CIRAM wiring. MMC2 latch transitions occur after the triggering CHR read so the current bus access still observes the previously selected bank; the lower latch uses the MMC2 exact `$0FD8`/`$0FE8` trigger addresses while the upper latch decodes `$1FD8-$1FDF`/`$1FE8-$1FEF`. PxROM has no PRG RAM, CHR RAM, IRQ or CPU/ROM bus conflicts. No compiler or motherboard mapper semantics are added. v2.42.2 is locally validated at **494 / 494 tests** and by Mike Tyson's Punch-Out!! sustained gameplay.
+
+v2.43.0 adds Mapper 10 / Nintendo MMC4 / FxROM as distinct replaceable physical cartridge hardware. It models the switchable 16 KiB PRG-ROM window at `$8000-$BFFF`, fixed-last 16 KiB PRG window at `$C000-$FFFF`, fixed 8 KiB PRG RAM/NVRAM at `$6000-$7FFF`, four 5-bit CHR bank registers feeding two FD/FE-selected 4 KiB pattern-table windows, full MMC4 low/high PPU trigger ranges, and live mapper-controlled H/V CIRAM wiring. Latch transitions occur after the triggering CHR read so the current bus access still sees the previously selected bank. MMC4 has no IRQ, CHR RAM or CPU/ROM bus conflicts. No compiler or motherboard mapper semantics are added. The expected Release suite is **514 tests**, pending local validation.
 
 ## Architecture
 

@@ -38,6 +38,18 @@
       "definition": "boards/axrom.json"
     },
     {
+      "mapper": 9,
+      "submapper": null,
+      "name": "MMC2 / PxROM",
+      "definition": "boards/mmc2.json"
+    },
+    {
+      "mapper": 10,
+      "submapper": null,
+      "name": "MMC4 / FxROM",
+      "definition": "boards/mmc4.json"
+    },
+    {
       "mapper": 11,
       "submapper": null,
       "name": "Color Dreams",

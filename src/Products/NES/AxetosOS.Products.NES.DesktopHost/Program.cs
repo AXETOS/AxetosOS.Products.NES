@@ -670,6 +670,23 @@ if (host.Machine.Slot.Cartridge is Mmc2Cartridge finalMmc2)
         $"last=${finalMmc2.LastMapperWriteAddress:X4}:${finalMmc2.LastMapperWriteData:X2}, " +
         $"cpu-reads={finalMmc2.CpuReadCount:N0}, ppu-reads={finalMmc2.PpuReadCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is Mmc4Cartridge finalMmc4)
+{
+    Console.WriteLine(
+        $"MMC4 core:   prg=${finalMmc4.PrgBankRegister:X2} selected={finalMmc4.SelectedPrgBank}/{finalMmc4.PrgBankCount}, " +
+        $"chrFD0=${finalMmc4.ChrBankRegisters[0]:X2}, chrFE0=${finalMmc4.ChrBankRegisters[1]:X2}, " +
+        $"chrFD1=${finalMmc4.ChrBankRegisters[2]:X2}, chrFE1=${finalMmc4.ChrBankRegisters[3]:X2}, " +
+        $"latch0=${finalMmc4.Latch0:X2} selected={finalMmc4.SelectedChrBank0}/{finalMmc4.ChrBankCount}, " +
+        $"latch1=${finalMmc4.Latch1:X2} selected={finalMmc4.SelectedChrBank1}/{finalMmc4.ChrBankCount}, " +
+        $"mirroring={finalMmc4.Mirroring}, prg-ram={finalMmc4.PrgRamSizeBytes:N0}");
+    Console.WriteLine(
+        $"MMC4 latch:  triggers={finalMmc4.LatchTriggerCount:N0} " +
+        $"0FD={finalMmc4.Latch0FdTriggerCount:N0} 0FE={finalMmc4.Latch0FeTriggerCount:N0} " +
+        $"1FD={finalMmc4.Latch1FdTriggerCount:N0} 1FE={finalMmc4.Latch1FeTriggerCount:N0}, " +
+        $"last-trigger=${finalMmc4.LastLatchTriggerAddress:X4}, mapper-writes={finalMmc4.MapperWriteCount:N0}, " +
+        $"ram-writes={finalMmc4.PrgRamWriteCount:N0}, last=${finalMmc4.LastMapperWriteAddress:X4}:${finalMmc4.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalMmc4.CpuReadCount:N0}, ppu-reads={finalMmc4.PpuReadCount:N0}");
+}
 if (host.Machine.Slot.Cartridge is ColorDreamsCartridge finalColorDreams)
 {
     Console.WriteLine(
