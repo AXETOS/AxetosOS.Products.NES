@@ -4,6 +4,7 @@ using AxetosOS.Audio.Windows;
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
+using AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 using AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
 using AxetosOS.Rendering.Abstractions;
@@ -170,7 +171,14 @@ audio.Start();
 
 presenter.KeyStateChanged += (key, pressed) =>
 {
-    if (key == NativeKey.Escape && pressed) presenter.Close();
+    if (key == NativeKey.Escape)
+    {
+        if (pressed) presenter.Close();
+        return;
+    }
+
+    if (TryMapController1Key(key, out var button))
+        host.Machine.SetControllerButton(0, button, pressed);
 };
 
 host.PowerAndReleaseReset();
@@ -237,7 +245,7 @@ Console.WriteLine(compiledLab
         : "Execution:   diagnostic raw physical virtual-hardware buses and master clock only");
 Console.WriteLine("Video:       RP2C02 color output -> AxetosOS native framebuffer presenter");
 Console.WriteLine($"Audio:       RP2A03 DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
-Console.WriteLine("Controls:    Esc=Exit (controller hardware adapter is the next input milestone)");
+Console.WriteLine("Controls:    Arrows=D-pad, Z=A, X=B, Enter=Start, Right Shift=Select, Esc=Exit");
 Console.WriteLine(compiledLab
     ? $"Kernel:      whole-circuit compiler ({host.Machine.Famicom.CompiledLabRuntimeUnitCount} runtime units; {host.Machine.Famicom.CompiledLabInternalComponentCount} fixed-board components; {host.Machine.Famicom.CompiledLabFoldedInternalTraceCount} internal traces folded; {host.Machine.Famicom.CompiledLabBoundaryTraceCount} cartridge-boundary traces)"
     : compiledFamicom
@@ -477,6 +485,19 @@ if (finalCpu is not null)
         $"Audio core:  apu-cycles={finalCpu.ApuCpuCycleCount:N0}, dac-events={finalCpu.AudioDacOutput.DriveCount:N0}, " +
         $"dac-level={finalCpu.AudioDacLevel}");
 }
+var finalControllers = host.Machine.ActiveMotherboard switch
+{
+    ActiveNesMotherboard.Famicom => (host.Machine.Famicom.Controller1, host.Machine.Famicom.Controller2),
+    ActiveNesMotherboard.NtscNes => (host.Machine.NtscNes.Controller1, host.Machine.NtscNes.Controller2),
+    ActiveNesMotherboard.PalNes => (host.Machine.PalNes.Controller1, host.Machine.PalNes.Controller2),
+    _ => ((NesStandardController?)null, (NesStandardController?)null)
+};
+if (finalControllers.Item1 is not null && finalControllers.Item2 is not null)
+{
+    Console.WriteLine(
+        $"Controllers: P1=${host.Machine.InspectControllerButtons(0):X2} latch={finalControllers.Item1.LatchCount:N0} shift={finalControllers.Item1.ShiftCount:N0}; " +
+        $"P2=${host.Machine.InspectControllerButtons(1):X2} latch={finalControllers.Item2.LatchCount:N0} shift={finalControllers.Item2.ShiftCount:N0}");
+}
 var finalPpu = host.Machine.ActiveMotherboard switch
 {
     ActiveNesMotherboard.Famicom => host.Machine.Famicom.Ppu,
@@ -530,6 +551,28 @@ if (profileSimulation)
     PrintProfile(activeSimulator.GetProfileSnapshot());
 }
 return 0;
+
+static bool TryMapController1Key(NativeKey key, out NesControllerButton button)
+{
+    // Keep the host adapter independent of the native presenter enum's naming
+    // convention. The rendering layer reports a physical key; this host maps it
+    // to an external controller contact and nothing below this layer knows that
+    // a keyboard exists.
+    var name = key.ToString();
+    button = name switch
+    {
+        "Z" or "KeyZ" => NesControllerButton.A,
+        "X" or "KeyX" => NesControllerButton.B,
+        "Enter" or "Return" => NesControllerButton.Start,
+        "RightShift" or "RShift" => NesControllerButton.Select,
+        "Up" or "ArrowUp" or "UpArrow" => NesControllerButton.Up,
+        "Down" or "ArrowDown" or "DownArrow" => NesControllerButton.Down,
+        "Left" or "ArrowLeft" or "LeftArrow" => NesControllerButton.Left,
+        "Right" or "ArrowRight" or "RightArrow" => NesControllerButton.Right,
+        _ => (NesControllerButton)(-1)
+    };
+    return (int)button >= 0;
+}
 
 static void PaceToMasterClock(Stopwatch timer, ulong masterCycles, double masterClockHz)
 {

@@ -163,6 +163,13 @@ public sealed class NesStandardController : VirtualHardwareComponent, ICompiledS
     private void WriteCompiledLatch(bool high)
     {
         var next = high ? DigitalLevel.High : DigitalLevel.Low;
+
+        // The compiled trace has already proven which physical latch net reaches
+        // this pin. Retain the delivered package-pin level exactly as the raw
+        // electrical path would, so asynchronous external button changes still
+        // see the correct live STROBE level inside this package.
+        Strobe.SetObservedLevel(next);
+
         if (high)
         {
             CaptureButtons(countLatch: _previousStrobe != DigitalLevel.High);

@@ -27,9 +27,8 @@ internal sealed class CompiledFamicomNromExecutionPlan : IDisposable
     private readonly bool _horizontalMirroring;
 
     private ulong _masterClockRisingEdges;
-    private byte _controllerLatch;
-    private byte _controller1Shift;
-    private byte _controller2Shift;
+    private readonly CompiledSerialPeripheralDescriptor _controller1;
+    private readonly CompiledSerialPeripheralDescriptor _controller2;
     private bool _cpuReadLatchValid;
     private ushort _cpuReadLatchAddress;
     private byte _cpuReadLatch;
@@ -50,6 +49,10 @@ internal sealed class CompiledFamicomNromExecutionPlan : IDisposable
         _horizontalMirroring = _cartridge.CompiledMirroring == VirtualHardwareNesMirroring.Horizontal;
         _masterClockRisingEdges = (board.MasterClock.HalfCycleCount + (board.MasterClock.Output.DriveLevel == DigitalLevel.High ? 1UL : 0UL)) / 2;
         _resetAsserted = board.ResetSource.Output.DriveLevel != DigitalLevel.High;
+        _controller1 = GetControllerDescriptor(board.Controller1);
+        _controller2 = GetControllerDescriptor(board.Controller2);
+        ValidateControllerBinding(_controller1, _cpu.ControllerData1, _cpu.ControllerRead1Bar, _cpu.ControllerOut0);
+        ValidateControllerBinding(_controller2, _cpu.ControllerData2, _cpu.ControllerRead2Bar, _cpu.ControllerOut0);
         _cpuFabric = new CpuBusFabric(this);
         _ppuFabric = new PpuBusFabric(this);
         _cpu.AttachCompiledBusFabric(_cpuFabric);
@@ -66,9 +69,6 @@ internal sealed class CompiledFamicomNromExecutionPlan : IDisposable
     public void SynchronizePowerOn()
     {
         _masterClockRisingEdges = 0;
-        _controllerLatch = 0;
-        _controller1Shift = 0;
-        _controller2Shift = 0;
         _cpuReadLatchValid = false;
         SetResetAsserted(true);
     }
@@ -200,35 +200,40 @@ internal sealed class CompiledFamicomNromExecutionPlan : IDisposable
             _ppu.CompiledCpuWriteRegister(address & 7, value);
     }
 
-    public byte ReadControllerSerial(int port)
+    public byte ReadControllerSerial(int port) => port switch
     {
-        // Controller hardware is still not exposed by the desktop input adapter;
-        // nevertheless preserve the standard shift-register electrical result.
-        if (port == 0)
-        {
-            var value = (byte)(_controller1Shift & 1);
-            if ((_controllerLatch & 1) == 0)
-                _controller1Shift = (byte)((_controller1Shift >> 1) | 0x80);
-            return value;
-        }
-
-        var second = (byte)(_controller2Shift & 1);
-        if ((_controllerLatch & 1) == 0)
-            _controller2Shift = (byte)((_controller2Shift >> 1) | 0x80);
-        return second;
-    }
+        0 => _controller1.ReadSerial(),
+        1 => _controller2.ReadSerial(),
+        _ => throw new ArgumentOutOfRangeException(nameof(port))
+    };
 
     public void WriteControllerLatch(byte value)
     {
-        var previous = _controllerLatch;
-        _controllerLatch = (byte)(value & 0x07);
-        if ((_controllerLatch & 1) != 0 || (previous & 1) != 0)
+        // The optimized NROM fabric still talks to the real controller package
+        // through the package's generic compiled serial facet. Host input reaches
+        // that package only through its physical button pins; there is no second
+        // software-only controller state inside this fused execution plan.
+        var high = (value & 0x01) != 0;
+        _controller1.WriteLatch(high);
+        _controller2.WriteLatch(high);
+    }
+
+    private static CompiledSerialPeripheralDescriptor GetControllerDescriptor(
+        ICompiledSerialPeripheralProvider provider) =>
+        provider.GetCompiledSerialPeripherals().Single();
+
+    private static void ValidateControllerBinding(
+        CompiledSerialPeripheralDescriptor peripheral,
+        DigitalPin cpuData,
+        DigitalPin cpuClockBar,
+        DigitalPin cpuLatch)
+    {
+        if (!ReferenceEquals(peripheral.DataPin.Net, cpuData.Net)
+            || !ReferenceEquals(peripheral.ClockPin.Net, cpuClockBar.Net)
+            || !ReferenceEquals(peripheral.LatchPin.Net, cpuLatch.Net))
         {
-            // No external button adapter exists yet, so all eight button input
-            // traces are physically Low. The compiled shift registers therefore
-            // latch zero just like the current board packages.
-            _controller1Shift = 0;
-            _controller2Shift = 0;
+            throw new InvalidOperationException(
+                "The specialized compiled fabric requires the controller serial facet to match the assembled physical traces.");
         }
     }
 

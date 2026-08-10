@@ -57,6 +57,45 @@ public sealed class VirtualHardwareNesStandardControllerTests
     }
 
     [Fact]
+    public void Compiled_latch_delivery_retains_package_pin_level_for_live_button_changes()
+    {
+        var board = new VirtualHardwareBoard("controller.compiled-live-buttons");
+        var controller = board.Add(new NesStandardController("J1"));
+        var vcc = board.Add(new DigitalPowerRail("vcc", DigitalLevel.High));
+        var ground = board.Add(new DigitalPowerRail("ground", DigitalLevel.Low));
+        var strobe = board.Add(new DigitalSignalSource("strobe", DigitalLevel.Low));
+        var clockBar = board.Add(new DigitalSignalSource("clock", DigitalLevel.High));
+        var buttons = Enumerable.Range(0, 8)
+            .Select(index => board.Add(new DigitalSignalSource($"button{index}", DigitalLevel.Low)))
+            .ToArray();
+
+        board.Connect("VCC", vcc.Output, controller.Vcc);
+        board.Connect("GND", ground.Output, controller.Gnd);
+        board.Connect("STROBE", strobe.Output, controller.Strobe);
+        board.Connect("CLOCK_BAR", clockBar.Output, controller.ClockBar);
+        board.Connect("DATA", controller.Data);
+        for (var index = 0; index < buttons.Length; index++)
+            board.Connect($"BUTTON{index}", buttons[index].Output, controller.Buttons.Pins[index]);
+
+        var simulator = new VirtualHardwareSimulator(board);
+        board.PowerOn();
+        simulator.Settle();
+
+        var compiled = ((ICompiledSerialPeripheralProvider)controller)
+            .GetCompiledSerialPeripherals()
+            .Single();
+        compiled.WriteLatch(true);
+
+        // A host-side button can change while STROBE is held High between CPU
+        // bus operations. The package must see the compiled-delivered pin level
+        // and keep its live latch behavior identical to physical propagation.
+        buttons[(int)NesControllerButton.A].Set(DigitalLevel.High);
+        compiled.WriteLatch(false);
+
+        Assert.Equal((byte)1, compiled.ReadSerial());
+    }
+
+    [Fact]
     public void Regional_motherboards_install_two_determinate_controller_packages()
     {
         var famicom = new FamicomMotherboard();

@@ -8,14 +8,16 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.27.0**
+**v2.28.0**
 
-Validated Release configuration:
+v2.28.0 adds physical host-controller input and is awaiting local Release-suite validation. The last validated v2.27.0 baseline was:
 
 - **281 / 281 tests passing**
 - Famicom/NROM normal compiled runtime: **61.80 FPS uncapped**
 - Generic whole-circuit NROM compiler: **60.18 FPS uncapped**
 - Generic whole-circuit MMC1 compiler: **60.11 FPS uncapped**
+
+The v2.28.0 suite is expected to contain **286** test cases after the new controller cross-runtime coverage is included; this README does not claim that result until it is run on the development machine.
 
 These FPS values are local throughput measurements from the current development machine and are not hardware requirements or guaranteed results on other hosts. Normal gameplay is paced to the emulated hardware clock; `--uncapped` is for throughput benchmarking.
 
@@ -87,9 +89,12 @@ Implemented and actively validated areas include:
 - Mapper 0 / NROM cartridges;
 - Mapper 1 / MMC1 cartridges;
 - generic startup whole-circuit compilation;
-- specialized fused NROM execution retained for comparison/performance validation.
+- specialized fused NROM execution retained for comparison/performance validation;
+- two standard controller packages with physical strobe/clock/data wiring;
+- generic external controller-button stimulus connected only through physical button traces;
+- desktop Controller 1 keyboard adapter: arrows=D-pad, Z=A, X=B, Enter=Start and Right Shift=Select.
 
-Controller hardware integration is the next input milestone.
+The host adapter does not write `$4016/$4017`, CPU state, controller shift registers or game memory. It changes only external button-contact signal sources; the controller package and normal console circuitry perform latching and serial reads. Controller 2 has an independent physical host-input source/API and is ready for a later second-player binding.
 
 ## Build and test
 
@@ -178,9 +183,8 @@ tests/
 
 ## Direction
 
-Near-term work focuses on increasing generic compiled-runtime headroom while preserving electrical and package behavior, followed by product-level features such as:
+Near-term work now proceeds through the remaining tracks: increasing generic compiled-runtime headroom while preserving electrical/package behavior, expanding cartridge hardware, and then building the desktop product shell. Planned host features include:
 
-- controller hardware adapter;
 - ROM loading from the desktop UI;
 - pause/reset/power-cycle controls;
 - save state / load state;

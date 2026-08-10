@@ -1,4 +1,5 @@
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
+using AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Simulation;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 
@@ -19,6 +20,9 @@ public enum ActiveNesMotherboard
 public sealed class RegionalNesVirtualMachine
 {
     private PalCicVariant _constructedPalVariant;
+    private readonly NesControllerHostInputAdapter _famicomControllerInput;
+    private readonly NesControllerHostInputAdapter _ntscControllerInput;
+    private NesControllerHostInputAdapter _palControllerInput;
 
     public RegionalNesVirtualMachine()
     {
@@ -27,6 +31,15 @@ public sealed class RegionalNesVirtualMachine
         NtscNes = new NtscNesMotherboard();
         _constructedPalVariant = PalCicVariant.PalA3195;
         PalNes = new PalNesMotherboard(_constructedPalVariant);
+
+        // Host controls are external physical stimuli attached to the controller
+        // button traces before any cartridge/motherboard compilation occurs.
+        _famicomControllerInput = new NesControllerHostInputAdapter(
+            "HOST.CONTROLLER.FAMICOM", Famicom.Board, Famicom.Simulator, Famicom.Controller1, Famicom.Controller2);
+        _ntscControllerInput = new NesControllerHostInputAdapter(
+            "HOST.CONTROLLER.NTSC", NtscNes.Board, NtscNes.Simulator, NtscNes.Controller1, NtscNes.Controller2);
+        _palControllerInput = new NesControllerHostInputAdapter(
+            "HOST.CONTROLLER.PAL", PalNes.Board, PalNes.Simulator, PalNes.Controller1, PalNes.Controller2);
     }
 
     public SharedVirtualRomSlot Slot { get; }
@@ -133,6 +146,19 @@ public sealed class RegionalNesVirtualMachine
         }
     }
 
+    /// <summary>
+    /// Changes one external controller button contact. The host does not write
+    /// CPU/controller state: this only changes the corresponding physical input
+    /// source attached to the selected motherboard's controller button trace.
+    /// </summary>
+    public void SetControllerButton(int port, NesControllerButton button, bool pressed)
+    {
+        GetActiveControllerInput().SetButton(port, button, pressed);
+    }
+
+    public byte InspectControllerButtons(int port) =>
+        GetActiveControllerInput().InspectButtons(port);
+
     public void SetCompiledLabExecutionEnabled(bool enabled)
     {
         if (IsPowered) throw new InvalidOperationException("Change execution mode only while powered off.");
@@ -162,6 +188,8 @@ public sealed class RegionalNesVirtualMachine
         {
             _constructedPalVariant = palCicVariant;
             PalNes = new PalNesMotherboard(_constructedPalVariant);
+            _palControllerInput = new NesControllerHostInputAdapter(
+                "HOST.CONTROLLER.PAL", PalNes.Board, PalNes.Simulator, PalNes.Controller1, PalNes.Controller2);
         }
 
         SelectionCount++;
@@ -214,6 +242,14 @@ public sealed class RegionalNesVirtualMachine
                 break;
         }
     }
+
+    private NesControllerHostInputAdapter GetActiveControllerInput() => ActiveMotherboard switch
+    {
+        ActiveNesMotherboard.Famicom => _famicomControllerInput,
+        ActiveNesMotherboard.NtscNes => _ntscControllerInput,
+        ActiveNesMotherboard.PalNes => _palControllerInput,
+        _ => throw new InvalidOperationException("Select a motherboard/ROM before changing controller input.")
+    };
 
     private void EnsurePowered()
     {
