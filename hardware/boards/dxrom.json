@@ -1,18 +1,20 @@
 {
   "$schema": "../schemas/cartridge-board.schema.json",
   "id": "nes.board.dxrom",
-  "name": "DxROM",
+  "name": "DxROM / Namco 108 / MIMIC-1",
   "mapper": 206,
   "components": [
     {
       "id": "mapper",
-      "type": "ReusableMapperHardware",
-      "role": "dxrom"
+      "type": "DxromCartridge",
+      "role": "package-local Namco-108-family bank select/data latches and PRG/CHR address muxes"
     }
   ],
   "connections": [
     "Cpu.Bus -> mapper.Cpu",
-    "Ppu.Bus -> mapper.Ppu"
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.Ciram -> Motherboard.Ciram",
+    "mapper.IrqBar -> Cpu.IrqBar (not driven)"
   ],
-  "notes": "Composable DxROM board built from shared PRG, CHR, mirroring, RAM and IRQ components."
+  "notes": "Mapper 206 is replaceable external hardware. Standard DxROM has two switchable 8 KiB PRG windows followed by the final two fixed banks, two 2 KiB plus four 1 KiB CHR windows, fixed H/V or DRROM four-screen nametables, no IRQ and no MMC3 PRG/CHR mode bits. NES 2.0 submapper 1 models 3407/3417/3451 direct 32 KiB PRG wiring."
 }

@@ -8,11 +8,11 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.39.0**
+**v2.40.1**
 
-The validated v2.38.0 hardware baseline is:
+The validated v2.39.0 hardware baseline is:
 
-- **413 / 413 tests passing**;
+- **436 / 436 tests passing**;
 - physical Controller 1 input confirmed in real Super Mario Bros. gameplay;
 - normal paced NROM/MMC1/MMC3/AxROM execution holds approximately 60 FPS on the development machine;
 - true uncapped generic whole-circuit throughput is approximately **152 FPS / 2.54x NTSC real time** for NROM and MMC1;
@@ -23,6 +23,7 @@ The validated v2.38.0 hardware baseline is:
 - Mapper 66 / GxROM is real-game validated by Thunder & Lightning for 9,215 frames at approximately 60.13 FPS, including 15,707 mapper writes and sustained cartridge PPU traffic.
 - Mapper 71 / Camerica-Codemasters is real-game validated by The Fantastic Adventures of Dizzy for 11,593 frames at approximately 60.15 FPS, including more than 412,000 mapper writes and sustained cartridge PPU/CHR-RAM traffic.
 - Mapper 79 / NINA-03/NINA-06 is real-game validated by Deathbots for 4,776 frames at approximately 60.11 FPS, including 10,339 mapper writes and more than 93 million cartridge PPU reads.
+- Mapper 227 is real-game validated against the user-owned 1200-in-1 dump for 8,635 frames at approximately 60.16 FPS, including 61,870 mapper writes, about 195 million cartridge CPU reads, about 173 million cartridge PPU reads and sustained CHR-RAM writes.
 
 v2.34.0 adds Mapper 11 / Color Dreams as replaceable cartridge hardware: one switchable 32 KiB PRG-ROM window, one switchable 8 KiB CHR-ROM window, a shared 8-bit end-of-M2 latch, fixed H/V CIRAM wiring, no PRG RAM/IRQ, and standard AND-style CPU/ROM bus conflicts. Register D0-D1 select PRG, D4-D7 select CHR, while D2-D3 remain latch outputs associated with the original board's lockout-defeat circuitry rather than memory banking.
 
@@ -36,7 +37,9 @@ v2.37.1 retains the Mapper 71 / Camerica-Codemasters physical cartridge introduc
 
 v2.38.0 adds Mapper 79 / NINA-03/NINA-06 as replaceable physical cartridge hardware. The board exposes a switchable 32 KiB PRG-ROM window (up to 64 KiB total), a switchable 8 KiB CHR-ROM window (up to 64 KiB total), fixed H/V CIRAM wiring, no cartridge RAM/IRQ and no CPU/ROM bus conflicts. Its low-address control latch is decoded from the physical CPU connector condition `010x xxx1 xxxx xxxx`: CPU D3 selects PRG and D0-D2 select CHR. The generic compiler receives those address/control requirements only as ordinary package-pin conditions; it contains no mapper-79 semantics. v2.38.0 is locally validated at **413 / 413 tests** and by Deathbots sustained gameplay.
 
-v2.39.0 adds Mapper 227 as replaceable address-latch multicart hardware. CPU writes in `$8000-$FFFF` clock the physical address lines rather than the CPU data value, producing NROM-128, NROM-256 and two UNROM-like PRG arrangements from the same cartridge circuit. The implementation includes fitted PRG address-line masking up to 1 MiB, 8 KiB unbanked CHR RAM, NROM-mode CHR write protection for multicart boards, live H/V CIRAM routing, the four-bit solder-pad PRG low-address mux, and NES 2.0 submapper 0/1/2 distinctions. The user-provided 1200-in-1 dump was inspected to confirm its legacy iNES Mapper-227 geometry (512 KiB PRG, CHR RAM) and its use of the `m`-controlled solder-pad low-address probe; the commercial ROM is not included in the repository or patch. The expected Release suite is **436 tests** pending local validation.
+v2.39.0 adds Mapper 227 as replaceable address-latch multicart hardware. CPU writes in `$8000-$FFFF` clock the physical address lines rather than the CPU data value, producing NROM-128, NROM-256 and two UNROM-like PRG arrangements from the same cartridge circuit. The implementation includes fitted PRG address-line masking up to 1 MiB, 8 KiB unbanked CHR RAM, NROM-mode CHR write protection for multicart boards, live H/V CIRAM routing, the four-bit solder-pad PRG low-address mux, and NES 2.0 submapper 0/1/2 distinctions. The user-provided 1200-in-1 dump was inspected to confirm its legacy iNES Mapper-227 geometry (512 KiB PRG, CHR RAM) and its use of the `m`-controlled solder-pad low-address probe; the commercial ROM is not included in the repository or patch. v2.39.0 is locally validated at **436 / 436 tests** and against that 1200-in-1 ROM for 8,635 frames at approximately 60.16 FPS.
+
+v2.40.1 carries the Mapper 206 / DxROM / Namco-108-family hardware from v2.40.0 and fixes an xUnit analyzer-only validation-test expression (xUnit2031); mapper hardware is unchanged. v2.40.0 adds Mapper 206 / DxROM / Namco-108-family hardware as a distinct replaceable cartridge rather than treating it as MMC3. It implements the two switchable 8 KiB PRG windows plus two fixed-last windows, two 2 KiB and four 1 KiB CHR windows, the physical low-three-bit bank-select and low-six-bit bank-data latches, fixed H/V CIRAM routing, DRROM four-screen cartridge RAM, the NES 2.0 submapper-1 direct 32 KiB PRG wiring used by 3407/3417/3451 boards, and the known optional 8 KiB MIMIC-1 prototype PRG-RAM exception. It deliberately has no MMC3 PRG/CHR mode bits, mirroring register, IRQ counter or standard PRG-RAM control register. No generic compiler or motherboard semantics are added. The expected Release suite is **452 tests** pending local validation.
 
 ## Architecture
 
@@ -113,6 +116,7 @@ Implemented areas include:
 - Mapper 66 / GxROM cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, fixed mirroring and standard board-local bus conflicts;
 - Mapper 71 / Camerica-Codemasters cartridges with switchable 16 KiB PRG, fixed-last PRG, CHR RAM, no bus conflicts and optional live Fire Hawk single-screen CIRAM selection;
 - Mapper 79 / NINA-03/NINA-06 cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, low-address decoded control latch, fixed mirroring and no bus conflicts;
+- Mapper 206 / DxROM cartridges with Namco-108-family PRG/CHR banking, fixed H/V or DRROM four-screen nametables, no IRQ and optional prototype PRG RAM;
 - Mapper 227 address-latch multicart cartridges with NROM/UNROM-like PRG wiring modes, unbanked CHR RAM, live H/V mirroring, CHR write protection and optional solder-pad PRG low-address selection;
 - generic startup whole-circuit compilation;
 - specialized fused NROM execution retained for comparison/performance validation;

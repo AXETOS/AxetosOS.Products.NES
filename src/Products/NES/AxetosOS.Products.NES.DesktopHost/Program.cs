@@ -690,6 +690,20 @@ if (host.Machine.Slot.Cartridge is Nina0306Cartridge finalNina)
         $"mapper-writes={finalNina.MapperWriteCount:N0}, last=${finalNina.LastMapperWriteAddress:X4}:${finalNina.LastMapperWriteData:X2}, " +
         $"ppu-reads={finalNina.PpuReadCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is DxromCartridge finalDxrom)
+{
+    Console.WriteLine(
+        $"DxROM core:   select=${finalDxrom.BankSelectRegister:X2}, " +
+        $"r0=${finalDxrom.BankRegisters[0]:X2}, r1=${finalDxrom.BankRegisters[1]:X2}, " +
+        $"r2=${finalDxrom.BankRegisters[2]:X2}, r3=${finalDxrom.BankRegisters[3]:X2}, " +
+        $"r4=${finalDxrom.BankRegisters[4]:X2}, r5=${finalDxrom.BankRegisters[5]:X2}, " +
+        $"r6=${finalDxrom.BankRegisters[6]:X2}, r7=${finalDxrom.BankRegisters[7]:X2}, " +
+        $"prg={finalDxrom.SelectedPrgBank0}/{finalDxrom.SelectedPrgBank1}/{finalDxrom.FixedPrgBank0}/{finalDxrom.FixedPrgBank1}, " +
+        $"mirroring={finalDxrom.Mirroring}, unbanked32={finalDxrom.Unbanked32KPrg}, four-screen={finalDxrom.HasFourScreenRam}, prg-ram={finalDxrom.PrgRamSizeBytes:N0}, " +
+        $"mapper-writes={finalDxrom.MapperWriteCount:N0}, ignored={finalDxrom.IgnoredMapperWriteCount:N0}, " +
+        $"last=${finalDxrom.LastMapperWriteAddress:X4}:${finalDxrom.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalDxrom.CpuReadCount:N0}, ppu-reads={finalDxrom.PpuReadCount:N0}, ppu-writes={finalDxrom.PpuWriteCount:N0}");
+}
 if (host.Machine.Slot.Cartridge is Mapper227Cartridge finalMapper227)
 {
     Console.WriteLine(
