@@ -8,11 +8,11 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.41.0**
+**v2.42.2**
 
-The validated v2.40.1 hardware baseline is:
+The validated v2.41.0 hardware baseline is:
 
-- **452 / 452 tests passing**;
+- **476 / 476 tests passing**;
 - physical Controller 1 input confirmed in real Super Mario Bros. gameplay;
 - normal paced NROM/MMC1/MMC3/AxROM execution holds approximately 60 FPS on the development machine;
 - true uncapped generic whole-circuit throughput is approximately **152 FPS / 2.54x NTSC real time** for NROM and MMC1;
@@ -25,6 +25,7 @@ The validated v2.40.1 hardware baseline is:
 - Mapper 79 / NINA-03/NINA-06 is real-game validated by Deathbots for 4,776 frames at approximately 60.11 FPS, including 10,339 mapper writes and more than 93 million cartridge PPU reads.
 - Mapper 227 is real-game validated against the user-owned 1200-in-1 dump for 8,635 frames at approximately 60.16 FPS, including 61,870 mapper writes, about 195 million cartridge CPU reads, about 173 million cartridge PPU reads and sustained CHR-RAM writes.
 - Mapper 206 / DxROM is real-game validated by Ring King for 4,947 frames at approximately 60.11 FPS, including 101,575 mapper writes, about 111 million cartridge CPU reads and about 100 million cartridge PPU reads.
+- Mapper 34 is real-game validated across both physical board families: Impossible Mission II exercises NINA-001/002 banking and overlapping PRG-RAM/register writes, while Deadly Towers exercises BNROM for 11,771 frames at approximately 60.15 FPS with 181,100 mapper writes and sustained CHR-RAM traffic.
 
 v2.34.0 adds Mapper 11 / Color Dreams as replaceable cartridge hardware: one switchable 32 KiB PRG-ROM window, one switchable 8 KiB CHR-ROM window, a shared 8-bit end-of-M2 latch, fixed H/V CIRAM wiring, no PRG RAM/IRQ, and standard AND-style CPU/ROM bus conflicts. Register D0-D1 select PRG, D4-D7 select CHR, while D2-D3 remain latch outputs associated with the original board's lockout-defeat circuitry rather than memory banking.
 
@@ -42,7 +43,9 @@ v2.39.0 adds Mapper 227 as replaceable address-latch multicart hardware. CPU wri
 
 v2.40.1 carries the Mapper 206 / DxROM / Namco-108-family hardware from v2.40.0 and fixes an xUnit analyzer-only validation-test expression (xUnit2031); mapper hardware is unchanged. v2.40.0 adds Mapper 206 / DxROM / Namco-108-family hardware as a distinct replaceable cartridge rather than treating it as MMC3. It implements the two switchable 8 KiB PRG windows plus two fixed-last windows, two 2 KiB and four 1 KiB CHR windows, the physical low-three-bit bank-select and low-six-bit bank-data latches, fixed H/V CIRAM routing, DRROM four-screen cartridge RAM, the NES 2.0 submapper-1 direct 32 KiB PRG wiring used by 3407/3417/3451 boards, and the known optional 8 KiB MIMIC-1 prototype PRG-RAM exception. It deliberately has no MMC3 PRG/CHR mode bits, mirroring register, IRQ counter or standard PRG-RAM control register. No generic compiler or motherboard semantics are added. v2.40.1 is locally validated at **452 / 452 tests** and by Ring King sustained gameplay.
 
-v2.41.0 adds Mapper 34 by resolving its two unrelated physical board families rather than pretending they are one combined mapper. NES 2.0 submapper 1 selects NINA-001/002; submapper 2 selects BNROM/I-IM; legacy/submapper-0 images are resolved from fitted CHR geometry. BNROM provides a switchable 32 KiB PRG window, fixed 8 KiB CHR ROM or RAM, board-local CPU/ROM bus conflicts and optional documented 8 KiB PRG-RAM extension. NINA-001/002 provides a switchable 32 KiB PRG window, two independently switchable 4 KiB CHR-ROM windows, 8 KiB PRG RAM and overlapping `$7FFD-$7FFF` RAM/register writes. Both retain fixed H/V CIRAM wiring and no IRQ. No compiler or motherboard mapper semantics are added. The expected Release suite is **476 tests** pending local validation.
+v2.41.0 adds Mapper 34 by resolving its two unrelated physical board families rather than pretending they are one combined mapper. NES 2.0 submapper 1 selects NINA-001/002; submapper 2 selects BNROM/I-IM; legacy/submapper-0 images are resolved from fitted CHR geometry. BNROM provides a switchable 32 KiB PRG window, fixed 8 KiB CHR ROM or RAM, board-local CPU/ROM bus conflicts and optional documented 8 KiB PRG-RAM extension. NINA-001/002 provides a switchable 32 KiB PRG window, two independently switchable 4 KiB CHR-ROM windows, 8 KiB PRG RAM and overlapping `$7FFD-$7FFF` RAM/register writes. Both retain fixed H/V CIRAM wiring and no IRQ. No compiler or motherboard mapper semantics are added. v2.41.0 is locally validated at **476 / 476 tests**, by Impossible Mission II on NINA-001/002, and by Deadly Towers on BNROM.
+
+v2.42.2 retains the Mapper 9 / Nintendo MMC2 / PxROM hardware from v2.42.0 and corrects the raw physical PPU-latch test fixture by attaching passive high-impedance traces to PPU D0-D7 before sampling the bus. The cartridge had been driving the correct old-bank byte for the trigger access, but the isolated package pins had no physical net on which a resolved sampled level could exist. Mapper hardware is unchanged. v2.42.1 separately fixed the test-project namespace import. v2.42.0 adds Mapper 9 / Nintendo MMC2 / PxROM as replaceable physical cartridge hardware. It models one switchable 8 KiB PRG-ROM window followed by the final three fixed 8 KiB banks, four 5-bit CHR bank registers feeding two independent 4 KiB pattern-table windows, PPU-address-driven FD/FE tile latches, and live mapper-controlled H/V CIRAM wiring. MMC2 latch transitions occur after the triggering CHR read so the current bus access still observes the previously selected bank; the lower latch uses the MMC2 exact `$0FD8`/`$0FE8` trigger addresses while the upper latch decodes `$1FD8-$1FDF`/`$1FE8-$1FEF`. PxROM has no PRG RAM, CHR RAM, IRQ or CPU/ROM bus conflicts. No compiler or motherboard mapper semantics are added. The expected Release suite remains **494 tests** pending local validation.
 
 ## Architecture
 
@@ -115,6 +118,7 @@ Implemented areas include:
 - Mapper 3 / CNROM cartridges with fixed PRG, switchable CHR ROM and fixed mirroring;
 - Mapper 4 / MMC3-family cartridges with PRG/CHR banking, live mirroring, optional RAM and cartridge IRQ circuitry;
 - Mapper 7 / AxROM cartridges with switchable 32 KiB PRG, CHR RAM and live single-screen CIRAM selection;
+- Mapper 9 / MMC2 / PxROM cartridges with switchable 8 KiB PRG, fixed-last PRG, dual FD/FE-selected 4 KiB CHR windows, PPU tile-trigger latches and live H/V mirroring;
 - Mapper 11 / Color Dreams cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, fixed mirroring and board-local bus conflicts;
 - Mapper 34 / BNROM / NINA-001 cartridges with explicit physical-board resolution, BNROM 32 KiB PRG banking/bus conflicts/CHR RAM or fixed CHR ROM, and NINA-001 32 KiB PRG plus dual 4 KiB CHR banking over 8 KiB PRG RAM;
 - Mapper 66 / GxROM cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, fixed mirroring and standard board-local bus conflicts;

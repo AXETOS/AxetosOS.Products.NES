@@ -26,6 +26,9 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 # Mapper 7 / AxROM
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-axrom-bank-switch.nes --board famicom --uncapped --stop-frame 120
 
+# Mapper 9 / MMC2 / PxROM tile-trigger latch
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-mmc2-tile-latch.nes --board famicom --uncapped --stop-frame 120
+
 # Mapper 11 / Color Dreams
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-colordreams-bank-switch.nes --board famicom --uncapped --stop-frame 120
 

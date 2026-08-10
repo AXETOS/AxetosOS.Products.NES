@@ -1,0 +1,21 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.mmc2",
+  "name": "PxROM / MMC2",
+  "mapper": 9,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "Mmc2Cartridge",
+      "role": "Nintendo MMC2 package with PRG/CHR bank latches, PPU-address tile-trigger latches and mirroring control"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu",
+    "PPU A0..A13 + RD -> mapper tile-trigger decode",
+    "mapper.Ciram -> Motherboard.Ciram",
+    "mapper.IrqBar -> Cpu.IrqBar (not driven)"
+  ],
+  "notes": "Mapper 9 / PxROM is replaceable external hardware. CPU $8000-$9FFF is one switchable 8 KiB PRG window followed by three fixed-last 8 KiB windows. The two 4 KiB CHR windows each select between FD/FE bank registers, with MMC2-specific PPU address reads clocking the package latch after the current CHR read. Mirroring is live mapper state; there is no PRG RAM, CHR RAM, IRQ or CPU/ROM bus conflict."
+}

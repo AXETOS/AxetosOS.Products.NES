@@ -654,6 +654,22 @@ if (host.Machine.Slot.Cartridge is AxromCartridge finalAxrom)
         $"last=${finalAxrom.LastMapperWriteAddress:X4}:${finalAxrom.LastMapperWriteData:X2}->${finalAxrom.LastEffectiveMapperWriteData:X2}, " +
         $"ppu-reads={finalAxrom.PpuReadCount:N0}, ppu-writes={finalAxrom.PpuWriteCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is Mmc2Cartridge finalMmc2)
+{
+    Console.WriteLine(
+        $"MMC2 core:   prg=${finalMmc2.PrgBankRegister:X2} selected={finalMmc2.SelectedPrgBank}/{finalMmc2.PrgBankCount}, " +
+        $"chrFD0=${finalMmc2.ChrBankRegisters[0]:X2}, chrFE0=${finalMmc2.ChrBankRegisters[1]:X2}, " +
+        $"chrFD1=${finalMmc2.ChrBankRegisters[2]:X2}, chrFE1=${finalMmc2.ChrBankRegisters[3]:X2}, " +
+        $"latch0=${finalMmc2.Latch0:X2} selected={finalMmc2.SelectedChrBank0}/{finalMmc2.ChrBankCount}, " +
+        $"latch1=${finalMmc2.Latch1:X2} selected={finalMmc2.SelectedChrBank1}/{finalMmc2.ChrBankCount}, mirroring={finalMmc2.Mirroring}");
+    Console.WriteLine(
+        $"MMC2 latch:  triggers={finalMmc2.LatchTriggerCount:N0} " +
+        $"0FD={finalMmc2.Latch0FdTriggerCount:N0} 0FE={finalMmc2.Latch0FeTriggerCount:N0} " +
+        $"1FD={finalMmc2.Latch1FdTriggerCount:N0} 1FE={finalMmc2.Latch1FeTriggerCount:N0}, " +
+        $"last-trigger=${finalMmc2.LastLatchTriggerAddress:X4}, mapper-writes={finalMmc2.MapperWriteCount:N0}, " +
+        $"last=${finalMmc2.LastMapperWriteAddress:X4}:${finalMmc2.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalMmc2.CpuReadCount:N0}, ppu-reads={finalMmc2.PpuReadCount:N0}");
+}
 if (host.Machine.Slot.Cartridge is ColorDreamsCartridge finalColorDreams)
 {
     Console.WriteLine(
