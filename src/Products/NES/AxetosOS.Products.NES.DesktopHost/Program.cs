@@ -582,6 +582,31 @@ if (host.Machine.Slot.Cartridge is UxromCartridge finalUxrom)
         $"last=${finalUxrom.LastMapperWriteAddress:X4}:${finalUxrom.LastMapperWriteData:X2}->${finalUxrom.LastEffectiveMapperWriteData:X2}, " +
         $"ppu-reads={finalUxrom.PpuReadCount:N0}, ppu-writes={finalUxrom.PpuWriteCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is CnromCartridge finalCnrom)
+{
+    Console.WriteLine(
+        $"CNROM core:  bank=${finalCnrom.BankRegister:X2} selected={finalCnrom.SelectedChrBank:N0}/{finalCnrom.ChrBankCount:N0}, " +
+        $"chr-rom={finalCnrom.ChrRomSizeBytes:N0}, bus-conflicts={finalCnrom.BusConflictsEnabled}, " +
+        $"mapper-writes={finalCnrom.MapperWriteCount:N0}, conflict-modified={finalCnrom.BusConflictModifiedWriteCount:N0}, " +
+        $"last=${finalCnrom.LastMapperWriteAddress:X4}:${finalCnrom.LastMapperWriteData:X2}->${finalCnrom.LastEffectiveMapperWriteData:X2}, " +
+        $"ppu-reads={finalCnrom.PpuReadCount:N0}");
+}
+if (host.Machine.Slot.Cartridge is Mmc3Cartridge finalMmc3)
+{
+    Console.WriteLine(
+        $"MMC3 core:   select=${finalMmc3.BankSelectRegister:X2}, " +
+        $"r0=${finalMmc3.BankRegisters[0]:X2}, r1=${finalMmc3.BankRegisters[1]:X2}, " +
+        $"r2=${finalMmc3.BankRegisters[2]:X2}, r3=${finalMmc3.BankRegisters[3]:X2}, " +
+        $"r4=${finalMmc3.BankRegisters[4]:X2}, r5=${finalMmc3.BankRegisters[5]:X2}, " +
+        $"r6=${finalMmc3.BankRegisters[6]:X2}, r7=${finalMmc3.BankRegisters[7]:X2}, " +
+        $"mirroring={finalMmc3.Mirroring}, prg-ram={finalMmc3.PrgRamSizeBytes:N0}, mmc6={finalMmc3.IsMmc6}");
+    Console.WriteLine(
+        $"MMC3 IRQ:    latch=${finalMmc3.IrqLatch:X2}, counter=${finalMmc3.IrqCounter:X2}, reload={finalMmc3.IrqReloadPending}, " +
+        $"enabled={finalMmc3.IrqEnabled}, asserted={finalMmc3.IrqAsserted}, a12-clocks={finalMmc3.QualifiedA12RiseCount:N0}, " +
+        $"irq-asserts={finalMmc3.IrqAssertCount:N0}, mapper-writes={finalMmc3.MapperWriteCount:N0}, " +
+        $"last=${finalMmc3.LastMapperWriteAddress:X4}:${finalMmc3.LastMapperWriteData:X2}, " +
+        $"ppu-reads={finalMmc3.PpuReadCount:N0}, ppu-writes={finalMmc3.PpuWriteCount:N0}");
+}
 if (profileSimulation)
 {
     PrintHostProfile(

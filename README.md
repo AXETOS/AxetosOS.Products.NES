@@ -8,19 +8,20 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.30.0**
+**v2.32.0**
 
-The validated v2.29.0 baseline is:
+The validated v2.31.0 baseline is:
 
-- **286 / 286 tests passing**;
+- **314 / 314 tests passing**;
 - physical Controller 1 input confirmed in real Super Mario Bros. gameplay;
 - normal paced NROM and MMC1 execution both hold approximately 60 FPS on the development machine;
 - true uncapped generic whole-circuit throughput is approximately **152 FPS / 2.54x NTSC real time** for both NROM and MMC1;
-- the specialized fused NROM comparison path reaches approximately **390 FPS / 6.49x NTSC real time**.
+- Mapper-2/UxROM and Mapper-3/CNROM synthetic hardware smoke machines both exceed **5x NTSC real time**;
+- Mapper 2 / UxROM and Mapper 3 / CNROM are implemented as real replaceable cartridge hardware.
 
-v2.30.0 adds Mapper 2 / UxROM as real replaceable cartridge hardware. The cartridge owns its 16 KiB switchable PRG bank latch, fixed-last 16 KiB PRG window, 8 KiB CHR RAM, fixed H/V CIRAM wiring, optional cartridge-local bus-conflict behavior, and high-impedance IRQ output. Generic compiled execution consumes the same physical hardware facets as NROM/MMC1; there is no UxROM knowledge in the motherboard or hardware compiler.
+v2.32.0 adds Mapper 4 / MMC3-family hardware. PRG and CHR bank muxes, live mirroring, PRG-RAM protection, CHR-RAM variants, optional four-screen nametable RAM and the filtered PPU-A12 IRQ counter all remain inside the replaceable cartridge package. NES 2.0 submapper 1 selects MMC6 RAM behavior, submapper 2 retains hard-wired mirroring and submapper 4 selects the older NEC IRQ-zero behavior. Distinct MC-ACC/T9552 circuits are rejected rather than silently approximated.
 
-NES 2.0 Mapper-2 submapper 1 selects a no-bus-conflict board and submapper 2 selects bus-conflict behavior. Legacy/unspecified Mapper 2 uses the classic conflict-capable UxROM behavior. The new release also adds compiled-vs-raw execution parity coverage and desktop UxROM diagnostics. v2.30.0 is awaiting local Release-suite and real-ROM validation.
+The generic compiler receives no MMC3 knowledge. v2.32.0 adds only a product-agnostic address-observation capability allowing an external component to watch a physical bus transaction without driving the data bus, which is applicable to arbitrary edge-sensitive hardware. v2.32.0 awaits local Release-suite, synthetic smoke-ROM and real-game validation.
 
 ## Architecture
 
@@ -77,7 +78,7 @@ Mapper and ROM behavior therefore remain owned by the cartridge hardware.
 
 ## Current hardware scope
 
-Implemented and actively validated areas include:
+Implemented areas include:
 
 - Famicom/NES motherboard topology;
 - RP2A03 CPU/APU package behavior;
@@ -90,6 +91,8 @@ Implemented and actively validated areas include:
 - Mapper 0 / NROM cartridges;
 - Mapper 1 / MMC1 cartridges;
 - Mapper 2 / UxROM cartridges with switchable PRG, CHR RAM and fixed mirroring;
+- Mapper 3 / CNROM cartridges with fixed PRG, switchable CHR ROM and fixed mirroring;
+- Mapper 4 / MMC3-family cartridges with PRG/CHR banking, live mirroring, optional RAM and cartridge IRQ circuitry;
 - generic startup whole-circuit compilation;
 - specialized fused NROM execution retained for comparison/performance validation;
 - two standard controller packages with physical strobe/clock/data wiring;
@@ -187,7 +190,7 @@ tests/
 
 ## Direction
 
-Near-term work now proceeds through the remaining tracks: expanding cartridge hardware (CNROM is the next simple discrete mapper, followed by more capable boards such as MMC3), revisiting generic compiler headroom when profiling justifies it, and then building the desktop product shell. Planned host features include:
+Near-term work now proceeds through the remaining tracks: validating MMC3 against real commercial cartridges, expanding additional discrete/ASIC boards, revisiting generic compiler headroom when profiling justifies it, and then building the desktop product shell. Planned host features include:
 
 - ROM loading from the desktop UI;
 - pause/reset/power-cycle controls;

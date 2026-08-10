@@ -135,12 +135,40 @@ public sealed class VirtualHardwareNesRomLoadingTests
     }
 
     [Fact]
+    public void Factory_constructs_cnrom_hardware_from_rom_metadata_and_attaches_it_to_selected_board()
+    {
+        var machine = VirtualHardwareNesMachineFactory.Load(
+            CreateRom(mapper: 3, prgUnits: 2, chrUnits: 4),
+            "CNROM (USA).nes");
+
+        Assert.Equal(3, machine.CartridgeBoard.MapperNumber);
+        var cnrom = Assert.IsType<CnromCartridge>(machine.CartridgeBoard);
+        Assert.True(cnrom.BusConflictsEnabled);
+        Assert.Equal(4, cnrom.ChrBankCount);
+        Assert.Equal(ActiveNesMotherboard.NtscNes, machine.ActiveMotherboard);
+        Assert.Contains(machine.CartridgeBoard, machine.Hardware.NtscNes.Board.Components);
+    }
+
+    [Fact]
+    public void Factory_constructs_mmc3_hardware_from_rom_metadata_and_attaches_it_to_selected_board()
+    {
+        var machine = VirtualHardwareNesMachineFactory.Load(
+            CreateRom(mapper: 4, prgUnits: 4, chrUnits: 2),
+            "MMC3 (USA).nes");
+
+        Assert.Equal(4, machine.CartridgeBoard.MapperNumber);
+        Assert.IsType<Mmc3Cartridge>(machine.CartridgeBoard);
+        Assert.Equal(ActiveNesMotherboard.NtscNes, machine.ActiveMotherboard);
+        Assert.Contains(machine.CartridgeBoard, machine.Hardware.NtscNes.Board.Components);
+    }
+
+    [Fact]
     public void Factory_rejects_mapper_without_physical_cartridge_hardware()
     {
         var error = Assert.Throws<NotSupportedException>(() =>
-            VirtualHardwareNesMachineFactory.Load(CreateRom(mapper: 3), "CNROM.nes"));
+            VirtualHardwareNesMachineFactory.Load(CreateRom(mapper: 5, prgUnits: 2, chrUnits: 1), "MMC5.nes"));
 
-        Assert.Contains("Mapper 3", error.Message);
+        Assert.Contains("Mapper 5", error.Message);
     }
 
     [Fact]

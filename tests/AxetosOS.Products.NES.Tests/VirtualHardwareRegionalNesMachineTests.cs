@@ -448,9 +448,9 @@ public sealed class VirtualHardwareRegionalNesMachineTests
     public void Unsupported_mapper_is_rejected_before_power_is_applied()
     {
         var machine = new RegionalNesVirtualMachine();
-        var image = CreateImage() with { MapperNumber = 3 };
+        var image = CreateImage() with { MapperNumber = 5 };
 
-        Assert.Throws<NotSupportedException>(() => machine.InsertRom(image, "CNROM (USA).nes"));
+        Assert.Throws<NotSupportedException>(() => machine.InsertRom(image, "MMC5 (USA).nes"));
         Assert.False(machine.IsPowered);
     }
 

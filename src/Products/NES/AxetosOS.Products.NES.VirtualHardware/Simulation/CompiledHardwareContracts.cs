@@ -154,7 +154,9 @@ public sealed class CompiledBusTargetDescriptor
     /// Optional package-local observation of a selected read at the instant the
     /// bus master asserts the read window. This can clock internal diagnostic or
     /// edge-sensitive state without forcing the data value itself to be resolved
-    /// until a later physical read phase.
+    /// until a later physical read phase. A descriptor may intentionally expose
+    /// an observer with no Read delegate when the package watches address/control
+    /// pins but never drives the data bus for that transaction.
     /// </summary>
     public Action<int>? ObserveReadBegin { get; }
 }

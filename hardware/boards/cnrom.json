@@ -5,14 +5,29 @@
   "mapper": 3,
   "components": [
     {
-      "id": "mapper",
-      "type": "ReusableMapperHardware",
-      "role": "cnrom"
+      "id": "prg",
+      "type": "Rom",
+      "source": "PrgRom",
+      "role": "fixed-32k-prg"
+    },
+    {
+      "id": "bank",
+      "type": "Latch",
+      "width": 8,
+      "role": "chr-bank-select-lines-populated-to-match-fitted-rom"
+    },
+    {
+      "id": "chr",
+      "type": "BankedRom",
+      "source": "ChrRom",
+      "role": "switchable-8k-chr-window"
     }
   ],
   "connections": [
-    "Cpu.Bus -> mapper.Cpu",
-    "Ppu.Bus -> mapper.Ppu"
+    "Cpu.Address[0..14] -> prg.Address[0..14]",
+    "Cpu.Write & Cpu.Address>=0x8000 & Cpu.M2.falling -> bank.Load",
+    "bank.Output -> chr.Bank",
+    "Ppu.Address[0..12] -> chr.Address[0..12]"
   ],
-  "notes": "Composable CNROM board built from shared PRG, CHR, mirroring, RAM and IRQ components."
+  "notes": "Mapper-3/CNROM physical board intent: fixed 32 KiB PRG ROM, end-of-M2 CHR bank latch, one switchable 8 KiB CHR-ROM window, fixed H/V CIRAM wiring, no IRQ, and board-local bus-conflict behavior selected by cartridge metadata."
 }

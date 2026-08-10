@@ -6,13 +6,15 @@
   "components": [
     {
       "id": "mapper",
-      "type": "ReusableMapperHardware",
-      "role": "mmc3/mmc6"
+      "type": "Mmc3Cartridge",
+      "role": "package-local PRG/CHR bank muxes, mirroring, RAM protection and filtered A12 IRQ counter"
     }
   ],
   "connections": [
     "Cpu.Bus -> mapper.Cpu",
-    "Ppu.Bus -> mapper.Ppu"
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.Ciram -> Motherboard.Ciram",
+    "mapper.IrqBar -> Cpu.IrqBar"
   ],
-  "notes": "Composable MMC3/MMC6 board built from shared PRG, CHR, mirroring, RAM and IRQ components."
+  "notes": "Mapper 4 is constructed as replaceable external hardware. Generic compiler support for address-only bus observation is product-agnostic and exists so edge-sensitive packages can watch physical bus pins without driving data."
 }

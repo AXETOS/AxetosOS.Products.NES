@@ -419,7 +419,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         {
             var descriptor = target.Descriptor;
             if (descriptor.IsSelected is not null) return false;
-            if (descriptor.Read is not null
+            if ((descriptor.Read is not null || descriptor.ObserveReadBegin is not null)
                 && !CanStaticallyCompileCycle(master, descriptor, addressSources, addressCount, readCycle: true))
                 return false;
             if (descriptor.Write is not null
@@ -729,9 +729,19 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 var descriptor = targets[targetIndex].Descriptor;
                 if (readCycle)
                 {
-                    if (descriptor.Read is null) continue;
-                    if (readPhase.HasValue && descriptor.ReadPhase != readPhase.Value) continue;
-                    if (observeReadBeginOnly && descriptor.ObserveReadBegin is null) continue;
+                    // Observer-only hardware is allowed to watch the physical
+                    // address/control transaction without driving the data bus.
+                    // This is a generic circuit capability for edge-sensitive
+                    // devices whose internal state clocks from bus addresses.
+                    if (observeReadBeginOnly)
+                    {
+                        if (descriptor.ObserveReadBegin is null) continue;
+                    }
+                    else
+                    {
+                        if (descriptor.Read is null) continue;
+                        if (readPhase.HasValue && descriptor.ReadPhase != readPhase.Value) continue;
+                    }
                 }
                 else if (descriptor.Write is null) continue;
 
