@@ -607,6 +607,15 @@ if (host.Machine.Slot.Cartridge is Mmc3Cartridge finalMmc3)
         $"last=${finalMmc3.LastMapperWriteAddress:X4}:${finalMmc3.LastMapperWriteData:X2}, " +
         $"ppu-reads={finalMmc3.PpuReadCount:N0}, ppu-writes={finalMmc3.PpuWriteCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is AxromCartridge finalAxrom)
+{
+    Console.WriteLine(
+        $"AxROM core:  bank=${finalAxrom.BankRegister:X2} selected={finalAxrom.SelectedPrgBank:N0}, nametable={finalAxrom.SelectedNametablePage}, " +
+        $"chr-ram={finalAxrom.ChrRamSizeBytes:N0}, bus-conflicts={finalAxrom.BusConflictsEnabled}, " +
+        $"mapper-writes={finalAxrom.MapperWriteCount:N0}, conflict-modified={finalAxrom.BusConflictModifiedWriteCount:N0}, " +
+        $"last=${finalAxrom.LastMapperWriteAddress:X4}:${finalAxrom.LastMapperWriteData:X2}->${finalAxrom.LastEffectiveMapperWriteData:X2}, " +
+        $"ppu-reads={finalAxrom.PpuReadCount:N0}, ppu-writes={finalAxrom.PpuWriteCount:N0}");
+}
 if (profileSimulation)
 {
     PrintHostProfile(

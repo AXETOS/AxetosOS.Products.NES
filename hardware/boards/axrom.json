@@ -5,14 +5,30 @@
   "mapper": 7,
   "components": [
     {
-      "id": "mapper",
-      "type": "ReusableMapperHardware",
-      "role": "axrom"
+      "id": "prg",
+      "type": "BankedRom",
+      "source": "PrgRom",
+      "role": "switchable-32k-prg-window"
+    },
+    {
+      "id": "bank",
+      "type": "Latch",
+      "width": 5,
+      "role": "prg-bank-select-plus-single-screen-ciram-page"
+    },
+    {
+      "id": "chr",
+      "type": "Ram",
+      "fallbackSize": 8192,
+      "role": "chr-ram"
     }
   ],
   "connections": [
-    "Cpu.Bus -> mapper.Cpu",
-    "Ppu.Bus -> mapper.Ppu"
+    "Cpu.Write & Cpu.Address>=0x8000 & Cpu.M2.falling -> bank.Load",
+    "bank.Output[0..2] -> prg.Bank",
+    "bank.Output[4] -> Ciram.A10",
+    "Cpu.Address[0..14] -> prg.Address[0..14]",
+    "Ppu.Address[0..12] -> chr.Address[0..12]"
   ],
-  "notes": "Composable AxROM board built from shared PRG, CHR, mirroring, RAM and IRQ components."
+  "notes": "Mapper-7/AxROM physical board intent: one switchable 32 KiB PRG window, end-of-M2 latch, mapper-selected single-screen CIRAM A10, 8 KiB CHR RAM, no PRG RAM, no IRQ, and board-local bus-conflict behavior selected by cartridge metadata."
 }
