@@ -20,6 +20,7 @@ public static class VirtualCartridgeHardwareFactory
             3 => new CnromCartridge("SLOT.CARTRIDGE.CNROM"),
             4 => new Mmc3Cartridge("SLOT.CARTRIDGE.MMC3"),
             7 => new AxromCartridge("SLOT.CARTRIDGE.AXROM"),
+            11 => new ColorDreamsCartridge("SLOT.CARTRIDGE.COLORDREAMS"),
             _ => throw new NotSupportedException(
                 $"Mapper {image.MapperNumber} is not yet implemented as replaceable cartridge hardware.")
         };

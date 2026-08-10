@@ -616,6 +616,15 @@ if (host.Machine.Slot.Cartridge is AxromCartridge finalAxrom)
         $"last=${finalAxrom.LastMapperWriteAddress:X4}:${finalAxrom.LastMapperWriteData:X2}->${finalAxrom.LastEffectiveMapperWriteData:X2}, " +
         $"ppu-reads={finalAxrom.PpuReadCount:N0}, ppu-writes={finalAxrom.PpuWriteCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is ColorDreamsCartridge finalColorDreams)
+{
+    Console.WriteLine(
+        $"Color Dreams: bank=${finalColorDreams.BankRegister:X2}, prg={finalColorDreams.SelectedPrgBank}/{finalColorDreams.PrgBankCount}, " +
+        $"chr={finalColorDreams.SelectedChrBank}/{finalColorDreams.ChrBankCount}, bus-conflicts={finalColorDreams.BusConflictsEnabled}, " +
+        $"mapper-writes={finalColorDreams.MapperWriteCount:N0}, conflict-modified={finalColorDreams.BusConflictModifiedWriteCount:N0}, " +
+        $"last=${finalColorDreams.LastMapperWriteAddress:X4}:${finalColorDreams.LastMapperWriteData:X2}->${finalColorDreams.LastEffectiveMapperWriteData:X2}, " +
+        $"ppu-reads={finalColorDreams.PpuReadCount:N0}");
+}
 if (profileSimulation)
 {
     PrintHostProfile(

@@ -8,20 +8,21 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.33.0**
+**v2.34.1**
 
-The validated v2.32.0 baseline is:
+The validated v2.33.0 baseline is:
 
-- **332 / 332 tests passing**;
+- **346 / 346 tests passing**;
 - physical Controller 1 input confirmed in real Super Mario Bros. gameplay;
-- normal paced NROM/MMC1/MMC3 execution holds approximately 60 FPS on the development machine;
+- normal paced NROM/MMC1/MMC3/AxROM execution holds approximately 60 FPS on the development machine;
 - true uncapped generic whole-circuit throughput is approximately **152 FPS / 2.54x NTSC real time** for NROM and MMC1;
 - Mapper-2/UxROM and Mapper-3/CNROM synthetic hardware smoke machines exceed **5x NTSC real time**;
-- Mapper 4 / MMC3 synthetic hardware passes, and real Super Mario Bros. 2 and Super Mario Bros. 3 workloads exercise sustained PRG/CHR banking; Super Mario Bros. 3 produced more than five thousand cartridge IRQ assertions during the validation run.
+- Mapper 4 / MMC3 is real-game validated by sustained Super Mario Bros. 2 and Super Mario Bros. 3 workloads, including thousands of real cartridge IRQ assertions;
+- Mapper 7 / AxROM is real-game validated by Battletoads for 11,600 frames, with sustained mapper writes, cartridge PPU traffic and CHR-RAM writes at real-time pacing.
 
-v2.33.0 adds Mapper 7 / AxROM as replaceable cartridge hardware: one switchable 32 KiB PRG window, an end-of-M2 board latch, 8 KiB CHR RAM, mapper-controlled single-screen CIRAM page selection, no PRG RAM/IRQ, and NES 2.0 submapper-controlled bus-conflict behavior. The legacy/default Mapper-7 path follows the established no-bus-conflict convention while submapper 2 enables AND-style conflicts.
+v2.34.0 adds Mapper 11 / Color Dreams as replaceable cartridge hardware: one switchable 32 KiB PRG-ROM window, one switchable 8 KiB CHR-ROM window, a shared 8-bit end-of-M2 latch, fixed H/V CIRAM wiring, no PRG RAM/IRQ, and standard AND-style CPU/ROM bus conflicts. Register D0-D1 select PRG, D4-D7 select CHR, while D2-D3 remain latch outputs associated with the original board's lockout-defeat circuitry rather than memory banking.
 
-CIRAM A10 is deliberately a **live cartridge-owned combinational output** because AxROM bit 4 changes it at runtime; only /CIRAM-CE and the inactive IRQ output are eligible for static topology folding. No generic compiler or motherboard semantics were added for AxROM. v2.33.0 awaits local Release-suite and smoke-ROM validation; the expected suite is **346 tests**.
+No generic compiler or motherboard semantics were added for Mapper 11. v2.34.1 is a validation hotfix for v2.34.0: the Color Dreams compiled/raw parity test now explicitly selects the Famicom region, matching the generic compiled-lab path it is intended to exercise, and zero-duration Stopwatch section samples are counted correctly by the opt-in profiler instead of making its sampling test timing-sensitive. Mapper behavior is unchanged. The expected suite remains **359 tests** pending local Release validation.
 
 ## Architecture
 
@@ -94,6 +95,7 @@ Implemented areas include:
 - Mapper 3 / CNROM cartridges with fixed PRG, switchable CHR ROM and fixed mirroring;
 - Mapper 4 / MMC3-family cartridges with PRG/CHR banking, live mirroring, optional RAM and cartridge IRQ circuitry;
 - Mapper 7 / AxROM cartridges with switchable 32 KiB PRG, CHR RAM and live single-screen CIRAM selection;
+- Mapper 11 / Color Dreams cartridges with switchable 32 KiB PRG, switchable 8 KiB CHR ROM, fixed mirroring and board-local bus conflicts;
 - generic startup whole-circuit compilation;
 - specialized fused NROM execution retained for comparison/performance validation;
 - two standard controller packages with physical strobe/clock/data wiring;

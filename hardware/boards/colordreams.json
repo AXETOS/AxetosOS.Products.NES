@@ -5,14 +5,30 @@
   "mapper": 11,
   "components": [
     {
-      "id": "mapper",
-      "type": "ReusableMapperHardware",
-      "role": "color dreams"
+      "id": "prg",
+      "type": "BankedRom",
+      "source": "PrgRom",
+      "role": "switchable-32k-prg-window"
+    },
+    {
+      "id": "bank",
+      "type": "Latch",
+      "width": 8,
+      "role": "shared-prg-chr-bank-select-plus-lockout-lines"
+    },
+    {
+      "id": "chr",
+      "type": "BankedRom",
+      "source": "ChrRom",
+      "role": "switchable-8k-chr-window"
     }
   ],
   "connections": [
-    "Cpu.Bus -> mapper.Cpu",
-    "Ppu.Bus -> mapper.Ppu"
+    "Cpu.Write & Cpu.Address>=0x8000 & Cpu.M2.falling -> bank.Load",
+    "bank.Output[0..1] -> prg.Bank",
+    "bank.Output[4..7] -> chr.Bank",
+    "Cpu.Address[0..14] -> prg.Address[0..14]",
+    "Ppu.Address[0..12] -> chr.Address[0..12]"
   ],
-  "notes": "Composable Color Dreams board built from shared PRG, CHR, mirroring, RAM and IRQ components."
+  "notes": "Mapper-11/Color Dreams physical board intent: one switchable 32 KiB PRG-ROM window, one switchable 8 KiB CHR-ROM window, shared 74LS377-style end-of-M2 latch, fixed H/V CIRAM wiring, no PRG RAM/IRQ, and standard AND-style CPU/ROM bus conflicts. Latch outputs D2-D3 belong to the original lockout-defeat circuit and do not bank memory."
 }

@@ -345,8 +345,12 @@ public sealed class VirtualHardwareSimulator
         VirtualHardwareProfileSection section,
         long ticks)
     {
-        if ((uint)componentIndex >= (uint)_components.Length || ticks <= 0) return;
+        if ((uint)componentIndex >= (uint)_components.Length || ticks < 0) return;
         var flatIndex = (componentIndex * ProfileSectionCount) + (int)section;
+        // A sampled section can legitimately complete within one Stopwatch tick on
+        // a fast host. It is still a real profiling sample even when its measured
+        // duration quantizes to zero; keep the sample count and let accumulated
+        // timing remain zero for that individual observation.
         _profileSectionSamples[flatIndex]++;
         _profileSectionTicks[flatIndex] += ticks;
     }
