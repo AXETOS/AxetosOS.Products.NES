@@ -167,7 +167,8 @@ var masterClockHz = host.Machine.ActiveMotherboard switch
 using var audio = new Win32WaveOutAudioSink(AudioSampleRate);
 var audioSink = new NativePcmAudioSink(masterClockHz, AudioSampleRate);
 host.AudioSink = audioSink;
-audio.Start();
+var physicalAudioPlayback = !uncappedRuntime;
+if (physicalAudioPlayback) audio.Start();
 
 presenter.KeyStateChanged += (key, pressed) =>
 {
@@ -269,6 +270,11 @@ if (cartridgeVideoTrace is { } activeTrace)
     Console.WriteLine($"Cart trace:  MMC1 exact CHR-read + PPUSTATUS + sprite-zero provenance for frames {activeTrace.Start:N0}-{activeTrace.End:N0}");
     Console.WriteLine("Trace timing: precision drain every 12 master clocks (one CPU bus-cycle period) while capture is active");
 }
+if (uncappedRuntime)
+{
+    Console.WriteLine("Host output:  uncapped benchmark decouples real-time audio playback and limits physical presentation to 60 Hz");
+    Console.WriteLine("Benchmark:    PPU/APU generation, framebuffer conversion and PCM resampling remain active; only real-time device backpressure is removed");
+}
 if (stopFrame.HasValue) Console.WriteLine($"Stop target: PPU frame {stopFrame.Value:N0}");
 
 const int MasterCyclesPerVideoBatch = 16_384;
@@ -278,6 +284,8 @@ var audioTransfer = new float[AudioTransferBufferSize];
 var timer = Stopwatch.StartNew();
 ulong pacedMasterCycles = 0;
 var lastPresentedFrame = ulong.MaxValue;
+var lastPhysicalPresentationTime = TimeSpan.MinValue;
+var uncappedPresentationInterval = TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
 var lastTitleUpdate = TimeSpan.Zero;
 var lastFpsSampleTime = TimeSpan.Zero;
 var lastFpsSampleFrame = initial.PpuFrames;
@@ -340,13 +348,27 @@ while (presenter.IsOpen)
     if (videoSink.CompletedFrame != lastPresentedFrame)
     {
         cartridgeTraceCollector?.OnCompletedFrame(videoSink.CompletedFrame, videoSink.CompletedPixels.Span);
-        profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
-        videoSink.CompletedPixels.Span.CopyTo(surface.PixelSpan);
-        presenter.Present(surface, ScalingMode.IntegerNearest);
-        if (profileSimulation)
+
+        // In throughput mode the virtual machine must be allowed to outrun the
+        // physical display. Keep the native window alive at a normal refresh
+        // cadence, but do not make every emulated frame wait on presentation.
+        // This is host policy only; the RP2C02 still generates every pixel and
+        // the framebuffer sink still consumes every sample.
+        var presentationNow = timer.Elapsed;
+        var presentPhysicalFrame = !uncappedRuntime
+            || lastPhysicalPresentationTime == TimeSpan.MinValue
+            || presentationNow - lastPhysicalPresentationTime >= uncappedPresentationInterval;
+        if (presentPhysicalFrame)
         {
-            profileVideoPresentationTicks += Stopwatch.GetTimestamp() - profileStarted;
-            profilePresentedFrames++;
+            profileStarted = profileSimulation ? Stopwatch.GetTimestamp() : 0;
+            videoSink.CompletedPixels.Span.CopyTo(surface.PixelSpan);
+            presenter.Present(surface, ScalingMode.IntegerNearest);
+            lastPhysicalPresentationTime = presentationNow;
+            if (profileSimulation)
+            {
+                profileVideoPresentationTicks += Stopwatch.GetTimestamp() - profileStarted;
+                profilePresentedFrames++;
+            }
         }
         lastPresentedFrame = videoSink.CompletedFrame;
     }
@@ -355,7 +377,13 @@ while (presenter.IsOpen)
     int drained;
     while ((drained = audioSink.Drain(audioTransfer)) > 0)
     {
-        audio.Submit(audioTransfer.AsSpan(0, drained));
+        // A physical audio device necessarily consumes samples in real time.
+        // Submitting faster-than-real-time PCM here would turn --uncapped into
+        // an audio-device benchmark and eventually apply backpressure. Keep the
+        // complete APU + DAC + PCM-resampling workload active, but discard the
+        // final host samples in throughput mode.
+        if (physicalAudioPlayback)
+            audio.Submit(audioTransfer.AsSpan(0, drained));
         if (profileSimulation) profileAudioSamples += (ulong)drained;
     }
     if (profileSimulation) profileAudioTransferTicks += Stopwatch.GetTimestamp() - profileStarted;
@@ -414,7 +442,8 @@ while (presenter.IsOpen)
             $"Max {maximumFps:F1} | Avg {averageFps:F1} ({averageFps / 60.0988 * 100.0:F0}%) | " +
             $"Frame {diagnostics.PpuFrames:N0} | PC ${diagnostics.ProgramCounter:X4} | " +
             $"OP ${diagnostics.CurrentOpcode:X2}{(diagnostics.CpuHalted ? " HALT" : string.Empty)} | " +
-            $"CPU {diagnostics.CpuInstructions:N0}{waitText} | Audio {audio.BufferedMilliseconds:F0} ms");
+            $"CPU {diagnostics.CpuInstructions:N0}{waitText} | " +
+            (physicalAudioPlayback ? $"Audio {audio.BufferedMilliseconds:F0} ms" : "Audio benchmark-discard"));
 
         if (stalled)
         {
@@ -459,7 +488,9 @@ while (presenter.IsOpen)
         lastProfileReport = now;
     }
 
-    if (audio.BufferedMilliseconds > 120) Thread.Sleep(1);
+    // Backpressure is correct for normal real-time playback, but must never
+    // throttle an explicit uncapped throughput run.
+    if (physicalAudioPlayback && audio.BufferedMilliseconds > 120) Thread.Sleep(1);
 }
 
 cartridgeTraceCollector?.Finish();
@@ -471,6 +502,13 @@ Console.WriteLine(
     $"Stopped:     master={final.MasterCycles:N0}, instructions={final.CpuInstructions:N0}, frames={final.PpuFrames:N0}, " +
     $"current={displayedFps:F2}, min={(double.IsPositiveInfinity(minimumFps) ? 0.0 : minimumFps):F2}, " +
     $"max={maximumFps:F2}, average={finalAverageFps:F2} FPS");
+if (uncappedRuntime)
+{
+    const double NtscFramesPerSecond = 60.0988;
+    Console.WriteLine(
+        $"Throughput:  {finalAverageFps / NtscFramesPerSecond:F2}x NTSC real-time; " +
+        $"headroom={(finalAverageFps / NtscFramesPerSecond - 1.0) * 100.0:F1}%");
+}
 Console.WriteLine($"Boot checks: reset-vector={final.ResetVectorObserved}, opcode={final.FirstOpcodeObserved}, vblank={final.FirstVblankObserved}, nmi={final.FirstNmiObserved}");
 Console.WriteLine($"State:       PC=${final.ProgramCounter:X4}, opcode=${final.CurrentOpcode:X2}, CPU-state={final.CpuCycleState}, bus=${final.CpuBusAddress:X4}");
 var finalCpu = host.Machine.ActiveMotherboard switch

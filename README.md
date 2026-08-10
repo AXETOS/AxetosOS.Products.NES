@@ -8,18 +8,19 @@ The long-term goal is larger than NES emulation: the compiler and electrical/run
 
 ## Current release
 
-**v2.28.0**
+**v2.29.0**
 
-v2.28.0 adds physical host-controller input and is awaiting local Release-suite validation. The last validated v2.27.0 baseline was:
+The validated v2.28.0 baseline is:
 
-- **281 / 281 tests passing**
-- Famicom/NROM normal compiled runtime: **61.80 FPS uncapped**
-- Generic whole-circuit NROM compiler: **60.18 FPS uncapped**
-- Generic whole-circuit MMC1 compiler: **60.11 FPS uncapped**
+- **286 / 286 tests passing**
+- physical Controller 1 input confirmed in real Super Mario Bros. gameplay;
+- normal paced NROM and MMC1 execution both hold approximately 60 FPS on the development machine.
 
-The v2.28.0 suite is expected to contain **286** test cases after the new controller cross-runtime coverage is included; this README does not claim that result until it is run on the development machine.
+v2.29.0 starts the performance-headroom phase by correcting the desktop host's uncapped benchmark path. Earlier `--uncapped` measurements near 60 FPS were contaminated by real-time host output backpressure: PCM was still submitted to the physical WaveOut device and the main loop intentionally slept whenever the audio queue exceeded 120 ms.
 
-These FPS values are local throughput measurements from the current development machine and are not hardware requirements or guaranteed results on other hosts. Normal gameplay is paced to the emulated hardware clock; `--uncapped` is for throughput benchmarking.
+In v2.29.0 `--uncapped` still executes the complete virtual PPU/APU, captures every generated video/audio sample, converts the framebuffer, and performs PCM resampling, but it no longer allows a real-time sound device or excessive native presentation calls to pace the simulation. Physical video presentation is limited to 60 Hz while the emulated machine is allowed to run as fast as the host can compute it. The exit diagnostics report both FPS and NTSC real-time factor/headroom.
+
+Normal gameplay is unchanged: it remains paced to the physical master-clock rate with ordinary native audio/video output. v2.29.0 is awaiting local Release-suite and throughput validation.
 
 ## Architecture
 
@@ -124,6 +125,8 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 ```powershell
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- "C:\ROMs\game.nes" --board famicom --uncapped
 ```
+
+`--uncapped` is a compute-headroom benchmark, not fast-forward audio playback. The complete virtual video/audio generation path remains active, but physical WaveOut submission is disabled and native window presentation is limited to 60 Hz so real-time host devices cannot cap the measured virtual-machine throughput.
 
 ### Force the generic whole-circuit compiler
 
