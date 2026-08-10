@@ -68,6 +68,24 @@
       "definition": "boards/ss88006.json"
     },
     {
+      "mapper": 21,
+      "submapper": null,
+      "name": "Konami VRC4a/VRC4c",
+      "definition": "boards/konami-vrc4-mapper21.json"
+    },
+    {
+      "mapper": 23,
+      "submapper": null,
+      "name": "Konami VRC4e/VRC4f",
+      "definition": "boards/konami-vrc4-mapper23.json"
+    },
+    {
+      "mapper": 25,
+      "submapper": null,
+      "name": "Konami VRC4b/VRC4d",
+      "definition": "boards/konami-vrc4-mapper25.json"
+    },
+    {
       "mapper": 34,
       "submapper": null,
       "name": "BNROM / NINA-001/002",

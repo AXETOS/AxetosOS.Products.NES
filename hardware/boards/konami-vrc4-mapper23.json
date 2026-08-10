@@ -1,0 +1,28 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.konami-vrc4.mapper23",
+  "name": "Konami VRC4e/VRC4f",
+  "mapper": 23,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "KonamiVrc4Cartridge",
+      "role": "VRC4 ASIC with mapper-23 A0/A1 package wiring, 8 KiB PRG banking, 1 KiB CHR banking, CIRAM routing and IRQ control"
+    },
+    {
+      "id": "irq",
+      "type": "KonamiVrcIrqCounter",
+      "role": "Reusable Konami VRC 8-bit reload/counter and 341-dot prescaler circuitry"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.PrgBank0/1 + PrgMode -> PrgRom bank address inputs",
+    "mapper.ChrBank0..7 -> ChrRom bank address inputs",
+    "mapper.Ciram -> Motherboard.Ciram",
+    "mapper.IrqControl -> irq",
+    "irq.IrqBar -> mapper.IrqBar -> Cpu.IrqBar"
+  ],
+  "notes": "NES 2.0 submapper 1 selects VRC4f wiring and submapper 2 selects VRC4e wiring. Submapper 3 identifies VRC2b and is intentionally rejected by this VRC4 package. Legacy iNES mapper 23 uses the VRC4e/VRC4f address-line OR compatibility decode."
+}

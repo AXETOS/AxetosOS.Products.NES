@@ -8,11 +8,11 @@ The longer-term goal is generic virtual-hardware infrastructure that can also ho
 
 ## Current release
 
-**v2.46.0**
+**v2.47.0**
 
-Validated baseline before this release: **569 / 569 Release tests passing through v2.45.1**.
+Validated baseline before this release: **596 / 596 Release tests passing through v2.46.3**, with Mapper 69 additionally validated on the commercial Japanese Gimmick! cartridge workload.
 
-v2.46.0 adds Mapper 69 / Sunsoft FME-7/5A/5B-family cartridge hardware: command/data register decode, banked PRG/CHR, selectable ROM/RAM at `$6000-$7FFF`, four CIRAM routes, the CPU-cycle IRQ counter, and chip-internal Sunsoft 5B PSG state.
+v2.47.0 adds the Konami VRC4 family for mappers 21/23/25, including exact NES 2.0 VRC4a-f package address wiring, legacy iNES compatibility decode, PRG/CHR banking, CIRAM routing, optional work RAM and reusable Konami VRC IRQ circuitry.
 
 ## Architecture
 
@@ -88,6 +88,9 @@ Implemented cartridge mapper numbers:
 - **11 — Color Dreams**
 - **16 — Bandai FCG-1/2 / LZ93D50**
 - **18 — Jaleco SS88006**
+- **21 — Konami VRC4a/VRC4c**
+- **23 — Konami VRC4e/VRC4f**
+- **25 — Konami VRC4b/VRC4d**
 - **34 — BNROM and NINA-001/002**
 - **66 — GxROM**
 - **69 — Sunsoft FME-7 / 5A / 5B family**
@@ -112,6 +115,16 @@ Mapper 18 / Jaleco SS88006 includes:
 - horizontal, vertical and both single-screen CIRAM routes;
 - 4-, 8-, 12- and 16-bit masked CPU-cycle IRQ counting;
 - the SS88006 external-sample control output as board state. Optional uPD7755C/uPD7756C sample synthesis remains separate cartridge hardware and is not fabricated from missing sample data.
+
+Mapper 21/23/25 / Konami VRC4 family includes:
+
+- exact NES 2.0 VRC4a/VRC4c, VRC4e/VRC4f and VRC4b/VRC4d package address-line decoding;
+- legacy iNES compatibility decoding confined to the cartridge package when exact A0/A1 wiring metadata is absent;
+- two switchable 8 KiB PRG banks, fixed final banks and the VRC4 PRG swap mode;
+- eight independently switchable 1 KiB CHR banks assembled from low/high register nibbles;
+- horizontal, vertical and both single-screen CIRAM routes;
+- optional 8 KiB cartridge work RAM;
+- reusable Konami VRC IRQ circuitry with 8-bit reload/counter, cycle mode, 341-dot prescaler, enable-after-ack latch and open-drain IRQ output. NES 2.0 submappers identifying VRC2 hardware are rejected rather than approximated as VRC4.
 
 Mapper 69 / Sunsoft FME-7/5A/5B family includes:
 

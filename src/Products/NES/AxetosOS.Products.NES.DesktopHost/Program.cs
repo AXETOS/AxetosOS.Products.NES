@@ -745,6 +745,20 @@ if (host.Machine.Slot.Cartridge is SunsoftFme7Cartridge finalSunsoft)
         $"tone-flips={finalSunsoft.Psg.ToneFlipCount:N0}, noise-shifts={finalSunsoft.Psg.NoiseShiftCount:N0}, " +
         $"envelope-steps={finalSunsoft.Psg.EnvelopeStepCount:N0}, output-edges={finalSunsoft.Psg.OutputEdgeCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is KonamiVrc4Cartridge finalVrc4)
+{
+    Console.WriteLine(
+        $"Konami VRC4:   mapper={finalVrc4.MapperNumber}, variant={finalVrc4.Variant}, legacy-decode={finalVrc4.UsesLegacyAddressDecode}, " +
+        $"prg-reg=[{string.Join(",", finalVrc4.PrgBankRegisters.Select(value => $"${value:X2}"))}], prg-mode={finalVrc4.PrgMode}, " +
+        $"prg-map=[{string.Join(",", finalVrc4.PrgWindowBanks)}], chr=[{string.Join(",", Enumerable.Range(0, 8).Select(finalVrc4.GetChrRegister).Select(value => $"${value:X3}"))}], " +
+        $"mirroring={finalVrc4.NametableMode}, wram={finalVrc4.WorkRamSizeBytes:N0}, mapper-writes={finalVrc4.MapperWriteCount:N0}, " +
+        $"last=${finalVrc4.LastMapperWriteAddress:X4}->${finalVrc4.LastTranslatedMapperWriteAddress:X4}:${finalVrc4.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalVrc4.CpuReadCount:N0}, wram-reads={finalVrc4.WorkRamReadCount:N0}, wram-writes={finalVrc4.WorkRamWriteCount:N0}, ppu-reads={finalVrc4.PpuReadCount:N0}");
+    Console.WriteLine(
+        $"Konami IRQ:    reload=${finalVrc4.Irq.ReloadValue:X2}, counter=${finalVrc4.Irq.Counter:X2}, prescaler={finalVrc4.Irq.Prescaler}, " +
+        $"enabled={finalVrc4.Irq.Enabled}, enable-after-ack={finalVrc4.Irq.EnabledAfterAcknowledge}, cycle-mode={finalVrc4.Irq.CycleMode}, asserted={finalVrc4.Irq.Asserted}, " +
+        $"cpu-clocks={finalVrc4.Irq.CpuClockCount:N0}, counter-clocks={finalVrc4.Irq.CounterClockCount:N0}, irq-asserts={finalVrc4.Irq.AssertCount:N0}");
+}
 if (host.Machine.Slot.Cartridge is Mapper34Cartridge finalMapper34)
 {
     if (finalMapper34.BoardVariant == Mapper34BoardVariant.Bnrom)
