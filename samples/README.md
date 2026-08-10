@@ -34,4 +34,10 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 
 # Mapper 71 / Camerica (BF9097 / Fire Hawk variant)
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-camerica-bank-switch.nes --board famicom --uncapped --stop-frame 120
+
+# Mapper 79 / NINA-03/NINA-06
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-nina-bank-switch.nes --board famicom --uncapped --stop-frame 120
+
+# Mapper 227 / address-latch multicart (512 KiB legacy-iNES geometry)
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-mapper227-multicart.nes --board famicom --uncapped --stop-frame 120
 ```

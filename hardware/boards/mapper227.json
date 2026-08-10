@@ -1,0 +1,36 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.mapper227",
+  "name": "Mapper 227 address-latch multicart",
+  "mapper": 227,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "AddressLatchMapper",
+      "role": "8000m-class-address-decoder"
+    },
+    {
+      "id": "prg",
+      "type": "BankedRom",
+      "source": "PrgRom",
+      "role": "dual-16k-prg-windows"
+    },
+    {
+      "id": "chr",
+      "type": "Ram",
+      "size": 8192,
+      "role": "unbanked-chr-ram"
+    }
+  ],
+  "connections": [
+    "Cpu.Write & Cpu.RomSelectBar=0 & Cpu.M2.falling -> mapper.AddressLatch[0..10] from Cpu.Address[0..10]",
+    "mapper.AddressLatch[2..6,8] -> prg.InnerOuterBankAddress",
+    "mapper.AddressLatch[0,7,9] + Cpu.Address[14] -> prg.ModeAndA14Routing",
+    "mapper.AddressLatch[1] + Ppu.Address[10..11] -> Ciram.A10",
+    "mapper.AddressLatch[10] -> prg.LowAddressSolderPadMux",
+    "Cpu.Address[0..13] + mapper.PrgAddressOutputs -> prg.Address",
+    "Ppu.Address[0..12] -> chr.Address",
+    "mapper.ChrWriteEnable + Ppu.WriteBar -> chr.WriteEnable"
+  ],
+  "notes": "Mapper-227 physical intent: address-latch multicart hardware with up to 1 MiB PRG ROM, two 16 KiB CPU windows configurable into NROM-128/NROM-256/UNROM-like arrangements, 8 KiB unbanked CHR RAM, mapper-controlled H/V CIRAM wiring, multicart NROM-mode CHR write protection, optional four-bit solder-pad PRG low-address mux and no IRQ. The CPU write data bus does not select banks; the completed write address does."
+}

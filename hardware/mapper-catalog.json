@@ -66,6 +66,12 @@
       "submapper": null,
       "name": "DxROM",
       "definition": "boards/dxrom.json"
+    },
+    {
+      "mapper": 227,
+      "submapper": null,
+      "name": "Mapper 227 address-latch multicart",
+      "definition": "boards/mapper227.json"
     }
   ]
 }

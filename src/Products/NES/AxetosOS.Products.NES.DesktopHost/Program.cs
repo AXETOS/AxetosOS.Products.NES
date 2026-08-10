@@ -690,6 +690,17 @@ if (host.Machine.Slot.Cartridge is Nina0306Cartridge finalNina)
         $"mapper-writes={finalNina.MapperWriteCount:N0}, last=${finalNina.LastMapperWriteAddress:X4}:${finalNina.LastMapperWriteData:X2}, " +
         $"ppu-reads={finalNina.PpuReadCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is Mapper227Cartridge finalMapper227)
+{
+    Console.WriteLine(
+        $"Mapper 227:   latch=${finalMapper227.AddressLatch:X3}, mode={finalMapper227.PrgMode}, " +
+        $"prg={finalMapper227.LowerPrgBank}/{finalMapper227.UpperPrgBank} of {finalMapper227.PrgBankCount}, " +
+        $"mirroring={finalMapper227.Mirroring}, chr-protect={finalMapper227.ChrRamWriteProtected}, " +
+        $"solder-mux={finalMapper227.SolderPadReadActive}/{finalMapper227.SolderPadReadSupported} pad=${finalMapper227.SolderPadValue:X1}, " +
+        $"mapper-writes={finalMapper227.MapperWriteCount:N0}, last=${finalMapper227.LastMapperWriteAddress:X4}:${finalMapper227.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalMapper227.CpuReadCount:N0}, ppu-reads={finalMapper227.PpuReadCount:N0}, " +
+        $"ppu-writes={finalMapper227.PpuWriteCount:N0}, protected-chr-writes={finalMapper227.ProtectedChrWriteCount:N0}");
+}
 if (profileSimulation)
 {
     PrintHostProfile(
