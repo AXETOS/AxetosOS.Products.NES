@@ -296,6 +296,8 @@ internal sealed class CompiledFamicomNromExecutionPlan : IDisposable
         public bool CompleteRead(ushort address, out byte value) => _owner.CompleteCpuRead(address, out value);
         public void Write(ushort address, byte value) => _owner.BeginCpuWrite(address, value);
         public void CompleteCycle() { }
+        public bool HasCompleteBusCycleObservers => false;
+        public void ObserveCompleteBusCycle(bool writeCycle) { }
         public byte ReadSerialInput(int channel) => _owner.ReadControllerSerial(channel);
         public void WriteParallelOutputs(byte value) => _owner.WriteControllerLatch(value);
         public void PresentOutputSignal(DigitalPin sourcePin, DigitalLevel level) { }
@@ -315,6 +317,8 @@ internal sealed class CompiledFamicomNromExecutionPlan : IDisposable
         }
         public void Write(ushort address, byte value) => _owner.WritePpuVram(address, value);
         public void CompleteCycle() { }
+        public bool HasCompleteBusCycleObservers => false;
+        public void ObserveCompleteBusCycle(bool writeCycle) { }
         public byte ReadSerialInput(int channel) => 0;
         public void WriteParallelOutputs(byte value) { }
         public void PresentOutputSignal(DigitalPin sourcePin, DigitalLevel level) =>

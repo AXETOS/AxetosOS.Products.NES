@@ -1,0 +1,29 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.sunsoft-fme7-family",
+  "name": "Sunsoft FME-7 / 5A / 5B family",
+  "mapper": 69,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "SunsoftFme7Cartridge",
+      "role": "FME-7-family ASIC with command/data register interface, banked PRG/CHR outputs, selectable $6000 ROM/RAM window, CIRAM routing and CPU-cycle IRQ counter"
+    },
+    {
+      "id": "psg",
+      "type": "Sunsoft5bPsg",
+      "role": "Sunsoft 5B chip-internal three-channel tone/noise/envelope PSG and logarithmic DAC state"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.PrgBank6000/0/1/2 -> PrgRom bank address inputs",
+    "mapper.PrgRamSelect/Enable -> optional WorkRam bank/control inputs",
+    "mapper.ChrBank0..7 -> ChrRom bank address inputs",
+    "mapper.Ciram -> Motherboard.Ciram",
+    "mapper.IrqBar -> Cpu.IrqBar",
+    "mapper.InternalAudioRegisters -> psg"
+  ],
+  "notes": "Mapper 69 file metadata does not identify the exact FME-7/5A/5B ASIC revision, so AxetosOS models the externally compatible mapper family without filename/hash inference. The 5B PSG's tone, noise, envelope, mixer and DAC state are implemented as chip-internal circuitry and clocked from CPU cycles. The current cartridge connector/audio presentation path has no generic analog expansion-audio net yet, so PSG output is diagnostic state rather than host-mixed PCM; adding that transport requires generic physical analog/package-output infrastructure rather than a mapper-specific motherboard shortcut."
+}

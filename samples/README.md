@@ -50,6 +50,9 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 # Mapper 66 / GxROM
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-gxrom-bank-switch.nes --board famicom --uncapped --stop-frame 120
 
+# Mapper 69 / Sunsoft FME-7 / 5B IRQ + PSG register smoke
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-sunsoft-fme7-irq-5b.nes --board famicom --uncapped --stop-frame 120
+
 # Mapper 71 / Camerica (BF9097 / Fire Hawk variant)
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-camerica-bank-switch.nes --board famicom --uncapped --stop-frame 120
 

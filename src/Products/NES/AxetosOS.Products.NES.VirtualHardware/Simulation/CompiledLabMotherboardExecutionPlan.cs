@@ -392,12 +392,18 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             // one instance of each observer after topology has proven that its
             // target data pins belong to this bus master. This remains entirely
             // topology/facet derived and carries no board or product semantics.
-            var busCycleObservers = new List<Action<bool>>();
+            var beginBusCycleObservers = new List<Action<bool>>();
+            var completeBusCycleObservers = new List<Action<bool>>();
             for (var targetIndex = 0; targetIndex < targetArray.Length; targetIndex++)
             {
-                var observer = targetArray[targetIndex].Descriptor.ObserveBusCycle;
-                if (observer is null || busCycleObservers.Contains(observer)) continue;
-                busCycleObservers.Add(observer);
+                var descriptor = targetArray[targetIndex].Descriptor;
+                var observer = descriptor.ObserveBusCycle;
+                if (observer is null) continue;
+
+                var observers = descriptor.ObserveBusCyclePhase == CompiledBusCycleObservationPhase.Complete
+                    ? completeBusCycleObservers
+                    : beginBusCycleObservers;
+                if (!observers.Contains(observer)) observers.Add(observer);
             }
 
             return new CompiledTargetSet(
@@ -408,7 +414,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 readCompleteRoutes,
                 readObserverRoutes,
                 writeRoutes,
-                busCycleObservers.ToArray());
+                beginBusCycleObservers.ToArray(),
+                completeBusCycleObservers.ToArray());
         }
 
         private bool CanStaticallyCompileTarget(
@@ -1019,7 +1026,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             CompiledBusRoute[] readCompleteRoutes,
             CompiledBusRoute[] readObserverRoutes,
             CompiledBusRoute[] writeRoutes,
-            Action<bool>[] busCycleObservers)
+            Action<bool>[] beginBusCycleObservers,
+            Action<bool>[] completeBusCycleObservers)
         {
             Runtimes = runtimes;
             AddressSources = addressSources;
@@ -1028,7 +1036,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             ReadCompleteRoutes = readCompleteRoutes;
             ReadObserverRoutes = readObserverRoutes;
             WriteRoutes = writeRoutes;
-            BusCycleObservers = busCycleObservers;
+            BeginBusCycleObservers = beginBusCycleObservers;
+            CompleteBusCycleObservers = completeBusCycleObservers;
         }
 
         public CompiledBusTargetRuntime[] Runtimes { get; }
@@ -1038,7 +1047,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public CompiledBusRoute[] ReadCompleteRoutes { get; }
         public CompiledBusRoute[] ReadObserverRoutes { get; }
         public CompiledBusRoute[] WriteRoutes { get; }
-        public Action<bool>[] BusCycleObservers { get; }
+        public Action<bool>[] BeginBusCycleObservers { get; }
+        public Action<bool>[] CompleteBusCycleObservers { get; }
 
         public static CompiledTargetSet Empty(int addressWidth)
         {
@@ -1051,6 +1061,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 new CompiledBusRoute[count],
                 new CompiledBusRoute[count],
                 new CompiledBusRoute[count],
+                Array.Empty<Action<bool>>(),
                 Array.Empty<Action<bool>>());
         }
     }
@@ -1102,14 +1113,16 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         private readonly Func<ulong> _clockEdgeProvider;
         private readonly CompiledSignalRouter _signalRouter;
         private CompiledSignalSampler? _interruptRequestSampler;
-        private Action<bool>? _singleBusCycleObserver;
+        private Action<bool>? _singleBeginBusCycleObserver;
+        private Action<bool>? _singleCompleteBusCycleObserver;
         private const byte DynamicReadBeginFlag = 1 << 0;
         private const byte DynamicReadCompleteFlag = 1 << 1;
         private const byte DynamicReadObserverFlag = 1 << 2;
         private const byte DynamicWriteBeginFlag = 1 << 3;
         private const byte DynamicWriteCompleteFlag = 1 << 4;
 
-        private Action<bool>[] _busCycleObservers = [];
+        private Action<bool>[] _beginBusCycleObservers = [];
+        private Action<bool>[] _completeBusCycleObservers = [];
         private CompiledDynamicTargetBinding[] _dynamicTargets = [];
         private byte[] _dynamicRouteFlags = [];
         private bool _hasReadBeginData;
@@ -1148,6 +1161,8 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public ulong ClockRisingEdges => _clockEdgeProvider();
         public bool InterruptRequestLow =>
             _interruptRequestSampler?.Sample() == DigitalLevel.Low;
+        public bool HasCompleteBusCycleObservers =>
+            _singleCompleteBusCycleObserver is not null || _completeBusCycleObservers.Length != 0;
 
         public void BindExternalDevice(IVirtualHardwareComponent component)
         {
@@ -1404,10 +1419,25 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
 
         private void RebuildBusCycleObservers()
         {
-            var observers = new List<Action<bool>>(_internalTargets.BusCycleObservers);
+            RebuildBusCycleObservers(
+                static set => set.BeginBusCycleObservers,
+                out _singleBeginBusCycleObserver,
+                out _beginBusCycleObservers);
+            RebuildBusCycleObservers(
+                static set => set.CompleteBusCycleObservers,
+                out _singleCompleteBusCycleObserver,
+                out _completeBusCycleObservers);
+        }
+
+        private void RebuildBusCycleObservers(
+            Func<CompiledTargetSet, Action<bool>[]> selector,
+            out Action<bool>? singleObserver,
+            out Action<bool>[] observersArray)
+        {
+            var observers = new List<Action<bool>>(selector(_internalTargets));
             for (var bindingIndex = 0; bindingIndex < _externalBindings.Count; bindingIndex++)
             {
-                var external = _externalBindings[bindingIndex].Targets.BusCycleObservers;
+                var external = selector(_externalBindings[bindingIndex].Targets);
                 for (var observerIndex = 0; observerIndex < external.Length; observerIndex++)
                 {
                     var observer = external[observerIndex];
@@ -1417,13 +1447,13 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
 
             if (observers.Count == 1)
             {
-                _singleBusCycleObserver = observers[0];
-                _busCycleObservers = [];
+                singleObserver = observers[0];
+                observersArray = [];
                 return;
             }
 
-            _singleBusCycleObserver = null;
-            _busCycleObservers = observers.Count == 0 ? [] : observers.ToArray();
+            singleObserver = null;
+            observersArray = observers.Count == 0 ? [] : observers.ToArray();
         }
 
         public void ResetTransientState()
@@ -1440,7 +1470,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void BeginRead(ushort address)
         {
-            ObserveBusCycle(writeCycle: false);
+            ObserveBeginBusCycle(writeCycle: false);
 
             var observerIndex = address & (_readObserverRoutes.Length - 1);
             var dynamicFlags = _dynamicRouteFlags[observerIndex];
@@ -1506,7 +1536,7 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Write(ushort address, byte value)
         {
-            ObserveBusCycle(writeCycle: true);
+            ObserveBeginBusCycle(writeCycle: true);
             _latchedValueValid = false;
             _latchedConflict = false;
             _pendingWriteAddress = address;
@@ -1532,16 +1562,35 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ObserveBusCycle(bool writeCycle)
+        private void ObserveBeginBusCycle(bool writeCycle)
         {
-            var single = _singleBusCycleObserver;
+            ObserveBusCycleObservers(
+                _singleBeginBusCycleObserver,
+                _beginBusCycleObservers,
+                writeCycle);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ObserveCompleteBusCycle(bool writeCycle)
+        {
+            ObserveBusCycleObservers(
+                _singleCompleteBusCycleObserver,
+                _completeBusCycleObservers,
+                writeCycle);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void ObserveBusCycleObservers(
+            Action<bool>? single,
+            Action<bool>[] observers,
+            bool writeCycle)
+        {
             if (single is not null)
             {
                 single(writeCycle);
                 return;
             }
 
-            var observers = _busCycleObservers;
             for (var index = 0; index < observers.Length; index++)
                 observers[index](writeCycle);
         }

@@ -26,6 +26,18 @@ public enum CompiledBusWritePhase : byte
     Complete
 }
 
+/// <summary>
+/// Physical edge at which package-local circuitry observes a bus cycle.
+/// Begin corresponds to the active bus window opening; Complete corresponds
+/// to the closing edge after read data has been sampled and before any
+/// end-of-cycle write latch consumes the bus value.
+/// </summary>
+public enum CompiledBusCycleObservationPhase : byte
+{
+    Begin,
+    Complete
+}
+
 public readonly record struct CompiledPinCondition(DigitalPin Pin, DigitalLevel RequiredLevel);
 
 public interface ICompiledBusFabric
@@ -37,6 +49,9 @@ public interface ICompiledBusFabric
     bool CompleteRead(ushort address, out byte value);
     void Write(ushort address, byte value);
     void CompleteCycle();
+
+    bool HasCompleteBusCycleObservers { get; }
+    void ObserveCompleteBusCycle(bool writeCycle);
 
     byte ReadSerialInput(int channel);
     void WriteParallelOutputs(byte value);
@@ -100,7 +115,8 @@ public sealed class CompiledBusTargetDescriptor
         Action<bool>? observeBusCycle = null,
         Func<int, bool, bool>? isSelected = null,
         CompiledBusWritePhase writePhase = CompiledBusWritePhase.Begin,
-        Action<int>? observeReadBegin = null)
+        Action<int>? observeReadBegin = null,
+        CompiledBusCycleObservationPhase observeBusCyclePhase = CompiledBusCycleObservationPhase.Begin)
     {
         Component = component;
         AddressPins = addressPins;
@@ -111,6 +127,7 @@ public sealed class CompiledBusTargetDescriptor
         Read = read;
         Write = write;
         ObserveBusCycle = observeBusCycle;
+        ObserveBusCyclePhase = observeBusCyclePhase;
         IsSelected = isSelected;
         WritePhase = writePhase;
         ObserveReadBegin = observeReadBegin;
@@ -139,6 +156,13 @@ public sealed class CompiledBusTargetDescriptor
     /// The bool is true for a write cycle and false for a read cycle.
     /// </summary>
     public Action<bool>? ObserveBusCycle { get; }
+
+    /// <summary>
+    /// Physical edge at which <see cref="ObserveBusCycle"/> runs. This phase is
+    /// declared by the component facet itself; the compiler remains unaware of
+    /// the observer's electrical meaning.
+    /// </summary>
+    public CompiledBusCycleObservationPhase ObserveBusCyclePhase { get; }
 
     /// <summary>
     /// Optional package-local dynamic select gate evaluated after physical pin

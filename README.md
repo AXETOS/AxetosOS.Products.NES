@@ -8,11 +8,11 @@ The longer-term goal is generic virtual-hardware infrastructure that can also ho
 
 ## Current release
 
-**v2.45.0**
+**v2.46.0**
 
-Validated baseline before this release: **542 / 542 Release tests passing through v2.44.0**.
+Validated baseline before this release: **569 / 569 Release tests passing through v2.45.1**.
 
-v2.45.0 adds Mapper 18 / Jaleco SS88006 cartridge hardware, including split-nibble PRG/CHR banking, optional protected work RAM, four-mode CIRAM routing and the ASIC's selectable-width CPU-cycle IRQ counter.
+v2.46.0 adds Mapper 69 / Sunsoft FME-7/5A/5B-family cartridge hardware: command/data register decode, banked PRG/CHR, selectable ROM/RAM at `$6000-$7FFF`, four CIRAM routes, the CPU-cycle IRQ counter, and chip-internal Sunsoft 5B PSG state.
 
 ## Architecture
 
@@ -90,6 +90,7 @@ Implemented cartridge mapper numbers:
 - **18 — Jaleco SS88006**
 - **34 — BNROM and NINA-001/002**
 - **66 — GxROM**
+- **69 — Sunsoft FME-7 / 5A / 5B family**
 - **71 — Camerica/Codemasters**
 - **79 — NINA-03/NINA-06**
 - **206 — DxROM / Namco-108 family**
@@ -111,6 +112,15 @@ Mapper 18 / Jaleco SS88006 includes:
 - horizontal, vertical and both single-screen CIRAM routes;
 - 4-, 8-, 12- and 16-bit masked CPU-cycle IRQ counting;
 - the SS88006 external-sample control output as board state. Optional uPD7755C/uPD7756C sample synthesis remains separate cartridge hardware and is not fabricated from missing sample data.
+
+Mapper 69 / Sunsoft FME-7/5A/5B family includes:
+
+- three switchable 8 KiB PRG windows plus the fixed final 8 KiB bank;
+- a bank-selectable `$6000-$7FFF` window that can expose PRG ROM, enabled work RAM, or open bus;
+- eight independently switchable 1 KiB CHR-ROM windows;
+- horizontal, vertical and both single-screen CIRAM routes;
+- the independent 16-bit CPU-cycle IRQ counter/output-enable circuitry with write acknowledgement;
+- chip-internal Sunsoft 5B divide-by-16 clocking, tone, noise/prescaler/LFSR, 32-step YM envelope, mixer and logarithmic DAC state. Mapper 69 metadata does not identify the exact FME-7/5A/5B ASIC revision, so no filename/hash inference is used. The current connector/audio path still needs a generic physical expansion-audio transport before 5B output can be mixed into host PCM.
 
 ## Build and test
 
@@ -214,7 +224,7 @@ tests/
 
 ## Direction
 
-The current mapper-completion tranche is focused on major remaining hardware families rather than exhaustive mapper-number coverage. After Jaleco SS88006, the remaining planned tranche focuses on Sunsoft, Konami VRC, Namco and MMC5 hardware.
+The current mapper-completion tranche is focused on major remaining hardware families rather than exhaustive mapper-number coverage. After Sunsoft FME-7/5B, the remaining planned tranche focuses on Konami VRC, Namco and MMC5 hardware.
 
 After that tranche, development returns to the desktop product shell and broader system features, including:
 

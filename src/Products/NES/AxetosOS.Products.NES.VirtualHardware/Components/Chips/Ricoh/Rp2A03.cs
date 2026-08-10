@@ -368,14 +368,24 @@ public sealed class Rp2A03 : VirtualHardwareComponent, ICompiledBusMasterProvide
             CaptureCompletedReadData();
             _m2Level = DigitalLevel.Low;
 
+            var compiled = _compiledBusFabric;
+            var writeCycle = _compiledWritePending;
+
+            // Package-local circuitry may be physically clocked by the M2
+            // falling edge even when its bus target is not selected. Preserve
+            // that edge explicitly without teaching the compiler what the
+            // circuitry means. Read data has already been sampled; end-of-cycle
+            // write latches have not yet consumed their value.
+            if (compiled?.HasCompleteBusCycleObservers == true)
+                compiled.ObserveCompleteBusCycle(writeCycle);
+
             // The physical M2 falling edge closes a compiled write only when
             // this package actually drove one during the preceding high phase.
-            // Read cycles have no completion work, so do not cross the compiled
-            // fabric boundary just to discover an empty write latch.
-            if (_compiledWritePending)
+            // Read cycles still avoid the generic write-completion boundary.
+            if (writeCycle)
             {
                 _compiledWritePending = false;
-                _compiledBusFabric?.CompleteCycle();
+                compiled?.CompleteCycle();
             }
             return;
         }

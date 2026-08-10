@@ -27,6 +27,7 @@ public static class VirtualCartridgeHardwareFactory
             18 => new JalecoSs88006Cartridge("SLOT.CARTRIDGE.JALECO.SS88006"),
             34 => new Mapper34Cartridge("SLOT.CARTRIDGE.MAPPER34"),
             66 => new GxromCartridge("SLOT.CARTRIDGE.GXROM"),
+            69 => new SunsoftFme7Cartridge("SLOT.CARTRIDGE.SUNSOFT.FME7"),
             71 => new CamericaCartridge("SLOT.CARTRIDGE.CAMERICA"),
             79 => new Nina0306Cartridge("SLOT.CARTRIDGE.NINA0306"),
             206 => new DxromCartridge("SLOT.CARTRIDGE.DXROM"),

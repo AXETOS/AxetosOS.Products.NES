@@ -723,6 +723,28 @@ if (host.Machine.Slot.Cartridge is JalecoSs88006Cartridge finalJaleco)
         $"clocks={finalJaleco.IrqClockCount:N0}, irq-asserts={finalJaleco.IrqAssertCount:N0}, " +
         $"sample-control=${finalJaleco.SampleControlRegister:X2}, sample-triggers={finalJaleco.SampleTriggerCount:N0}, last-sample={finalJaleco.LastSampleIndex}");
 }
+if (host.Machine.Slot.Cartridge is SunsoftFme7Cartridge finalSunsoft)
+{
+    Console.WriteLine(
+        $"Sunsoft FME-7: cmd=${finalSunsoft.CommandRegister:X2}, prg6000=${finalSunsoft.Prg6000ControlRegister:X2} " +
+        $"{(finalSunsoft.Prg6000RomSelected ? $"ROM[{finalSunsoft.Prg6000Bank}]" : finalSunsoft.Prg6000RamEnabled ? $"RAM[{finalSunsoft.WramBank}]" : "OPEN")}, " +
+        $"prg-reg=[{string.Join(",", finalSunsoft.PrgBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"prg-map=[{string.Join(",", finalSunsoft.PrgWindowBanks)}], chr-reg=[{string.Join(",", finalSunsoft.ChrBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"mirroring={finalSunsoft.NametableMode}, wram={finalSunsoft.WramSizeBytes:N0}, mapper-writes={finalSunsoft.MapperWriteCount:N0}, core-writes={finalSunsoft.CoreRegisterWriteCount:N0}, " +
+        $"last=${finalSunsoft.LastMapperWriteAddress:X4}:${finalSunsoft.LastMapperWriteData:X2}, cpu-reads={finalSunsoft.CpuReadCount:N0}, " +
+        $"rom6000-reads={finalSunsoft.Prg6000RomReadCount:N0}, wram-reads={finalSunsoft.WramReadCount:N0}, wram-writes={finalSunsoft.WramWriteCount:N0}, ppu-reads={finalSunsoft.PpuReadCount:N0}");
+    Console.WriteLine(
+        $"Sunsoft IRQ:   counter=${finalSunsoft.IrqCounter:X4}, counter-enable={finalSunsoft.IrqCounterEnabled}, output-enable={finalSunsoft.IrqOutputEnabled}, " +
+        $"asserted={finalSunsoft.IrqAsserted}, cpu-clocks={finalSunsoft.CpuCycleClockCount:N0}, irq-clocks={finalSunsoft.IrqClockCount:N0}, irq-asserts={finalSunsoft.IrqAssertCount:N0}");
+    Console.WriteLine(
+        $"Sunsoft 5B:    select=${finalSunsoft.Psg.SelectedRegister:X2}, write-lock={finalSunsoft.Psg.DataWritesDisabled}, " +
+        $"select-writes={finalSunsoft.Psg.RegisterSelectWriteCount:N0}, data-writes={finalSunsoft.Psg.RegisterDataWriteCount:N0}, ignored-data={finalSunsoft.Psg.IgnoredDataWriteCount:N0}, " +
+        $"tone=[${finalSunsoft.Psg.TonePeriodA:X3},${finalSunsoft.Psg.TonePeriodB:X3},${finalSunsoft.Psg.TonePeriodC:X3}], noise=${finalSunsoft.Psg.NoisePeriod:X2}, " +
+        $"envelope=${finalSunsoft.Psg.EnvelopePeriod:X4}/${finalSunsoft.Psg.EnvelopeShape:X1}, dac={finalSunsoft.Psg.MixedDacLevel}, " +
+        $"psg-clocks={finalSunsoft.Psg.CpuClockCount:N0}, generator-ticks={finalSunsoft.Psg.GeneratorTickCount:N0}, " +
+        $"tone-flips={finalSunsoft.Psg.ToneFlipCount:N0}, noise-shifts={finalSunsoft.Psg.NoiseShiftCount:N0}, " +
+        $"envelope-steps={finalSunsoft.Psg.EnvelopeStepCount:N0}, output-edges={finalSunsoft.Psg.OutputEdgeCount:N0}");
+}
 if (host.Machine.Slot.Cartridge is Mapper34Cartridge finalMapper34)
 {
     if (finalMapper34.BoardVariant == Mapper34BoardVariant.Bnrom)
