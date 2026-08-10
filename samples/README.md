@@ -35,6 +35,9 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 # Mapper 11 / Color Dreams
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-colordreams-bank-switch.nes --board famicom --uncapped --stop-frame 120
 
+# Mapper 16 / Bandai LZ93D50 / FCG
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-bandai-fcg-irq.nes --board famicom --uncapped --stop-frame 120
+
 # Mapper 34 / BNROM
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-bnrom-bank-switch.nes --board famicom --uncapped --stop-frame 120
 

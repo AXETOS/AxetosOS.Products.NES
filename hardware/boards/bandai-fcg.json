@@ -1,0 +1,28 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.bandai-fcg",
+  "name": "Bandai FCG-1/2 / LZ93D50",
+  "mapper": 16,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "BandaiFcgCartridge",
+      "role": "Bandai FCG ASIC with 16 KiB PRG banking, eight 1 KiB CHR bank outputs, four-mode CIRAM routing and CPU-cycle IRQ counter"
+    },
+    {
+      "id": "eeprom",
+      "type": "24C02",
+      "role": "Optional 256-byte serial EEPROM on LZ93D50 boards; absent on FCG-1/2"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.PrgBank -> PrgRom.A14..A17",
+    "mapper.ChrBank0..7 -> ChrRom bank address inputs",
+    "mapper.Ciram -> Motherboard.Ciram",
+    "mapper.IrqBar -> Cpu.IrqBar",
+    "mapper.I2cScl/Sda <-> eeprom.Scl/Sda (LZ93D50 + 24C02 only)"
+  ],
+  "notes": "Mapper 16 submapper 4 selects FCG-1/2: registers respond in CPU $6000-$7FFF and IRQ low/high writes directly alter the running counter. Submapper 5 selects LZ93D50: registers respond in $8000-$FFFF, IRQ writes fill a reload latch, and optional 256-byte 24C02 EEPROM is exposed through the ASIC serial port. Submapper 0 accepts both documented register windows for legacy compatibility. Deprecated submappers 1/2/3 are intentionally rejected in favor of mapper 159/157/153, which represent distinct fitted hardware."
+}

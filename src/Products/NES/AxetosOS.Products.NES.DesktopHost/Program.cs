@@ -696,6 +696,19 @@ if (host.Machine.Slot.Cartridge is ColorDreamsCartridge finalColorDreams)
         $"last=${finalColorDreams.LastMapperWriteAddress:X4}:${finalColorDreams.LastMapperWriteData:X2}->${finalColorDreams.LastEffectiveMapperWriteData:X2}, " +
         $"ppu-reads={finalColorDreams.PpuReadCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is BandaiFcgCartridge finalBandai)
+{
+    Console.WriteLine(
+        $"Bandai FCG:  variant={finalBandai.Variant}, prg=${finalBandai.PrgBankRegister:X2} selected={finalBandai.SelectedPrgBank}/{finalBandai.PrgBankCount} fixed={finalBandai.FixedPrgBank}, " +
+        $"chr=[{string.Join(",", finalBandai.ChrBankRegisters.Select(value => $"${value:X2}"))}], mirroring={finalBandai.NametableMode}, " +
+        $"mapper-writes={finalBandai.MapperWriteCount:N0}, last=${finalBandai.LastMapperWriteAddress:X4}:${finalBandai.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalBandai.CpuReadCount:N0}, ppu-reads={finalBandai.PpuReadCount:N0}");
+    Console.WriteLine(
+        $"Bandai IRQ:  latch=${finalBandai.IrqLatch:X4}, counter=${finalBandai.IrqCounter:X4}, enabled={finalBandai.IrqEnabled}, asserted={finalBandai.IrqAsserted}, " +
+        $"clocks={finalBandai.IrqClockCount:N0}, irq-asserts={finalBandai.IrqAssertCount:N0}, " +
+        $"eeprom={finalBandai.EepromSizeBytes:N0}, eeprom-control-writes={finalBandai.EepromControlWriteCount:N0}, " +
+        $"eeprom-reads={finalBandai.EepromReadCount:N0}, eeprom-writes={finalBandai.EepromWriteCount:N0}");
+}
 if (host.Machine.Slot.Cartridge is Mapper34Cartridge finalMapper34)
 {
     if (finalMapper34.BoardVariant == Mapper34BoardVariant.Bnrom)
