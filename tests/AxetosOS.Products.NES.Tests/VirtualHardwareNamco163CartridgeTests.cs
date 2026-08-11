@@ -82,6 +82,8 @@ public sealed class VirtualHardwareNamco163CartridgeTests
             Assert.Equal((byte)(0xB0 + page), ppu.Read!(address));
             Assert.Equal(DigitalLevel.High, EvaluateDirect(cartridge, cartridge.CiramChipEnableBar, (ushort)address));
         }
+
+        Assert.Equal(4UL, cartridge.ChrNametableReadCount);
     }
 
     [Theory]
@@ -439,6 +441,8 @@ public sealed class VirtualHardwareNamco163CartridgeTests
         Assert.Equal(expected.Audio.SerialDacLevel, actual.Audio.SerialDacLevel);
         Assert.Equal(expected.MapperWriteCount, actual.MapperWriteCount);
         Assert.Equal(expected.WorkRamWriteCount, actual.WorkRamWriteCount);
+        Assert.True(actual.ChrNametableReadCount > 0);
+        Assert.Equal(expected.ChrNametableReadCount, actual.ChrNametableReadCount);
         Assert.Equal(reference.Famicom.Cpu.ProgramCounter, compiled.Famicom.Cpu.ProgramCounter);
         Assert.Equal(reference.Famicom.Cpu.CompletedInstructionCount, compiled.Famicom.Cpu.CompletedInstructionCount);
         Assert.Equal(reference.Famicom.Ppu.InspectDiagnosticState(), compiled.Famicom.Ppu.InspectDiagnosticState());
@@ -531,6 +535,14 @@ public sealed class VirtualHardwareNamco163CartridgeTests
         AddSta(program, 0x8800, 0xE1);
         AddSta(program, 0xC000, 0xE0);
         AddSta(program, 0xC800, 0x21);
+
+        // Exercise the CHR-backed nametable path through the real RP2C02 CPU-I/O interface.
+        // $2400 is nametable slot 1, which $C800=$21 maps to CHR-ROM bank $21.
+        AddSta(program, 0x2006, 0x24);
+        AddSta(program, 0x2006, 0x00);
+        AddLda(program, 0x2007); // buffered read primes the PPU data latch
+        AddLda(program, 0x2007); // returns the $2400 byte and performs another physical PPU read
+
         AddSta(program, 0xF800, 0x40); // RAM global write enable, audio address $40
         AddSta(program, 0x6000, 0x5A);
 
@@ -554,6 +566,9 @@ public sealed class VirtualHardwareNamco163CartridgeTests
 
     private static void AddSta(List<byte> program, ushort address, byte value) =>
         program.AddRange(new byte[] { 0xA9, value, 0x8D, (byte)address, (byte)(address >> 8) });
+
+    private static void AddLda(List<byte> program, ushort address) =>
+        program.AddRange(new byte[] { 0xAD, (byte)address, (byte)(address >> 8) });
 
     private static void WriteAudioRam(Namco163Audio audio, int address, byte value)
     {

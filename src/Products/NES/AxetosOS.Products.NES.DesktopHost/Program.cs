@@ -789,7 +789,8 @@ if (host.Machine.Slot.Cartridge is Namco163Cartridge finalNamco163)
         $"chr-ciram-disable={finalNamco163.LowChrCiramDisabled}/{finalNamco163.HighChrCiramDisabled}, protect=${finalNamco163.WriteProtectRegister:X2}, " +
         $"ram={finalNamco163.WorkRamSizeBytes:N0}, mapper-writes={finalNamco163.MapperWriteCount:N0}, last=${finalNamco163.LastMapperWriteAddress:X4}:${finalNamco163.LastMapperWriteData:X2}, " +
         $"cpu-reads={finalNamco163.CpuReadCount:N0}, low-reg-reads={finalNamco163.LowRegisterReadCount:N0}, ram-reads={finalNamco163.WorkRamReadCount:N0}, " +
-        $"ram-writes={finalNamco163.WorkRamWriteCount:N0}, blocked-ram-writes={finalNamco163.BlockedWorkRamWriteCount:N0}, ppu-reads={finalNamco163.PpuReadCount:N0}, chr-reads={finalNamco163.ChrReadCount:N0}");
+        $"ram-writes={finalNamco163.WorkRamWriteCount:N0}, blocked-ram-writes={finalNamco163.BlockedWorkRamWriteCount:N0}, ppu-reads={finalNamco163.PpuReadCount:N0}, " +
+        $"chr-reads={finalNamco163.ChrReadCount:N0}, chr-nt-reads={finalNamco163.ChrNametableReadCount:N0}");
     Console.WriteLine(
         $"Namco IRQ:      counter=${finalNamco163.IrqCounter:X4}, enabled={finalNamco163.IrqEnabled}, asserted={finalNamco163.IrqAsserted}, " +
         $"cpu-clocks={finalNamco163.CpuCycleClockCount:N0}, irq-clocks={finalNamco163.IrqClockCount:N0}, irq-asserts={finalNamco163.IrqAssertCount:N0}");

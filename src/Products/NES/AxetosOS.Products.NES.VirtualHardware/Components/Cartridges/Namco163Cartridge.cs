@@ -142,6 +142,7 @@ public sealed class Namco163Cartridge : VirtualHardwareComponent, IReplaceableCa
     public ulong PpuReadCount { get; private set; }
     public ulong PpuWriteCount { get; private set; }
     public ulong ChrReadCount { get; private set; }
+    public ulong ChrNametableReadCount { get; private set; }
 
     public void LoadImage(VirtualHardwareNesRomImage image)
     {
@@ -215,6 +216,7 @@ public sealed class Namco163Cartridge : VirtualHardwareComponent, IReplaceableCa
         PpuReadCount = 0;
         PpuWriteCount = 0;
         ChrReadCount = 0;
+        ChrNametableReadCount = 0;
     }
 
     private void ApplyResetState()
@@ -409,6 +411,7 @@ public sealed class Namco163Cartridge : VirtualHardwareComponent, IReplaceableCa
         {
             PpuReadCount++;
             ChrReadCount++;
+            if (address >= 0x2000) ChrNametableReadCount++;
         }
         _ppuReadAddress = address;
         _ppuReadActive = true;
@@ -652,6 +655,7 @@ public sealed class Namco163Cartridge : VirtualHardwareComponent, IReplaceableCa
     {
         PpuReadCount++;
         ChrReadCount++;
+        if (address >= 0x2000) ChrNametableReadCount++;
         var slot = address < 0x2000 ? address >> 10 : 8 + ((address >> 10) & 0x03);
         var bank = _ppuBankRegisters[slot] & _chrBankMask;
         return ReadPpuChr(address, bank);
