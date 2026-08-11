@@ -80,10 +80,22 @@
       "definition": "boards/konami-vrc4-mapper23.json"
     },
     {
+      "mapper": 24,
+      "submapper": null,
+      "name": "Konami VRC6a",
+      "definition": "boards/konami-vrc6-mapper24.json"
+    },
+    {
       "mapper": 25,
       "submapper": null,
       "name": "Konami VRC4b/VRC4d",
       "definition": "boards/konami-vrc4-mapper25.json"
+    },
+    {
+      "mapper": 26,
+      "submapper": null,
+      "name": "Konami VRC6b",
+      "definition": "boards/konami-vrc6-mapper26.json"
     },
     {
       "mapper": 34,

@@ -1,0 +1,35 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.konami-vrc6.mapper26",
+  "name": "Konami VRC6b",
+  "mapper": 26,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "KonamiVrc6Cartridge",
+      "role": "VRC6 ASIC with package register A0/A1 swapped relative to VRC6a, PRG/CHR/nametable banking, RAM gate, IRQ and expansion audio"
+    },
+    {
+      "id": "irq",
+      "type": "KonamiVrcIrqCounter",
+      "role": "Reusable Konami VRC 8-bit reload/counter and 341-dot scanline prescaler circuitry"
+    },
+    {
+      "id": "audio",
+      "type": "KonamiVrc6Audio",
+      "role": "Chip-internal two-pulse plus sawtooth expansion-audio generator"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.PhysicalA0/A1 -> swapped internal register A1/A0 decode",
+    "mapper.PrgBank16/PrgBank8 -> PrgRom bank address inputs",
+    "mapper.ChrBank0..7 + BankingMode -> ChrRom bank address inputs",
+    "mapper.NametableRouting -> Motherboard.Ciram or ChrRom",
+    "mapper.IrqControl -> irq",
+    "irq.IrqBar -> mapper.IrqBar -> Cpu.IrqBar",
+    "Cpu.M2 -> mapper.AudioClock -> audio"
+  ],
+  "notes": "Mapper 26 identifies VRC6b wiring. The package itself swaps register A0/A1; the motherboard/compiler remain unaware of that semantic distinction."
+}

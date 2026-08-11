@@ -58,6 +58,8 @@ public sealed class KonamiVrcIrqCounter
         _prescaler += 341;
     }
 
+    public void SetReloadValue(byte value) => _reloadValue = value;
+
     public void SetReloadNibble(byte value, bool highNibble)
     {
         if (highNibble)

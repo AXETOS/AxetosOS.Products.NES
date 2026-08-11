@@ -759,6 +759,28 @@ if (host.Machine.Slot.Cartridge is KonamiVrc4Cartridge finalVrc4)
         $"enabled={finalVrc4.Irq.Enabled}, enable-after-ack={finalVrc4.Irq.EnabledAfterAcknowledge}, cycle-mode={finalVrc4.Irq.CycleMode}, asserted={finalVrc4.Irq.Asserted}, " +
         $"cpu-clocks={finalVrc4.Irq.CpuClockCount:N0}, counter-clocks={finalVrc4.Irq.CounterClockCount:N0}, irq-asserts={finalVrc4.Irq.AssertCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is KonamiVrc6Cartridge finalVrc6)
+{
+    Console.WriteLine(
+        $"Konami VRC6:   mapper={finalVrc6.MapperNumber}, variant={finalVrc6.Variant}, prg16=${finalVrc6.Prg16BankRegister:X2}, prg8=${finalVrc6.Prg8BankRegister:X2}, " +
+        $"prg-map=[{string.Join(",", finalVrc6.PrgWindowBanks)}], chr=[{string.Join(",", finalVrc6.ChrBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"chr-map=[{string.Join(",", finalVrc6.ChrWindowBanks)}], mode=${finalVrc6.BankingModeRegister:X2}, " +
+        $"nt-source={(finalVrc6.NametablesUseChrRom ? "CHR" : "CIRAM")}, nt-map=[{string.Join(",", finalVrc6.NametablePages)}], " +
+        $"wram={finalVrc6.WorkRamSizeBytes:N0}/{finalVrc6.WorkRamEnabled}, mapper-writes={finalVrc6.MapperWriteCount:N0}, " +
+        $"last=${finalVrc6.LastMapperWriteAddress:X4}->${finalVrc6.LastTranslatedMapperWriteAddress:X4}:${finalVrc6.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalVrc6.CpuReadCount:N0}, wram-reads={finalVrc6.WorkRamReadCount:N0}, wram-writes={finalVrc6.WorkRamWriteCount:N0}, " +
+        $"ppu-reads={finalVrc6.PpuReadCount:N0}, chr-nt-reads={finalVrc6.ChrNametableReadCount:N0}");
+    Console.WriteLine(
+        $"Konami IRQ:    reload=${finalVrc6.Irq.ReloadValue:X2}, counter=${finalVrc6.Irq.Counter:X2}, prescaler={finalVrc6.Irq.Prescaler}, " +
+        $"enabled={finalVrc6.Irq.Enabled}, enable-after-ack={finalVrc6.Irq.EnabledAfterAcknowledge}, cycle-mode={finalVrc6.Irq.CycleMode}, asserted={finalVrc6.Irq.Asserted}, " +
+        $"cpu-clocks={finalVrc6.Irq.CpuClockCount:N0}, counter-clocks={finalVrc6.Irq.CounterClockCount:N0}, irq-asserts={finalVrc6.Irq.AssertCount:N0}");
+    Console.WriteLine(
+        $"Konami VRC6 audio: control=${finalVrc6.Audio.ControlRegister:X2}, halted={finalVrc6.Audio.Halted}, shift={finalVrc6.Audio.FrequencyShift}, dac={finalVrc6.Audio.MixedDacLevel}, " +
+        $"cpu-clocks={finalVrc6.Audio.CpuClockCount:N0}, writes={finalVrc6.Audio.RegisterWriteCount:N0}, output-edges={finalVrc6.Audio.OutputEdgeCount:N0}, " +
+        $"p1=${finalVrc6.Audio.Pulse1.Frequency:X3}/{finalVrc6.Audio.Pulse1.Volume:X1}/d{finalVrc6.Audio.Pulse1.DutyCycle}/s{finalVrc6.Audio.Pulse1.Step}, " +
+        $"p2=${finalVrc6.Audio.Pulse2.Frequency:X3}/{finalVrc6.Audio.Pulse2.Volume:X1}/d{finalVrc6.Audio.Pulse2.DutyCycle}/s{finalVrc6.Audio.Pulse2.Step}, " +
+        $"saw=${finalVrc6.Audio.Saw.Frequency:X3}/r{finalVrc6.Audio.Saw.AccumulatorRate:X2}/a{finalVrc6.Audio.Saw.Accumulator:X2}/s{finalVrc6.Audio.Saw.Step}");
+}
 if (host.Machine.Slot.Cartridge is Mapper34Cartridge finalMapper34)
 {
     if (finalMapper34.BoardVariant == Mapper34BoardVariant.Bnrom)

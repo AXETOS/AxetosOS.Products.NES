@@ -45,6 +45,9 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 # Mapper 21 / Konami VRC4a synthetic banking + IRQ smoke
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-konami-vrc4-irq.nes --board famicom --uncapped --stop-frame 120
 
+# Mapper 24 / Konami VRC6a banking + IRQ + chip-audio smoke
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-konami-vrc6-irq-audio.nes --board famicom --uncapped --stop-frame 120
+
 # Mapper 34 / BNROM
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-bnrom-bank-switch.nes --board famicom --uncapped --stop-frame 120
 

@@ -8,11 +8,11 @@ The longer-term goal is generic virtual-hardware infrastructure that can also ho
 
 ## Current release
 
-**v2.47.0**
+**v2.48.0**
 
-Validated baseline before this release: **596 / 596 Release tests passing through v2.46.3**, with Mapper 69 additionally validated on the commercial Japanese Gimmick! cartridge workload.
+Validated baseline before this release: **623 / 623 Release tests passing through v2.47.1**.
 
-v2.47.0 adds the Konami VRC4 family for mappers 21/23/25, including exact NES 2.0 VRC4a-f package address wiring, legacy iNES compatibility decode, PRG/CHR banking, CIRAM routing, optional work RAM and reusable Konami VRC IRQ circuitry.
+v2.48.0 adds the Konami VRC6 family as replaceable physical cartridge hardware for mappers 24 and 26, including both package address-line variants, PRG/CHR/nametable banking, work-RAM gating, the shared Konami VRC IRQ circuitry, and chip-owned dual-pulse plus sawtooth expansion-audio state.
 
 ## Architecture
 
@@ -90,7 +90,9 @@ Implemented cartridge mapper numbers:
 - **18 — Jaleco SS88006**
 - **21 — Konami VRC4a/VRC4c**
 - **23 — Konami VRC4e/VRC4f**
+- **24 — Konami VRC6a**
 - **25 — Konami VRC4b/VRC4d**
+- **26 — Konami VRC6b**
 - **34 — BNROM and NINA-001/002**
 - **66 — GxROM**
 - **69 — Sunsoft FME-7 / 5A / 5B family**
@@ -116,16 +118,6 @@ Mapper 18 / Jaleco SS88006 includes:
 - 4-, 8-, 12- and 16-bit masked CPU-cycle IRQ counting;
 - the SS88006 external-sample control output as board state. Optional uPD7755C/uPD7756C sample synthesis remains separate cartridge hardware and is not fabricated from missing sample data.
 
-Mapper 21/23/25 / Konami VRC4 family includes:
-
-- exact NES 2.0 VRC4a/VRC4c, VRC4e/VRC4f and VRC4b/VRC4d package address-line decoding;
-- legacy iNES compatibility decoding confined to the cartridge package when exact A0/A1 wiring metadata is absent;
-- two switchable 8 KiB PRG banks, fixed final banks and the VRC4 PRG swap mode;
-- eight independently switchable 1 KiB CHR banks assembled from low/high register nibbles;
-- horizontal, vertical and both single-screen CIRAM routes;
-- optional 8 KiB cartridge work RAM;
-- reusable Konami VRC IRQ circuitry with 8-bit reload/counter, cycle mode, 341-dot prescaler, enable-after-ack latch and open-drain IRQ output. NES 2.0 submappers identifying VRC2 hardware are rejected rather than approximated as VRC4.
-
 Mapper 69 / Sunsoft FME-7/5A/5B family includes:
 
 - three switchable 8 KiB PRG windows plus the fixed final 8 KiB bank;
@@ -134,6 +126,18 @@ Mapper 69 / Sunsoft FME-7/5A/5B family includes:
 - horizontal, vertical and both single-screen CIRAM routes;
 - the independent 16-bit CPU-cycle IRQ counter/output-enable circuitry with write acknowledgement;
 - chip-internal Sunsoft 5B divide-by-16 clocking, tone, noise/prescaler/LFSR, 32-step YM envelope, mixer and logarithmic DAC state. Mapper 69 metadata does not identify the exact FME-7/5A/5B ASIC revision, so no filename/hash inference is used. The current connector/audio path still needs a generic physical expansion-audio transport before 5B output can be mixed into host PCM.
+
+Konami VRC4 mappers 21/23/25 include exact NES 2.0 package address-line wiring for VRC4a-f, conservative legacy iNES decode where package wiring metadata is absent, two switchable 8 KiB PRG banks, eight 9-bit 1 KiB CHR banks, PRG swap mode, CIRAM routing, optional 8 KiB cartridge RAM, and the reusable Konami VRC IRQ divider/counter.
+
+Konami VRC6 mappers 24/26 include:
+
+- VRC6a and VRC6b package address-line wiring, with VRC6b physically swapping register A0/A1;
+- one switchable 16 KiB PRG region, one switchable 8 KiB PRG region and the fixed final 8 KiB bank;
+- eight CHR registers with the VRC6 1 KiB / grouped 2 KiB banking modes and A10 banking control;
+- CIRAM routing plus the chip's CHR-ROM nametable source modes;
+- state-controlled 8 KiB work-RAM access;
+- the shared Konami VRC cycle/scanline IRQ circuitry;
+- two chip-internal pulse generators, one 14-step saw accumulator, global halt/frequency-scaling control and retained cartridge DAC state. Expansion-audio generation remains inside the cartridge; audible host mixing waits for a generic physical analog connector/net path rather than an NES-specific shortcut.
 
 ## Build and test
 
@@ -237,7 +241,7 @@ tests/
 
 ## Direction
 
-The current mapper-completion tranche is focused on major remaining hardware families rather than exhaustive mapper-number coverage. After Sunsoft FME-7/5B, the remaining planned tranche focuses on Konami VRC, Namco and MMC5 hardware.
+The current mapper-completion tranche is focused on major remaining hardware families rather than exhaustive mapper-number coverage. With VRC4 and VRC6 covered, the remaining planned tranche focuses on Namco 163, Konami VRC7 and MMC5 hardware.
 
 After that tranche, development returns to the desktop product shell and broader system features, including:
 
