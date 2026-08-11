@@ -16,7 +16,7 @@ public sealed class VirtualHardwareKonamiVrc6CartridgeTests
     {
         var cartridge = CreateCartridge(24, 16, 64);
         var cpu = CpuRomTarget(cartridge);
-        var ppu = PpuTarget(cartridge);
+        var ppu = PpuPatternTarget(cartridge);
 
         Assert.Equal((byte)0x40, cpu.Read!(0x0000));
         Assert.Equal((byte)0x41, cpu.Read!(0x2000));
@@ -25,6 +25,25 @@ public sealed class VirtualHardwareKonamiVrc6CartridgeTests
         Assert.Equal(new[] { 0, 1, 0, 15 }, cartridge.PrgWindowBanks.ToArray());
         for (var slot = 0; slot < 8; slot++)
             Assert.Equal((byte)(0x80 + slot), ppu.Read!(slot * 0x400));
+
+        var staticFacet = (ICompiledStaticCombinationalComponent)cartridge;
+        Assert.True(staticFacet.TryEvaluateCompiledStaticOutput(
+            cartridge.CiramChipEnableBar,
+            pin => SamplePpuAddress(cartridge, pin, 0x0000),
+            out var patternCiramEnable));
+        Assert.Equal(DigitalLevel.High, patternCiramEnable.Level);
+        Assert.False(staticFacet.TryEvaluateCompiledStaticOutput(
+            cartridge.CiramChipEnableBar,
+            pin => SamplePpuAddress(cartridge, pin, 0x2000),
+            out _));
+
+        var directFacet = Assert.IsAssignableFrom<ICompiledBusAddressCombinationalComponent>(cartridge);
+        Assert.True(directFacet.TryEvaluateCompiledBusAddressOutput(
+            cartridge.CiramChipEnableBar, 0x0000, readCycle: true, out var directPatternCe));
+        Assert.Equal(DigitalLevel.High, directPatternCe.Level);
+        Assert.True(directFacet.TryEvaluateCompiledBusAddressOutput(
+            cartridge.CiramChipEnableBar, 0x2000, readCycle: true, out var directNametableCe));
+        Assert.Equal(DigitalLevel.Low, directNametableCe.Level);
         Assert.Equal(0UL, cartridge.PpuWriteCount);
     }
 
@@ -102,7 +121,7 @@ public sealed class VirtualHardwareKonamiVrc6CartridgeTests
     {
         var cartridge = CreateCartridge(24, 16, 128);
         var cpu = CpuRomTarget(cartridge);
-        var ppu = PpuTarget(cartridge);
+        var ppu = PpuPatternTarget(cartridge);
 
         for (var slot = 0; slot < 4; slot++) WriteHigh(cpu, (ushort)(0xD000 + slot), (byte)(0x20 + slot));
         for (var slot = 0; slot < 4; slot++) WriteHigh(cpu, (ushort)(0xE000 + slot), (byte)(0x24 + slot));
@@ -159,9 +178,16 @@ public sealed class VirtualHardwareKonamiVrc6CartridgeTests
         var expected = expectedText.Split(',').Select(int.Parse).ToArray();
         Assert.False(cartridge.NametablesUseChrRom);
         Assert.Equal(expected, cartridge.NametablePages.ToArray());
+        var directFacet = Assert.IsAssignableFrom<ICompiledBusAddressCombinationalComponent>(cartridge);
         for (var page = 0; page < 4; page++)
-            Assert.Equal(expected[page] == 0 ? DigitalLevel.Low : DigitalLevel.High,
-                EvaluateOutput(cartridge, cartridge.CiramA10, (ushort)(0x2000 + page * 0x400)));
+        {
+            var address = (ushort)(0x2000 + page * 0x400);
+            var expectedLevel = expected[page] == 0 ? DigitalLevel.Low : DigitalLevel.High;
+            Assert.Equal(expectedLevel, EvaluateOutput(cartridge, cartridge.CiramA10, address));
+            Assert.True(directFacet.TryEvaluateCompiledBusAddressOutput(
+                cartridge.CiramA10, address, readCycle: true, out var directA10));
+            Assert.Equal(expectedLevel, directA10.Level);
+        }
     }
 
     [Fact]
@@ -183,13 +209,16 @@ public sealed class VirtualHardwareKonamiVrc6CartridgeTests
     {
         var cartridge = CreateCartridge(24, 16, 128);
         var cpu = CpuRomTarget(cartridge);
-        var ppu = PpuTarget(cartridge);
+        var ppu = PpuChrNametableTarget(cartridge);
         WriteHigh(cpu, 0xE002, 0x24);
         WriteHigh(cpu, 0xE003, 0x2A);
         WriteHigh(cpu, 0xB003, 0x30); // CHR nametables + special mode 0x20
 
         Assert.True(cartridge.NametablesUseChrRom);
         Assert.Equal(new[] { 0x24, 0x25, 0x2A, 0x2B }, cartridge.NametablePages.ToArray());
+        var pattern = PpuPatternTarget(cartridge);
+        Assert.Null(pattern.IsSelected);
+        Assert.NotNull(ppu.IsSelected);
         Assert.True(ppu.IsSelected!(0x2000, false));
         Assert.Equal((byte)0xA4, ppu.Read!(0x2000));
         Assert.Equal((byte)0xA5, ppu.Read!(0x2400));
@@ -526,8 +555,13 @@ public sealed class VirtualHardwareKonamiVrc6CartridgeTests
         Assert.Single(((ICompiledBusTargetProvider)cartridge).GetCompiledBusTargets(),
             target => target.AddressPins.Count == 15 && target.ObserveBusCycle is null);
 
-    private static CompiledBusTargetDescriptor PpuTarget(KonamiVrc6Cartridge cartridge) =>
-        Assert.Single(((ICompiledBusTargetProvider)cartridge).GetCompiledBusTargets(), target => target.AddressPins.Count == 14);
+    private static CompiledBusTargetDescriptor PpuPatternTarget(KonamiVrc6Cartridge cartridge) =>
+        Assert.Single(((ICompiledBusTargetProvider)cartridge).GetCompiledBusTargets(),
+            target => target.AddressPins.Count == 14 && target.IsSelected is null);
+
+    private static CompiledBusTargetDescriptor PpuChrNametableTarget(KonamiVrc6Cartridge cartridge) =>
+        Assert.Single(((ICompiledBusTargetProvider)cartridge).GetCompiledBusTargets(),
+            target => target.AddressPins.Count == 14 && target.IsSelected is not null);
 
     private static void WriteHigh(CompiledBusTargetDescriptor cpu, ushort address, byte value) => cpu.Write!(address & 0x7FFF, value);
 

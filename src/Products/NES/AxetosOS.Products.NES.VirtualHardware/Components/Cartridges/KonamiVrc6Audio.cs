@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 
 /// <summary>
@@ -74,35 +76,41 @@ public sealed class KonamiVrc6Audio
             RefreshOutput();
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void SetFrequencyShift(byte shift) => _frequencyShift = shift;
 
-        internal void Clock()
+        /// <summary>
+        /// Clocks every physical CPU cycle. The combinational output node is only
+        /// reevaluated when the timer advances phase because no input to that node
+        /// can change on the intervening countdown cycles.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal bool Clock()
         {
-            if (!_enabled)
-            {
-                RefreshOutput();
-                return;
-            }
+            if (!_enabled) return false;
 
             _timer--;
-            if (_timer == 0)
-            {
-                _step = (byte)((_step + 1) & 0x0F);
-                _timer = (_frequency >> _frequencyShift) + 1;
-                TimerStepCount++;
-            }
-            RefreshOutput();
+            if (_timer != 0) return false;
+
+            _step = (byte)((_step + 1) & 0x0F);
+            _timer = (_frequency >> _frequencyShift) + 1;
+            TimerStepCount++;
+            return RefreshOutput();
         }
 
-        private void RefreshOutput()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool RefreshOutput()
         {
             var next = !_enabled
                 ? (byte)0
                 : _ignoreDuty || _step <= _dutyCycle
                     ? _volume
                     : (byte)0;
-            if (next != _outputLevel) OutputEdgeCount++;
+            if (next == _outputLevel) return false;
+
+            OutputEdgeCount++;
             _outputLevel = next;
+            return true;
         }
     }
 
@@ -172,40 +180,46 @@ public sealed class KonamiVrc6Audio
             RefreshOutput();
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void SetFrequencyShift(byte shift) => _frequencyShift = shift;
 
-        internal void Clock()
+        /// <summary>
+        /// Clocks every physical CPU cycle. The retained DAC node is only
+        /// reevaluated when the 14-step sequencer can change the accumulator.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal bool Clock()
         {
-            if (!_enabled)
-            {
-                RefreshOutput();
-                return;
-            }
+            if (!_enabled) return false;
 
             _timer--;
-            if (_timer == 0)
+            if (_timer != 0) return false;
+
+            _step = (byte)((_step + 1) % 14);
+            _timer = (_frequency >> _frequencyShift) + 1;
+            TimerStepCount++;
+            if (_step == 0)
             {
-                _step = (byte)((_step + 1) % 14);
-                _timer = (_frequency >> _frequencyShift) + 1;
-                TimerStepCount++;
-                if (_step == 0)
-                {
-                    _accumulator = 0;
-                }
-                else if ((_step & 1) == 0)
-                {
-                    _accumulator = unchecked((byte)(_accumulator + _accumulatorRate));
-                    AccumulatorStepCount++;
-                }
+                _accumulator = 0;
+                return RefreshOutput();
             }
-            RefreshOutput();
+
+            if ((_step & 1) != 0) return false;
+
+            _accumulator = unchecked((byte)(_accumulator + _accumulatorRate));
+            AccumulatorStepCount++;
+            return RefreshOutput();
         }
 
-        private void RefreshOutput()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool RefreshOutput()
         {
             var next = _enabled ? (byte)(_accumulator >> 3) : (byte)0;
-            if (next != _outputLevel) OutputEdgeCount++;
+            if (next == _outputLevel) return false;
+
+            OutputEdgeCount++;
             _outputLevel = next;
+            return true;
         }
     }
 
@@ -275,22 +289,30 @@ public sealed class KonamiVrc6Audio
         RefreshMixedOutput();
     }
 
+    /// <summary>
+    /// Clocks every physical CPU cycle. Channel timers are never skipped; only
+    /// redundant combinational DAC reevaluation is suppressed between state
+    /// changes, exactly as stable combinational hardware behaves.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void ClockCpuCycle()
     {
         CpuClockCount++;
-        if (!_halted)
-        {
-            Pulse1.Clock();
-            Pulse2.Clock();
-            Saw.Clock();
-        }
-        RefreshMixedOutput();
+        if (_halted) return;
+
+        // Deliberately use non-short-circuit OR so all three physical channels
+        // receive every CPU clock even when an earlier channel changes output.
+        var outputChanged = Pulse1.Clock() | Pulse2.Clock() | Saw.Clock();
+        if (outputChanged) RefreshMixedOutput();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void RefreshMixedOutput()
     {
         var next = (byte)(Pulse1.OutputLevel + Pulse2.OutputLevel + Saw.OutputLevel);
-        if (next != _mixedDacLevel) OutputEdgeCount++;
+        if (next == _mixedDacLevel) return;
+
+        OutputEdgeCount++;
         _mixedDacLevel = next;
     }
 }

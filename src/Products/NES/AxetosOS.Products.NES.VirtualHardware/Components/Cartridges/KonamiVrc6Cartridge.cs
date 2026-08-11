@@ -20,7 +20,8 @@ public enum KonamiVrc6Variant : byte
 /// Motherboard and compiler see only package pins and generic physical facets.
 /// </summary>
 public sealed class KonamiVrc6Cartridge : VirtualHardwareComponent, IReplaceableCartridgeHardware,
-    ICompiledBusTargetProvider, ICompiledCombinationalComponent
+    ICompiledBusTargetProvider, ICompiledCombinationalComponent, ICompiledStaticCombinationalComponent,
+    ICompiledBusAddressCombinationalComponent
 {
     private const int PrgBankSize = 8 * 1024;
     private const int ChrBankSize = 1 * 1024;
@@ -725,15 +726,29 @@ public sealed class KonamiVrc6Cartridge : VirtualHardwareComponent, IReplaceable
     private void ObserveCompiledCpuBusCycle(bool _) => ClockCpuCycle();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal byte ReadPpuCompiled(ushort address)
+    internal byte ReadPpuPatternCompiled(ushort address)
     {
         PpuReadCount++;
-        if (address >= 0x2000) ChrNametableReadCount++;
-        return ReadPpu(address);
+        var slot = address >> 10;
+        var bank = _chrWindowBanks[slot];
+        return _chr[(bank * ChrBankSize) + (address & 0x03FF)];
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal byte ReadPpuChrNametableCompiled(ushort address)
+    {
+        PpuReadCount++;
+        ChrNametableReadCount++;
+        var nametable = (address >> 10) & 0x03;
+        var bankPage = _nametablePages[nametable] & _chrBankMask;
+        return _chr[(bankPage * ChrBankSize) + (address & 0x03FF)];
     }
 
     private bool IsCpuWorkRamSelectedCompiled(int address, bool _) => WorkRamEnabled && (address & 0x6000) == 0x6000;
-    private bool IsPpuSelectedCompiled(int address, bool writeCycle) => !writeCycle && IsCartridgePpuReadSelected((ushort)(address & 0x3FFF));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsChrNametablePpuSelectedCompiled(int address, bool writeCycle) =>
+        !writeCycle && NametablesUseChrRom && (address & 0x3FFF) < 0x3F00;
 
     private void ReleaseOutputs()
     {
@@ -800,16 +815,94 @@ public sealed class KonamiVrc6Cartridge : VirtualHardwareComponent, IReplaceable
                 writePhase: CompiledBusWritePhase.Complete);
         }
 
+        // Pattern-table ROM is selected by fixed package wiring whenever PPU A13
+        // is low. Keep that dominant fetch path fully static/direct even though
+        // VRC6 can independently reconfigure who drives nametable addresses.
         yield return new CompiledBusTargetDescriptor(
             this,
             PpuAddress.Pins,
             PpuData.Pins,
-            new[] { new CompiledPinCondition(PpuReadBar, DigitalLevel.Low) },
+            new[]
+            {
+                new CompiledPinCondition(PpuAddress.Pins[13], DigitalLevel.Low),
+                new CompiledPinCondition(PpuReadBar, DigitalLevel.Low)
+            },
             Array.Empty<CompiledPinCondition>(),
             CompiledBusReadPhase.Complete,
-            address => ReadPpuCompiled((ushort)address),
+            address => ReadPpuPatternCompiled((ushort)address),
+            null);
+
+        // CHR-backed nametables are a separate, genuinely state-controlled
+        // cartridge output path. Only this facet remains dynamic. This mirrors
+        // the real ASIC: changing $B003 can enable/disable the nametable driver
+        // without changing the fixed CHR pattern-ROM select circuitry.
+        yield return new CompiledBusTargetDescriptor(
+            this,
+            PpuAddress.Pins,
+            PpuData.Pins,
+            new[]
+            {
+                new CompiledPinCondition(PpuAddress.Pins[13], DigitalLevel.High),
+                new CompiledPinCondition(PpuReadBar, DigitalLevel.Low)
+            },
+            Array.Empty<CompiledPinCondition>(),
+            CompiledBusReadPhase.Complete,
+            address => ReadPpuChrNametableCompiled((ushort)address),
             null,
-            isSelected: IsPpuSelectedCompiled);
+            isSelected: IsChrNametablePpuSelectedCompiled);
+    }
+
+    bool ICompiledBusAddressCombinationalComponent.TryEvaluateCompiledBusAddressOutput(
+        DigitalPin output,
+        uint address,
+        bool readCycle,
+        out CompiledDriveState drive)
+    {
+        var ppuAddress = (ushort)(address & 0x3FFF);
+        var a13High = (ppuAddress & 0x2000) != 0;
+
+        if (ReferenceEquals(output, CiramChipEnableBar))
+        {
+            drive = new CompiledDriveState(
+                a13High && !NametablesUseChrRom ? DigitalLevel.Low : DigitalLevel.High);
+            return true;
+        }
+
+        if (ReferenceEquals(output, CiramA10))
+        {
+            if (NametablesUseChrRom || !a13High)
+            {
+                drive = new CompiledDriveState(DigitalLevel.Unknown);
+                return true;
+            }
+
+            var page = _nametablePages[(ppuAddress >> 10) & 0x03] & 1;
+            drive = new CompiledDriveState(page != 0 ? DigitalLevel.High : DigitalLevel.Low);
+            return true;
+        }
+
+        drive = default;
+        return false;
+    }
+
+    bool ICompiledStaticCombinationalComponent.TryEvaluateCompiledStaticOutput(
+        DigitalPin output,
+        Func<DigitalPin, DigitalLevel> sampleInput,
+        out CompiledDriveState drive)
+    {
+        // Irrespective of mutable $B003 state, CIRAM can never be selected while
+        // PPU A13 is low (pattern-table space). Expose only that immutable piece
+        // of the package decode so the generic compiler can reject CIRAM from
+        // pattern fetches. Nametable-space CE remains live-state dependent.
+        if (ReferenceEquals(output, CiramChipEnableBar)
+            && sampleInput(PpuAddress.Pins[13]) == DigitalLevel.Low)
+        {
+            drive = new CompiledDriveState(DigitalLevel.High);
+            return true;
+        }
+
+        drive = default;
+        return false;
     }
 
     bool ICompiledCombinationalComponent.TryEvaluateCompiledOutput(

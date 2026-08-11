@@ -199,6 +199,23 @@ public interface ICompiledCombinationalComponent
 }
 
 /// <summary>
+/// Optional fast-path facet for combinational package outputs that the component
+/// can evaluate directly from the currently compiled bus master's address and
+/// transaction direction plus its own live internal state. This does not make
+/// that state static: the evaluator runs for every physical access that needs
+/// the output. It only avoids recursively rediscovering already-known package
+/// address-pin projection through the topology graph.
+/// </summary>
+public interface ICompiledBusAddressCombinationalComponent
+{
+    bool TryEvaluateCompiledBusAddressOutput(
+        DigitalPin output,
+        uint address,
+        bool readCycle,
+        out CompiledDriveState drive);
+}
+
+/// <summary>
 /// Optional subset of combinational package outputs whose behavior is guaranteed
 /// not to depend on mutable internal state while the device remains attached.
 /// The whole-circuit compiler may use these facets when rebuilding dispatch for

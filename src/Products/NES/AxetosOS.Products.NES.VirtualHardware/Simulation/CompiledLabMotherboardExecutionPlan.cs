@@ -643,6 +643,14 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             return descriptor.IsSelected?.Invoke(localAddress, writeCycle) ?? true;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public DigitalLevel EvaluateRuntimeInput(
+            DigitalPin input,
+            ushort masterAddress,
+            bool readCycle,
+            CompiledBusMasterDescriptor master) =>
+            EvaluateInput(input, masterAddress, readCycle, master, 0);
+
         private static void ValidateDataBusCoverage(
             CompiledBusMasterDescriptor master,
             IReadOnlyList<CompiledBusTargetRuntime> targets)
@@ -940,6 +948,16 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             {
                 var masterDrive = master.EvaluateDrivenPin(driver, address, readCycle);
                 if (masterDrive.HasValue) return masterDrive.Value;
+
+                if (driver.OwnerComponent is ICompiledBusAddressCombinationalComponent busAddressCombinational
+                    && busAddressCombinational.TryEvaluateCompiledBusAddressOutput(
+                        driver,
+                        address,
+                        readCycle,
+                        out var directDrive))
+                {
+                    return directDrive;
+                }
             }
 
             if (driver.OwnerComponent is ICompiledCombinationalComponent combinational
@@ -1078,6 +1096,44 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
         public CompiledTargetSet Targets { get; }
     }
 
+    private readonly struct CompiledRuntimePinResolver
+    {
+        private readonly DigitalPin _input;
+        private readonly ICompiledBusAddressCombinationalComponent? _directComponent;
+        private readonly DigitalPin? _directOutput;
+
+        public CompiledRuntimePinResolver(
+            DigitalPin input,
+            ICompiledBusAddressCombinationalComponent? directComponent,
+            DigitalPin? directOutput)
+        {
+            _input = input;
+            _directComponent = directComponent;
+            _directOutput = directOutput;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public DigitalLevel Sample(
+            HardwareCompiler compiler,
+            CompiledBusMasterDescriptor master,
+            ushort address,
+            bool readCycle)
+        {
+            var direct = _directComponent;
+            if (direct is not null
+                && direct.TryEvaluateCompiledBusAddressOutput(
+                    _directOutput!,
+                    address,
+                    readCycle,
+                    out var drive))
+            {
+                return drive.Level;
+            }
+
+            return compiler.EvaluateRuntimeInput(_input, address, readCycle, master);
+        }
+    }
+
     private sealed class CompiledDynamicTargetBinding
     {
         public CompiledDynamicTargetBinding(
@@ -1085,23 +1141,32 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             int[] addressSources,
             int[] localAddressBases,
             int[] runtimeAddressBits,
+            CompiledRuntimePinResolver[] runtimeAddressResolvers,
             byte[] readConditionClasses,
-            byte[] writeConditionClasses)
+            byte[] writeConditionClasses,
+            CompiledRuntimePinResolver[] readConditionResolvers,
+            CompiledRuntimePinResolver[] writeConditionResolvers)
         {
             Target = target;
             AddressSources = addressSources;
             LocalAddressBases = localAddressBases;
             RuntimeAddressBits = runtimeAddressBits;
+            RuntimeAddressResolvers = runtimeAddressResolvers;
             ReadConditionClasses = readConditionClasses;
             WriteConditionClasses = writeConditionClasses;
+            ReadConditionResolvers = readConditionResolvers;
+            WriteConditionResolvers = writeConditionResolvers;
         }
 
         public CompiledBusTargetRuntime Target { get; }
         public int[] AddressSources { get; }
         public int[] LocalAddressBases { get; }
         public int[] RuntimeAddressBits { get; }
+        public CompiledRuntimePinResolver[] RuntimeAddressResolvers { get; }
         public byte[] ReadConditionClasses { get; }
         public byte[] WriteConditionClasses { get; }
+        public CompiledRuntimePinResolver[] ReadConditionResolvers { get; }
+        public CompiledRuntimePinResolver[] WriteConditionResolvers { get; }
     }
 
     private sealed class CompiledBusFabric : ICompiledBusFabric
@@ -1319,13 +1384,17 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                         ? CompileConditionClasses(target, addressCount, readCycle: false)
                         : [];
                     var addressSources = set.AddressSources[targetIndex];
+                    var runtimeAddressBits = CompileRuntimeAddressBits(addressSources);
                     bindings.Add(new CompiledDynamicTargetBinding(
                         target,
                         addressSources,
                         CompileLocalAddressBases(addressSources, addressCount),
-                        CompileRuntimeAddressBits(addressSources),
+                        runtimeAddressBits,
+                        CompileRuntimeAddressResolvers(descriptor, runtimeAddressBits),
                         readClasses,
-                        writeClasses));
+                        writeClasses,
+                        CompileConditionResolvers(descriptor.ReadConditions),
+                        CompileConditionResolvers(descriptor.WriteConditions)));
                 }
             }
             return bindings.ToArray();
@@ -1355,6 +1424,46 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
                 if (addressSources[bit] < 0) bits.Add(bit);
             }
             return bits.Count == 0 ? [] : bits.ToArray();
+        }
+
+        private static CompiledRuntimePinResolver[] CompileRuntimeAddressResolvers(
+            CompiledBusTargetDescriptor descriptor,
+            int[] runtimeAddressBits)
+        {
+            if (runtimeAddressBits.Length == 0) return [];
+            var resolvers = new CompiledRuntimePinResolver[runtimeAddressBits.Length];
+            for (var index = 0; index < runtimeAddressBits.Length; index++)
+                resolvers[index] = CompileRuntimePinResolver(descriptor.AddressPins[runtimeAddressBits[index]]);
+            return resolvers;
+        }
+
+        private static CompiledRuntimePinResolver[] CompileConditionResolvers(
+            IReadOnlyList<CompiledPinCondition> conditions)
+        {
+            if (conditions.Count == 0) return [];
+            var resolvers = new CompiledRuntimePinResolver[conditions.Count];
+            for (var index = 0; index < conditions.Count; index++)
+                resolvers[index] = CompileRuntimePinResolver(conditions[index].Pin);
+            return resolvers;
+        }
+
+        private static CompiledRuntimePinResolver CompileRuntimePinResolver(DigitalPin input)
+        {
+            var net = input.Net;
+            if (net is null) return new CompiledRuntimePinResolver(input, null, null);
+
+            DigitalPin? directOutput = null;
+            foreach (var pin in net.Pins)
+            {
+                if (!pin.IsOutputCapable || ReferenceEquals(pin, input)) continue;
+                if (directOutput is not null)
+                    return new CompiledRuntimePinResolver(input, null, null);
+                directOutput = pin;
+            }
+
+            return directOutput?.OwnerComponent is ICompiledBusAddressCombinationalComponent direct
+                ? new CompiledRuntimePinResolver(input, direct, directOutput)
+                : new CompiledRuntimePinResolver(input, null, null);
         }
 
         private byte[] CompileConditionClasses(
@@ -1699,26 +1808,37 @@ public sealed class CompiledLabMotherboardExecutionPlan : IDisposable
             byte conditionClass,
             out int localAddress)
         {
-            if (conditionClass == 1)
+            var descriptor = binding.Target.Descriptor;
+
+            if (conditionClass == 2)
             {
-                var routeIndex = address & (binding.LocalAddressBases.Length - 1);
-                return _compiler.TryResolveRuntimeAddressFromPlan(
-                    Master,
-                    binding.Target,
-                    binding.LocalAddressBases[routeIndex],
-                    binding.RuntimeAddressBits,
-                    address,
-                    writeCycle: !readCycle,
-                    out localAddress);
+                var conditions = readCycle ? descriptor.ReadConditions : descriptor.WriteConditions;
+                var resolvers = readCycle ? binding.ReadConditionResolvers : binding.WriteConditionResolvers;
+                for (var index = 0; index < conditions.Count; index++)
+                {
+                    if (resolvers[index].Sample(_compiler, Master, address, readCycle)
+                        != conditions[index].RequiredLevel)
+                    {
+                        localAddress = 0;
+                        return false;
+                    }
+                }
             }
 
-            return _compiler.TryResolveRuntimeTarget(
-                Master,
-                binding.Target,
-                binding.AddressSources,
-                address,
-                readCycle,
-                out localAddress);
+            var routeIndex = address & (binding.LocalAddressBases.Length - 1);
+            localAddress = binding.LocalAddressBases[routeIndex];
+            var runtimeBits = binding.RuntimeAddressBits;
+            var runtimeResolvers = binding.RuntimeAddressResolvers;
+            for (var index = 0; index < runtimeBits.Length; index++)
+            {
+                var level = runtimeResolvers[index].Sample(_compiler, Master, address, readCycle);
+                if (level == DigitalLevel.High)
+                    localAddress |= 1 << runtimeBits[index];
+                else if (level != DigitalLevel.Low)
+                    return false;
+            }
+
+            return descriptor.IsSelected?.Invoke(localAddress, !readCycle) ?? true;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
