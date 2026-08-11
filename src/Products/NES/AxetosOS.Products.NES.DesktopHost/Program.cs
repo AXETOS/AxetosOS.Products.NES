@@ -781,6 +781,26 @@ if (host.Machine.Slot.Cartridge is KonamiVrc6Cartridge finalVrc6)
         $"p2=${finalVrc6.Audio.Pulse2.Frequency:X3}/{finalVrc6.Audio.Pulse2.Volume:X1}/d{finalVrc6.Audio.Pulse2.DutyCycle}/s{finalVrc6.Audio.Pulse2.Step}, " +
         $"saw=${finalVrc6.Audio.Saw.Frequency:X3}/r{finalVrc6.Audio.Saw.AccumulatorRate:X2}/a{finalVrc6.Audio.Saw.Accumulator:X2}/s{finalVrc6.Audio.Saw.Step}");
 }
+if (host.Machine.Slot.Cartridge is Namco163Cartridge finalNamco163)
+{
+    Console.WriteLine(
+        $"Namco 163:      prg-reg=[{string.Join(",", finalNamco163.PrgBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"prg-map=[{string.Join(",", finalNamco163.PrgWindowBanks)}], ppu=[{string.Join(",", finalNamco163.PpuBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"chr-ciram-disable={finalNamco163.LowChrCiramDisabled}/{finalNamco163.HighChrCiramDisabled}, protect=${finalNamco163.WriteProtectRegister:X2}, " +
+        $"ram={finalNamco163.WorkRamSizeBytes:N0}, mapper-writes={finalNamco163.MapperWriteCount:N0}, last=${finalNamco163.LastMapperWriteAddress:X4}:${finalNamco163.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalNamco163.CpuReadCount:N0}, low-reg-reads={finalNamco163.LowRegisterReadCount:N0}, ram-reads={finalNamco163.WorkRamReadCount:N0}, " +
+        $"ram-writes={finalNamco163.WorkRamWriteCount:N0}, blocked-ram-writes={finalNamco163.BlockedWorkRamWriteCount:N0}, ppu-reads={finalNamco163.PpuReadCount:N0}, chr-reads={finalNamco163.ChrReadCount:N0}");
+    Console.WriteLine(
+        $"Namco IRQ:      counter=${finalNamco163.IrqCounter:X4}, enabled={finalNamco163.IrqEnabled}, asserted={finalNamco163.IrqAsserted}, " +
+        $"cpu-clocks={finalNamco163.CpuCycleClockCount:N0}, irq-clocks={finalNamco163.IrqClockCount:N0}, irq-asserts={finalNamco163.IrqAssertCount:N0}");
+    Console.WriteLine(
+        $"Namco 163 audio: addr=${finalNamco163.Audio.RamAddress:X2}, auto-inc={finalNamco163.Audio.AutoIncrement}, disabled={finalNamco163.Audio.SoundDisabled}, " +
+        $"channels={finalNamco163.Audio.ActiveChannelCount}, current={finalNamco163.Audio.CurrentChannel}, divider={finalNamco163.Audio.Divider}, dac={finalNamco163.Audio.SerialDacLevel}, " +
+        $"cpu-clocks={finalNamco163.Audio.CpuClockCount:N0}, channel-updates={finalNamco163.Audio.ChannelUpdateCount:N0}, " +
+        $"addr-writes={finalNamco163.Audio.RamAddressWriteCount:N0}, data-reads={finalNamco163.Audio.RamDataReadCount:N0}, data-writes={finalNamco163.Audio.RamDataWriteCount:N0}, " +
+        $"auto-increments={finalNamco163.Audio.AutoIncrementCount:N0}, output-edges={finalNamco163.Audio.OutputEdgeCount:N0}, " +
+        $"sample={finalNamco163.Audio.LastWaveSample:X1}, volume={finalNamco163.Audio.LastVolume:X1}");
+}
 if (host.Machine.Slot.Cartridge is Mapper34Cartridge finalMapper34)
 {
     if (finalMapper34.BoardVariant == Mapper34BoardVariant.Bnrom)

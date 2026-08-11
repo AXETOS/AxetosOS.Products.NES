@@ -68,6 +68,12 @@
       "definition": "boards/ss88006.json"
     },
     {
+      "mapper": 19,
+      "submapper": null,
+      "name": "Namcot 163",
+      "definition": "boards/namco163.json"
+    },
+    {
       "mapper": 21,
       "submapper": null,
       "name": "Konami VRC4a/VRC4c",

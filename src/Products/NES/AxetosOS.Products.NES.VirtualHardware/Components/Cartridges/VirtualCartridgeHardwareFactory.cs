@@ -25,6 +25,7 @@ public static class VirtualCartridgeHardwareFactory
             11 => new ColorDreamsCartridge("SLOT.CARTRIDGE.COLORDREAMS"),
             16 => new BandaiFcgCartridge("SLOT.CARTRIDGE.BANDAI.FCG"),
             18 => new JalecoSs88006Cartridge("SLOT.CARTRIDGE.JALECO.SS88006"),
+            19 => new Namco163Cartridge("SLOT.CARTRIDGE.NAMCO.163"),
             21 or 23 or 25 => new KonamiVrc4Cartridge("SLOT.CARTRIDGE.KONAMI.VRC4"),
             24 or 26 => new KonamiVrc6Cartridge("SLOT.CARTRIDGE.KONAMI.VRC6"),
             34 => new Mapper34Cartridge("SLOT.CARTRIDGE.MAPPER34"),

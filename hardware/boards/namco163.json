@@ -1,0 +1,28 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.namco163.mapper19",
+  "name": "Namcot 163",
+  "mapper": 19,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "Namco163Cartridge",
+      "role": "Namcot 163 ASIC with PRG/PPU banking, CIRAM routing, RAM protection, CPU-cycle IRQ and sound-RAM ports"
+    },
+    {
+      "id": "audio",
+      "type": "Namco163Audio",
+      "role": "Chip-internal 128-byte wavetable RAM, eight time-multiplexed voices and single serial DAC"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.PrgBank0..2 -> PrgRom bank address inputs",
+    "mapper.PpuBank0..11 -> ChrRom or Motherboard.Ciram",
+    "mapper.RamProtect -> PrgRam write-enable blocks",
+    "mapper.IrqBar -> Cpu.IrqBar",
+    "Cpu.M2 -> mapper.IrqClock + audio.Clock"
+  ],
+  "notes": "Mapper 19 models the Namcot 163 package. The multiplexed expansion-audio DAC remains cartridge-local until a generic analog cartridge-connector path is available."
+}

@@ -8,11 +8,11 @@ The longer-term goal is generic virtual-hardware infrastructure that can also ho
 
 ## Current release
 
-**v2.48.0**
+**v2.49.0**
 
-Validated baseline before this release: **623 / 623 Release tests passing through v2.47.1**.
+Validated baseline before this release: **656 / 656 Release tests passing through v2.48.4**.
 
-v2.48.0 adds the Konami VRC6 family as replaceable physical cartridge hardware for mappers 24 and 26, including both package address-line variants, PRG/CHR/nametable banking, work-RAM gating, the shared Konami VRC IRQ circuitry, and chip-owned dual-pulse plus sawtooth expansion-audio state.
+v2.49.0 adds Namcot 163 / Mapper 19 as replaceable physical cartridge hardware, including PRG/CHR/CIRAM banking, protected cartridge RAM, CPU-cycle IRQs, the shared 128-byte sound/wave RAM interface and the chip's time-multiplexed eight-voice wavetable generator.
 
 ## Architecture
 
@@ -88,6 +88,7 @@ Implemented cartridge mapper numbers:
 - **11 — Color Dreams**
 - **16 — Bandai FCG-1/2 / LZ93D50**
 - **18 — Jaleco SS88006**
+- **19 — Namcot 163**
 - **21 — Konami VRC4a/VRC4c**
 - **23 — Konami VRC4e/VRC4f**
 - **24 — Konami VRC6a**
@@ -126,6 +127,15 @@ Mapper 69 / Sunsoft FME-7/5A/5B family includes:
 - horizontal, vertical and both single-screen CIRAM routes;
 - the independent 16-bit CPU-cycle IRQ counter/output-enable circuitry with write acknowledgement;
 - chip-internal Sunsoft 5B divide-by-16 clocking, tone, noise/prescaler/LFSR, 32-step YM envelope, mixer and logarithmic DAC state. Mapper 69 metadata does not identify the exact FME-7/5A/5B ASIC revision, so no filename/hash inference is used. The current connector/audio path still needs a generic physical expansion-audio transport before 5B output can be mixed into host PCM.
+
+Mapper 19 / Namcot 163 includes:
+
+- three switchable 8 KiB PRG windows plus the fixed final 8 KiB bank;
+- twelve independently programmed 1 KiB PPU windows that can select CHR ROM or either CIRAM page, including CIRAM mapping into pattern-table space;
+- optional 8 KiB cartridge RAM/NVRAM split into four independently protected 2 KiB blocks;
+- the readable/writable 15-bit CPU-cycle IRQ counter and open-drain IRQ output;
+- 128 bytes of chip-local sound/wave RAM with address/autoincrement and data ports;
+- the physical time-multiplexed wavetable generator with 1–8 active voices, one channel update every 15 CPU cycles, 18-bit frequency, 24-bit phase, programmable waveform length/address and a single retained DAC node. Expansion-audio mixing still waits for the generic analog cartridge path.
 
 Konami VRC4 mappers 21/23/25 include exact NES 2.0 package address-line wiring for VRC4a-f, conservative legacy iNES decode where package wiring metadata is absent, two switchable 8 KiB PRG banks, eight 9-bit 1 KiB CHR banks, PRG swap mode, CIRAM routing, optional 8 KiB cartridge RAM, and the reusable Konami VRC IRQ divider/counter.
 
