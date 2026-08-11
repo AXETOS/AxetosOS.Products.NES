@@ -781,6 +781,26 @@ if (host.Machine.Slot.Cartridge is KonamiVrc6Cartridge finalVrc6)
         $"p2=${finalVrc6.Audio.Pulse2.Frequency:X3}/{finalVrc6.Audio.Pulse2.Volume:X1}/d{finalVrc6.Audio.Pulse2.DutyCycle}/s{finalVrc6.Audio.Pulse2.Step}, " +
         $"saw=${finalVrc6.Audio.Saw.Frequency:X3}/r{finalVrc6.Audio.Saw.AccumulatorRate:X2}/a{finalVrc6.Audio.Saw.Accumulator:X2}/s{finalVrc6.Audio.Saw.Step}");
 }
+if (host.Machine.Slot.Cartridge is KonamiVrc7Cartridge finalVrc7)
+{
+    Console.WriteLine(
+        $"Konami VRC7:   prg-reg=[{string.Join(",", finalVrc7.PrgBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"prg-map=[{string.Join(",", finalVrc7.PrgWindowBanks)}], chr=[{string.Join(",", finalVrc7.ChrBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"chr-map=[{string.Join(",", finalVrc7.ChrWindowBanks)}], chr-memory={(finalVrc7.IsChrRam ? "RAM" : "ROM")}/{finalVrc7.ChrMemorySizeBytes:N0}, " +
+        $"control=${finalVrc7.ControlFlags:X2}, mirroring={finalVrc7.NametableMode}, wram={finalVrc7.WorkRamSizeBytes:N0}/{finalVrc7.WorkRamEnabled}, mapper-writes={finalVrc7.MapperWriteCount:N0}, " +
+        $"last=${finalVrc7.LastMapperWriteAddress:X4}->${finalVrc7.LastNormalizedMapperWriteAddress:X4}:${finalVrc7.LastMapperWriteData:X2}, " +
+        $"cpu-reads={finalVrc7.CpuReadCount:N0}, wram-reads={finalVrc7.WorkRamReadCount:N0}, wram-writes={finalVrc7.WorkRamWriteCount:N0}, " +
+        $"ppu-reads={finalVrc7.PpuReadCount:N0}, ppu-writes={finalVrc7.PpuWriteCount:N0}");
+    Console.WriteLine(
+        $"Konami IRQ:    reload=${finalVrc7.Irq.ReloadValue:X2}, counter=${finalVrc7.Irq.Counter:X2}, prescaler={finalVrc7.Irq.Prescaler}, " +
+        $"enabled={finalVrc7.Irq.Enabled}, enable-after-ack={finalVrc7.Irq.EnabledAfterAcknowledge}, cycle-mode={finalVrc7.Irq.CycleMode}, asserted={finalVrc7.Irq.Asserted}, " +
+        $"cpu-clocks={finalVrc7.Irq.CpuClockCount:N0}, counter-clocks={finalVrc7.Irq.CounterClockCount:N0}, irq-asserts={finalVrc7.Irq.AssertCount:N0}");
+    Console.WriteLine(
+        $"Konami VRC7 audio: select=${finalVrc7.Audio.SelectedRegister:X2}, muted={finalVrc7.Audio.Muted}, dac={finalVrc7.Audio.MixedDacLevel}, " +
+        $"cpu-clocks={finalVrc7.Audio.CpuClockCount:N0}, fm-samples={finalVrc7.Audio.SampleClockCount:N0}, address-writes={finalVrc7.Audio.AddressWriteCount:N0}, " +
+        $"data-writes={finalVrc7.Audio.DataWriteCount:N0}, ignored={finalVrc7.Audio.IgnoredWriteCount:N0}, key-ons={finalVrc7.Audio.KeyOnCount:N0}, output-edges={finalVrc7.Audio.OutputEdgeCount:N0}, " +
+        $"channels=[{string.Join(",", finalVrc7.Audio.Channels.Select(channel => $"{channel.Index + 1}:${channel.FNumber:X3}/b{channel.Block}/i{channel.Instrument:X1}/v{channel.Volume:X1}/{(channel.KeyOn ? "on" : "off")}"))}]");
+}
 if (host.Machine.Slot.Cartridge is Namco163Cartridge finalNamco163)
 {
     Console.WriteLine(

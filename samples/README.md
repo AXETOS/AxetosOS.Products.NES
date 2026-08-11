@@ -66,6 +66,9 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 # Mapper 79 / NINA-03/NINA-06
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-nina-bank-switch.nes --board famicom --uncapped --stop-frame 120
 
+# Mapper 85 / Konami VRC7 banking + IRQ + chip-FM smoke
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-konami-vrc7-irq-audio.nes --board famicom --uncapped --stop-frame 120
+
 # Mapper 206 / DxROM / Namco 108 / MIMIC-1
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-dxrom-bank-switch.nes --board famicom --uncapped --stop-frame 120
 

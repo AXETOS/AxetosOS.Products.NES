@@ -1,0 +1,34 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.konami-vrc7.mapper85",
+  "name": "Konami VRC7",
+  "mapper": 85,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "KonamiVrc7Cartridge",
+      "role": "VRC7 ASIC with PRG/CHR banking, CIRAM routing, SRAM gate, IRQ and FM register decode"
+    },
+    {
+      "id": "irq",
+      "type": "KonamiVrcIrqCounter",
+      "role": "Reusable Konami VRC 8-bit reload/counter and 341-dot scanline prescaler circuitry"
+    },
+    {
+      "id": "audio",
+      "type": "KonamiVrc7Audio",
+      "role": "Chip-local six-channel two-operator FM digital generator with custom and mask-ROM instruments"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.PrgBank0..2 -> PrgRom bank address inputs",
+    "mapper.ChrBank0..7 -> ChrMemory (ROM or RAM) bank address inputs",
+    "mapper.Mirroring -> Motherboard.Ciram.A10",
+    "mapper.IrqControl -> irq",
+    "irq.IrqBar -> mapper.IrqBar -> Cpu.IrqBar",
+    "Cpu.M2 -> mapper.AudioClock -> audio"
+  ],
+  "notes": "Mapper 85 VRC7. The package accepts documented x008/x010 register aliases while keeping $9010/$9030 dedicated to the FM address/data ports. CHR memory may be banked ROM or banked writable RAM as declared by the cartridge image; mixed ROM/RAM remains rejected pending a verified board topology. Expansion audio remains cartridge-local until a generic analog cartridge path is modeled."
+}

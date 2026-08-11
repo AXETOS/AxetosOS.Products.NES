@@ -134,6 +134,12 @@
       "definition": "boards/nina.json"
     },
     {
+      "mapper": 85,
+      "submapper": null,
+      "name": "Konami VRC7",
+      "definition": "boards/konami-vrc7-mapper85.json"
+    },
+    {
       "mapper": 206,
       "submapper": null,
       "name": "DxROM",

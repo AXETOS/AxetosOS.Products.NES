@@ -8,11 +8,11 @@ The longer-term goal is generic virtual-hardware infrastructure that can also ho
 
 ## Current release
 
-**v2.49.0**
+**v2.50.2**
 
-Validated baseline before this release: **656 / 656 Release tests passing through v2.48.4**.
+Validated baseline before this release: **717 / 717 Release tests passing through v2.50.1**.
 
-v2.49.0 adds Namcot 163 / Mapper 19 as replaceable physical cartridge hardware, including PRG/CHR/CIRAM banking, protected cartridge RAM, CPU-cycle IRQs, the shared 128-byte sound/wave RAM interface and the chip's time-multiplexed eight-voice wavetable generator.
+v2.50.2 completes the VRC7 cartridge memory topology needed by CHR-RAM-only Mapper-85 images while retaining banked CHR-ROM support. The same eight 1 KiB mapper windows now drive either a ROM or writable RAM device according to the loaded cartridge image; raw and compiled PPU writes use the physical cartridge bus path.
 
 ## Architecture
 
@@ -99,6 +99,7 @@ Implemented cartridge mapper numbers:
 - **69 — Sunsoft FME-7 / 5A / 5B family**
 - **71 — Camerica/Codemasters**
 - **79 — NINA-03/NINA-06**
+- **85 — Konami VRC7**
 - **206 — DxROM / Namco-108 family**
 - **227 — address-latch multicart hardware**
 
@@ -148,6 +149,16 @@ Konami VRC6 mappers 24/26 include:
 - state-controlled 8 KiB work-RAM access;
 - the shared Konami VRC cycle/scanline IRQ circuitry;
 - two chip-internal pulse generators, one 14-step saw accumulator, global halt/frequency-scaling control and retained cartridge DAC state. Expansion-audio generation remains inside the cartridge; audible host mixing waits for a generic physical analog connector/net path rather than an NES-specific shortcut.
+
+Konami VRC7 mapper 85 includes:
+
+- three independently switchable 8 KiB PRG windows plus the fixed final 8 KiB bank;
+- eight independently switchable 1 KiB CHR-ROM windows;
+- vertical, horizontal and both single-screen CIRAM routes;
+- control-bit-gated 8 KiB SRAM and FM-write mute behavior;
+- the shared Konami VRC full-byte reload cycle/scanline IRQ circuitry;
+- register normalization for the VRC7 x008/x010 address aliases while preserving the dedicated $9010/$9030 FM address/data ports;
+- six chip-local two-operator FM channels, one writable custom instrument, fifteen VRC7 mask-ROM instruments, key/phase/envelope/operator state and the physical OPLL output cadence of one FM sample per 36 CPU cycles. Expansion-audio generation remains inside the cartridge and is not mixed through a mapper-specific host shortcut.
 
 ## Build and test
 

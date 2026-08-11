@@ -28,6 +28,7 @@ public static class VirtualCartridgeHardwareFactory
             19 => new Namco163Cartridge("SLOT.CARTRIDGE.NAMCO.163"),
             21 or 23 or 25 => new KonamiVrc4Cartridge("SLOT.CARTRIDGE.KONAMI.VRC4"),
             24 or 26 => new KonamiVrc6Cartridge("SLOT.CARTRIDGE.KONAMI.VRC6"),
+            85 => new KonamiVrc7Cartridge("SLOT.CARTRIDGE.KONAMI.VRC7"),
             34 => new Mapper34Cartridge("SLOT.CARTRIDGE.MAPPER34"),
             66 => new GxromCartridge("SLOT.CARTRIDGE.GXROM"),
             69 => new SunsoftFme7Cartridge("SLOT.CARTRIDGE.SUNSOFT.FME7"),
