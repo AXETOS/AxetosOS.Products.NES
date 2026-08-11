@@ -1,0 +1,34 @@
+{
+  "$schema": "../schemas/cartridge-board.schema.json",
+  "id": "nes.board.nintendo-mmc5.mapper5",
+  "name": "Nintendo MMC5",
+  "mapper": 5,
+  "components": [
+    {
+      "id": "mapper",
+      "type": "NintendoMmc5Cartridge",
+      "role": "MMC5 ASIC with PRG/CHR banking, protected PRG RAM, ExRAM, nametable routing, vertical split, extended attributes, scanline IRQ and multiplier"
+    },
+    {
+      "id": "exram",
+      "type": "StaticRamChip",
+      "role": "1 KiB MMC5 Expansion RAM used as CPU RAM, nametable RAM, extended-attribute storage and vertical-split source"
+    },
+    {
+      "id": "audio",
+      "type": "NintendoMmc5Audio",
+      "role": "Chip-local dual pulse and 8-bit PCM expansion-audio circuitry"
+    }
+  ],
+  "connections": [
+    "Cpu.Bus -> mapper.Cpu",
+    "Ppu.Bus -> mapper.Ppu",
+    "mapper.PrgBank -> PrgRom/PrgRam bank address inputs",
+    "mapper.ChrBankA/B -> ChrMemory bank address inputs",
+    "mapper.NametableMux -> Motherboard.Ciram.CE_BAR/A10 or mapper.ExRam/Fill data driver",
+    "mapper.ExRamAddress/Data -> exram",
+    "mapper.IrqBar -> Cpu.IrqBar",
+    "Cpu.M2 -> mapper.AudioClock -> audio"
+  ],
+  "notes": "Mapper 5 MMC5. The package models the MMC5's PPU-bus snooping for in-frame/scanline detection, independent CIRAM/ExRAM/fill selection per nametable, extended attributes and vertical split without adding mapper semantics to the motherboard or generic compiler. Expansion audio remains cartridge-local until a generic analog cartridge path is modeled."
+}

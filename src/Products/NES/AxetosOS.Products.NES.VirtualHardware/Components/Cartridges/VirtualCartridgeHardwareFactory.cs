@@ -19,6 +19,7 @@ public static class VirtualCartridgeHardwareFactory
             2 => new UxromCartridge("SLOT.CARTRIDGE.UXROM"),
             3 => new CnromCartridge("SLOT.CARTRIDGE.CNROM"),
             4 => new Mmc3Cartridge("SLOT.CARTRIDGE.MMC3"),
+            5 => new NintendoMmc5Cartridge("SLOT.CARTRIDGE.NINTENDO.MMC5"),
             7 => new AxromCartridge("SLOT.CARTRIDGE.AXROM"),
             9 => new Mmc2Cartridge("SLOT.CARTRIDGE.MMC2"),
             10 => new Mmc4Cartridge("SLOT.CARTRIDGE.MMC4"),

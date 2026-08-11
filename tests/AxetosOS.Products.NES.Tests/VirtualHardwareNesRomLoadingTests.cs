@@ -166,9 +166,9 @@ public sealed class VirtualHardwareNesRomLoadingTests
     public void Factory_rejects_mapper_without_physical_cartridge_hardware()
     {
         var error = Assert.Throws<NotSupportedException>(() =>
-            VirtualHardwareNesMachineFactory.Load(CreateRom(mapper: 5, prgUnits: 2, chrUnits: 1), "MMC5.nes"));
+            VirtualHardwareNesMachineFactory.Load(CreateRom(mapper: 6, prgUnits: 2, chrUnits: 1), "Mapper6.nes"));
 
-        Assert.Contains("Mapper 5", error.Message);
+        Assert.Contains("Mapper 6", error.Message);
     }
 
     [Fact]

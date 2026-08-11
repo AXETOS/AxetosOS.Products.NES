@@ -23,6 +23,9 @@ dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
 # Mapper 4 / MMC3
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-mmc3-bank-switch.nes --board famicom --uncapped --stop-frame 120
 
+# Mapper 5 / Nintendo MMC5 banking + ExRAM/fill/split/IRQ + chip-audio smoke
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-nintendo-mmc5-irq-audio.nes --board famicom --uncapped --stop-frame 120
+
 # Mapper 7 / AxROM
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- .\samples\axetos-axrom-bank-switch.nes --board famicom --uncapped --stop-frame 120
 

@@ -32,6 +32,12 @@
       "definition": "boards/mmc3.json"
     },
     {
+      "mapper": 5,
+      "submapper": null,
+      "name": "Nintendo MMC5",
+      "definition": "boards/nintendo-mmc5-mapper5.json"
+    },
+    {
       "mapper": 7,
       "submapper": null,
       "name": "AxROM",

@@ -8,11 +8,11 @@ The longer-term goal is generic virtual-hardware infrastructure that can also ho
 
 ## Current release
 
-**v2.50.2**
+**v2.51.3**
 
-Validated baseline before this release: **717 / 717 Release tests passing through v2.50.1**.
+Validated baseline before this release: **759 / 759 Release tests passing through v2.51.1**.
 
-v2.50.2 completes the VRC7 cartridge memory topology needed by CHR-RAM-only Mapper-85 images while retaining banked CHR-ROM support. The same eight 1 KiB mapper windows now drive either a ROM or writable RAM device according to the loaded cartridge image; raw and compiled PPU writes use the physical cartridge bus path.
+v2.51.3 continues the Nintendo MMC5 / Mapper-5 completion sweep. It retains the v2.51.2 CHR A/B fetch-phase latch and corrects the MMC5 PPU fetch geometry to the full 50 nametable-fetch events used by the hardware detector: background 0-31, 8x16 sprite CHR-A interval 32-47, post-sprite boundary 48+, with matching 49/50 vertical-split and extended-attribute boundaries. This targets the remaining sprite corruption exposed by Castlevania III without adding game-specific behavior.
 
 ## Architecture
 
@@ -82,6 +82,7 @@ Implemented cartridge mapper numbers:
 - **2 — UxROM**
 - **3 — CNROM**
 - **4 — MMC3/MMC6 family**
+- **5 — Nintendo MMC5**
 - **7 — AxROM**
 - **9 — MMC2 / PxROM**
 - **10 — MMC4 / FxROM**
@@ -150,10 +151,22 @@ Konami VRC6 mappers 24/26 include:
 - the shared Konami VRC cycle/scanline IRQ circuitry;
 - two chip-internal pulse generators, one 14-step saw accumulator, global halt/frequency-scaling control and retained cartridge DAC state. Expansion-audio generation remains inside the cartridge; audible host mixing waits for a generic physical analog connector/net path rather than an NES-specific shortcut.
 
+
+Nintendo MMC5 mapper 5 includes:
+
+- all four PRG banking modes across the `$6000-$FFFF` cartridge windows, including protected banked PRG RAM/NVRAM and the fixed-ROM `$5117` window rules;
+- all four CHR banking modes, the separate A/B CHR register sets used with 8x16 sprites, upper CHR address bits and both CHR-ROM and CHR-RAM memory devices;
+- the chip's 1 KiB ExRAM with its four CPU/PPU access modes;
+- independent two-bit source selection for every nametable quadrant: CIRAM page 0, CIRAM page 1, ExRAM or fill mode;
+- fill tile/color generation, extended-attribute palette/4 KiB CHR substitution and vertical-split nametable/attribute/CHR substitution derived from live PPU bus traffic;
+- PPU-read-based in-frame/scanline detection, programmable scanline IRQ and open-drain IRQ output;
+- the `$5205/$5206` 8x8 hardware multiplier;
+- two chip-local pulse generators with MMC5's fixed ~240 Hz envelope/length clock plus 8-bit PCM direct/read-mode state. Expansion-audio generation remains inside the cartridge; audible mixing waits for the generic physical analog connector/net path.
+
 Konami VRC7 mapper 85 includes:
 
 - three independently switchable 8 KiB PRG windows plus the fixed final 8 KiB bank;
-- eight independently switchable 1 KiB CHR-ROM windows;
+- eight independently switchable 1 KiB CHR windows backed by either CHR ROM or writable CHR RAM according to cartridge topology;
 - vertical, horizontal and both single-screen CIRAM routes;
 - control-bit-gated 8 KiB SRAM and FM-write mute behavior;
 - the shared Konami VRC full-byte reload cycle/scanline IRQ circuitry;
@@ -262,7 +275,7 @@ tests/
 
 ## Direction
 
-The current mapper-completion tranche is focused on major remaining hardware families rather than exhaustive mapper-number coverage. With VRC4 and VRC6 covered, the remaining planned tranche focuses on Namco 163, Konami VRC7 and MMC5 hardware.
+The current major-mapper completion tranche reaches its final family with MMC5 in v2.51.0. After Mapper-5 validation, development emphasis returns to the desktop product surface, compatibility testing, diagnostics/debugging, save/load state, controller/audio/video options and further generic compiler/performance work. Obscure mapper families can then be added when real cartridges require them.
 
 After that tranche, development returns to the desktop product shell and broader system features, including:
 

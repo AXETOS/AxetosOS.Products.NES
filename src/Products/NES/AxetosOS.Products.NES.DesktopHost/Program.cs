@@ -745,6 +745,32 @@ if (host.Machine.Slot.Cartridge is SunsoftFme7Cartridge finalSunsoft)
         $"tone-flips={finalSunsoft.Psg.ToneFlipCount:N0}, noise-shifts={finalSunsoft.Psg.NoiseShiftCount:N0}, " +
         $"envelope-steps={finalSunsoft.Psg.EnvelopeStepCount:N0}, output-edges={finalSunsoft.Psg.OutputEdgeCount:N0}");
 }
+if (host.Machine.Slot.Cartridge is NintendoMmc5Cartridge finalMmc5)
+{
+    Console.WriteLine(
+        $"Nintendo MMC5:  prg-mode={finalMmc5.PrgMode}, prg-reg=[{string.Join(",", finalMmc5.PrgBankRegisters.Select(value => $"${value:X2}"))}], " +
+        $"prg-map=[{string.Join(",", Enumerable.Range(0, 4).Select(slot => $"{(finalMmc5.PrgWindowUsesRam[slot] ? "R" : "P")}{finalMmc5.PrgWindowBanks[slot]}"))}], " +
+        $"chr-mode={finalMmc5.ChrMode}, chr-upper=${finalMmc5.ChrUpperBits:X1}, chr-reg=[{string.Join(",", finalMmc5.ChrBankRegisters.Select(value => $"${value:X3}"))}], " +
+        $"chr-now=[{string.Join(",", Enumerable.Range(0, 8).Select(finalMmc5.ResolveCurrentChrBank))}], chr-set={(finalMmc5.ActiveChrSetA ? "A" : "B")}, chr-memory={(finalMmc5.IsChrRam ? "RAM" : "ROM")}/{finalMmc5.ChrMemorySizeBytes:N0}, " +
+        $"wram={finalMmc5.WorkRamSizeBytes:N0}/write={finalMmc5.PrgRamWriteEnabled}, exram-mode={finalMmc5.ExRamMode}, nt-map=${finalMmc5.NametableMapping:X2}, " +
+        $"fill=${finalMmc5.FillTile:X2}/{finalMmc5.FillColor}, mapper-writes={finalMmc5.MapperWriteCount:N0}, last=${finalMmc5.LastMapperWriteAddress:X4}:${finalMmc5.LastMapperWriteData:X2}");
+    Console.WriteLine(
+        $"MMC5 memory:    cpu-reads={finalMmc5.CpuReadCount:N0}, low-reg-reads={finalMmc5.LowRegisterReadCount:N0}, wram-reads={finalMmc5.WorkRamReadCount:N0}, " +
+        $"wram-writes={finalMmc5.WorkRamWriteCount:N0}, exram-cpu={finalMmc5.ExRamCpuReadCount:N0}/{finalMmc5.ExRamCpuWriteCount:N0}, " +
+        $"ppu-observed={finalMmc5.PpuBusReadObservationCount:N0}, ppu-driven={finalMmc5.PpuReadCount:N0}, ppu-writes={finalMmc5.PpuWriteCount:N0}, " +
+        $"chr={finalMmc5.ChrReadCount:N0} (A={finalMmc5.ChrSetAReadCount:N0}, B={finalMmc5.ChrSetBReadCount:N0}, switches={finalMmc5.ChrSetSwitchCount:N0}), exram={finalMmc5.ExRamPpuReadCount:N0}/{finalMmc5.ExRamPpuWriteCount:N0}, fill={finalMmc5.FillReadCount:N0}, " +
+        $"ext-attr={finalMmc5.ExtendedAttributeReadCount:N0}, ext-chr={finalMmc5.ExtendedChrReadCount:N0}, split={finalMmc5.VerticalSplitReadCount:N0}");
+    Console.WriteLine(
+        $"MMC5 IRQ/math:  in-frame={finalMmc5.PpuInFrame}, scanline={finalMmc5.ScanlineCounter}, target={finalMmc5.IrqTarget}, enabled={finalMmc5.IrqEnabled}, pending={finalMmc5.IrqPending}, " +
+        $"asserted={finalMmc5.IrqAsserted}, cpu-clocks={finalMmc5.CpuCycleClockCount:N0}, irq-asserts={finalMmc5.IrqAssertCount:N0}, multiply=${finalMmc5.MultiplierResult:X4}, " +
+        $"split={finalMmc5.SplitEnabled}/{(finalMmc5.SplitRightSide ? "right" : "left")}/x{finalMmc5.SplitDelimiterTile}/scroll{finalMmc5.SplitScroll}/bank${finalMmc5.SplitBank:X2}");
+    Console.WriteLine(
+        $"MMC5 audio:     dac={finalMmc5.Audio.MixedDacLevel}, cpu-clocks={finalMmc5.Audio.CpuClockCount:N0}, apu-half={finalMmc5.Audio.ApuHalfClockCount:N0}, frame-clocks={finalMmc5.Audio.FrameClockCount:N0}, " +
+        $"writes={finalMmc5.Audio.RegisterWriteCount:N0}, reads={finalMmc5.Audio.RegisterReadCount:N0}, output-edges={finalMmc5.Audio.OutputEdgeCount:N0}, " +
+        $"p1=${finalMmc5.Audio.Pulse1.Period:X3}/d{finalMmc5.Audio.Pulse1.Duty}/l{finalMmc5.Audio.Pulse1.LengthCounter}/o{finalMmc5.Audio.Pulse1.OutputLevel:X1}, " +
+        $"p2=${finalMmc5.Audio.Pulse2.Period:X3}/d{finalMmc5.Audio.Pulse2.Duty}/l{finalMmc5.Audio.Pulse2.LengthCounter}/o{finalMmc5.Audio.Pulse2.OutputLevel:X1}, " +
+        $"pcm={finalMmc5.Audio.PcmOutput:X2}/read={finalMmc5.Audio.PcmReadMode}/irq={finalMmc5.Audio.PcmIrqPending}/samples={finalMmc5.Audio.PcmReadSampleCount:N0}");
+}
 if (host.Machine.Slot.Cartridge is KonamiVrc4Cartridge finalVrc4)
 {
     Console.WriteLine(
