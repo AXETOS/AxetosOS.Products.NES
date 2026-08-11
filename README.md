@@ -1,290 +1,193 @@
-# AxetosOS Products / NES
+# AxetosOS.Products.NES
 
-AxetosOS Products / NES is a physical virtual-hardware implementation of Nintendo/Famicom-class hardware built on the AxetosOS hardware platform.
+`AxetosOS.Products.NES` is a reusable NES/Famicom virtual-hardware implementation for .NET 8.
 
-The machine is modeled as a motherboard populated by independent chip packages connected through physical pins, buses, traces and clocks. The assembled hardware can then be compiled into an efficient executable circuit without teaching the compiler what an NES, CPU, PPU or mapper is.
+The project models the machine as physical hardware: motherboards, chip packages, package pins, buses, traces, clocks, cartridge connectors and replaceable cartridge hardware. The assembled circuit can then be compiled into a faster executable representation without teaching the compiler what an NES, CPU, PPU or mapper is.
 
-The longer-term goal is generic virtual-hardware infrastructure that can also host other machines by supplying different motherboards, packages and physical topology.
+The same virtual-hardware architecture is intended to support other machines by supplying different motherboards, packages and physical topology.
 
-## Current release
+## Design principles
 
-**v2.51.3**
+### Physical boundaries are authoritative
 
-Validated baseline before this release: **759 / 759 Release tests passing through v2.51.1**.
+Communication that crosses a package boundary crosses physical pins and nets. Logic that belongs inside one IC remains internal to that IC.
 
-v2.51.3 continues the Nintendo MMC5 / Mapper-5 completion sweep. It retains the v2.51.2 CHR A/B fetch-phase latch and corrects the MMC5 PPU fetch geometry to the full 50 nametable-fetch events used by the hardware detector: background 0-31, 8x16 sprite CHR-A interval 32-47, post-sprite boundary 48+, with matching 49/50 vertical-split and extended-attribute boundaries. This targets the remaining sprite corruption exposed by Castlevania III without adding game-specific behavior.
+### The motherboard is deliberately dumb
 
-## Architecture
+The motherboard transports electrical state and defines topology. It does not contain CPU, PPU, mapper, register or game semantics.
 
-### Physical machine first
+Chip-owned logic decides what received signal levels mean and whether internal circuitry activates.
 
-```text
-Motherboard
-  -> chip packages
-  -> package pins
-  -> physical traces / buses / clocks
-  -> cartridge connector
-  -> replaceable cartridge hardware
-```
+### Compilation is topology-driven
 
-The motherboard is intentionally dumb. It transports signal levels and topology; it does not know CPU, PPU, mapper, register or game semantics.
+The runtime may compile an assembled machine into efficient execution paths, but every optimization must be derivable from generic hardware characteristics and physical connections.
 
-Chip-owned logic decides what received pin levels mean and whether internal circuitry activates.
+Valid optimizations include fixed routes, immutable clock routing, static package connections, state-independent combinational outputs and pre-resolvable bus targets.
 
-### Generic whole-circuit compiler
+The compiler must not contain NES-, mapper-, CPU-, PPU- or game-specific shortcuts.
 
-Normal execution can compile the assembled hardware before power-on. Compiler decisions must be derivable from generic hardware facets and physical topology only.
+### Cartridges remain replaceable hardware
 
-Valid generic optimizations include:
-
-- fixed physical routes;
-- state-independent combinational outputs;
-- pre-resolvable bus targets;
-- fixed address projections;
-- immutable clock routing;
-- static package connections;
-- reusable delegates and dispatch paths.
-
-The compiler must **not** contain NES-, mapper-, CPU-, PPU- or game-specific shortcuts. MMC, VRC, Namco, Bandai and other cartridge semantics remain inside their hardware components.
-
-### Replaceable cartridges remain hardware
-
-Compiled execution preserves the cartridge boundary:
+ROM, RAM, mapper ASICs, latches, IRQ circuitry, bus conflicts and cartridge-local devices remain on the cartridge side of the connector even when execution is compiled.
 
 ```text
-compiled motherboard runtime unit
+compiled motherboard
         <-> physical cartridge boundary <->
-compiled replaceable cartridge runtime unit
+compiled cartridge hardware
 ```
 
-ROM, RAM, mapper ASICs, latches, bus conflicts, IRQ circuitry and board-local devices therefore remain owned by the cartridge.
+## Hardware scope
 
-## Current hardware scope
+The current implementation includes:
 
-Core machine hardware includes:
-
-- Famicom/NES motherboard topology;
-- RP2A03 CPU/APU package behavior;
-- RP2C02 PPU package behavior;
-- work RAM, CIRAM and discrete support logic;
+- Famicom, NTSC NES and PAL NES machine variants;
+- RP2A03 CPU/APU behavior;
+- RP2C02 PPU behavior;
+- work RAM, CIRAM and supporting discrete hardware;
 - physical CPU and PPU buses;
-- native framebuffer presentation;
-- native PCM audio output;
-- responsive ROM loading screen;
-- iNES and NES 2.0 cartridge metadata handling;
-- two standard controller packages with physical strobe/clock/data wiring;
-- external controller-button stimulus connected through physical button contacts only.
+- cartridge insertion and iNES/NES 2.0 metadata handling;
+- standard controllers using physical strobe/clock/data wiring;
+- framebuffer and audio output contracts for host applications;
+- in-memory whole-machine capture/restore for fast checkpoints;
+- portable whole-machine capture/restore for host-managed persistent save states;
+- generic compiled execution plus a raw physical-propagation reference path.
 
-Implemented cartridge mapper numbers:
+## Supported cartridge mappers
 
-- **0 — NROM**
-- **1 — MMC1**
-- **2 — UxROM**
-- **3 — CNROM**
-- **4 — MMC3/MMC6 family**
-- **5 — Nintendo MMC5**
-- **7 — AxROM**
-- **9 — MMC2 / PxROM**
-- **10 — MMC4 / FxROM**
-- **11 — Color Dreams**
-- **16 — Bandai FCG-1/2 / LZ93D50**
-- **18 — Jaleco SS88006**
-- **19 — Namcot 163**
-- **21 — Konami VRC4a/VRC4c**
-- **23 — Konami VRC4e/VRC4f**
-- **24 — Konami VRC6a**
-- **25 — Konami VRC4b/VRC4d**
-- **26 — Konami VRC6b**
-- **34 — BNROM and NINA-001/002**
-- **66 — GxROM**
-- **69 — Sunsoft FME-7 / 5A / 5B family**
-- **71 — Camerica/Codemasters**
-- **79 — NINA-03/NINA-06**
-- **85 — Konami VRC7**
-- **206 — DxROM / Namco-108 family**
-- **227 — address-latch multicart hardware**
+Mapper definitions are described in `hardware/mapper-catalog.json` and the board files under `hardware/boards/`.
 
-Mapper 16 currently covers the modern NES 2.0 distinctions used by mapper 16 itself:
+| Mapper | Hardware family |
+|---:|---|
+| 0 | NROM |
+| 1 | MMC1 |
+| 2 | UxROM |
+| 3 | CNROM |
+| 4 | MMC3 / MMC6 |
+| 5 | Nintendo MMC5 |
+| 7 | AxROM |
+| 9 | MMC2 / PxROM |
+| 10 | MMC4 / FxROM |
+| 11 | Color Dreams |
+| 16 | Bandai FCG-1/2 / LZ93D50 |
+| 18 | Jaleco SS88006 |
+| 19 | Namcot 163 |
+| 21 | Konami VRC4a / VRC4c |
+| 23 | Konami VRC4e / VRC4f |
+| 24 | Konami VRC6a |
+| 25 | Konami VRC4b / VRC4d |
+| 26 | Konami VRC6b |
+| 34 | BNROM / NINA-001/002 |
+| 66 | GxROM |
+| 69 | Sunsoft FME-7 / 5A / 5B family |
+| 71 | Camerica |
+| 79 | NINA-03 / NINA-06 |
+| 85 | Konami VRC7 |
+| 206 | DxROM / Namco-108 family |
+| 227 | Address-latch multicart hardware |
 
-- submapper 4: FCG-1/2 register decode in `$6000-$7FFF`, direct IRQ counter programming, no EEPROM;
-- submapper 5: LZ93D50 register decode in `$8000-$FFFF`, latched CPU-cycle IRQ counter, optional 256-byte 24C02 serial EEPROM;
-- submapper 0: legacy compatibility response in both documented register ranges.
+Mapper behavior belongs to cartridge hardware. Adding another mapper should normally mean adding or extending cartridge components and board topology rather than adding mapper knowledge to the motherboard or compiler.
 
-Deprecated Mapper-16 submappers that represent materially different fitted hardware are intentionally left to their dedicated mapper numbers (153, 157 and 159) rather than approximated as Mapper 16.
+## Host integration
 
-Mapper 18 / Jaleco SS88006 includes:
+`VirtualNesBootHost` is the main host-facing machine harness. It loads a ROM into the virtual cartridge hardware, advances the physical machine clock and exposes output through host-facing video and audio sinks.
 
-- three switchable 8 KiB PRG windows plus a fixed final bank;
-- eight independently switchable 1 KiB CHR windows;
-- optional 8 KiB work RAM with read/write protection state;
-- horizontal, vertical and both single-screen CIRAM routes;
-- 4-, 8-, 12- and 16-bit masked CPU-cycle IRQ counting;
-- the SS88006 external-sample control output as board state. Optional uPD7755C/uPD7756C sample synthesis remains separate cartridge hardware and is not fabricated from missing sample data.
+Important host-facing state operations include:
 
-Mapper 69 / Sunsoft FME-7/5A/5B family includes:
+- `CaptureState()` / `RestoreState()` for fast same-process checkpoints;
+- `CapturePortableState()` / `RestorePortableState()` for versioned cross-process state payloads that a host may persist to disk.
 
-- three switchable 8 KiB PRG windows plus the fixed final 8 KiB bank;
-- a bank-selectable `$6000-$7FFF` window that can expose PRG ROM, enabled work RAM, or open bus;
-- eight independently switchable 1 KiB CHR-ROM windows;
-- horizontal, vertical and both single-screen CIRAM routes;
-- the independent 16-bit CPU-cycle IRQ counter/output-enable circuitry with write acknowledgement;
-- chip-internal Sunsoft 5B divide-by-16 clocking, tone, noise/prescaler/LFSR, 32-step YM envelope, mixer and logarithmic DAC state. Mapper 69 metadata does not identify the exact FME-7/5A/5B ASIC revision, so no filename/hash inference is used. The current connector/audio path still needs a generic physical expansion-audio transport before 5B output can be mixed into host PCM.
+Portable state intentionally does not embed the ROM image. A host that persists a state is responsible for identifying and reloading the matching ROM before restoration.
 
-Mapper 19 / Namcot 163 includes:
+External controller contacts remain host input rather than becoming frozen controller presses when a machine state is restored.
 
-- three switchable 8 KiB PRG windows plus the fixed final 8 KiB bank;
-- twelve independently programmed 1 KiB PPU windows that can select CHR ROM or either CIRAM page, including CIRAM mapping into pattern-table space;
-- optional 8 KiB cartridge RAM/NVRAM split into four independently protected 2 KiB blocks;
-- the readable/writable 15-bit CPU-cycle IRQ counter and open-drain IRQ output;
-- 128 bytes of chip-local sound/wave RAM with address/autoincrement and data ports;
-- the physical time-multiplexed wavetable generator with 1–8 active voices, one channel update every 15 CPU cycles, 18-bit frequency, 24-bit phase, programmable waveform length/address and a single retained DAC node. Expansion-audio mixing still waits for the generic analog cartridge path.
+## Application boundary
 
-Konami VRC4 mappers 21/23/25 include exact NES 2.0 package address-line wiring for VRC4a-f, conservative legacy iNES decode where package wiring metadata is absent, two switchable 8 KiB PRG banks, eight 9-bit 1 KiB CHR banks, PRG swap mode, CIRAM routing, optional 8 KiB cartridge RAM, and the reusable Konami VRC IRQ divider/counter.
+This repository is the public NES hardware engine, not the AxetosOS desktop application.
 
-Konami VRC6 mappers 24/26 include:
+Application features belong to the host around the machine, including:
 
-- VRC6a and VRC6b package address-line wiring, with VRC6b physically swapping register A0/A1;
-- one switchable 16 KiB PRG region, one switchable 8 KiB PRG region and the fixed final 8 KiB bank;
-- eight CHR registers with the VRC6 1 KiB / grouped 2 KiB banking modes and A10 banking control;
-- CIRAM routing plus the chip's CHR-ROM nametable source modes;
-- state-controlled 8 KiB work-RAM access;
-- the shared Konami VRC cycle/scanline IRQ circuitry;
-- two chip-internal pulse generators, one 14-step saw accumulator, global halt/frequency-scaling control and retained cartridge DAC state. Expansion-audio generation remains inside the cartridge; audible host mixing waits for a generic physical analog connector/net path rather than an NES-specific shortcut.
+- menus and window chrome;
+- fullscreen behavior;
+- ROM-library UX and file dialogs;
+- pause/reset hotkeys;
+- quick-save/load UI;
+- persistent save-state files and save-state management;
+- recording/export controls;
+- application status bars and dialogs.
 
+The NES framebuffer remains game output only. Hosts should consume the framebuffer/audio output directly for recording or export so application chrome is never part of captured game output.
 
-Nintendo MMC5 mapper 5 includes:
-
-- all four PRG banking modes across the `$6000-$FFFF` cartridge windows, including protected banked PRG RAM/NVRAM and the fixed-ROM `$5117` window rules;
-- all four CHR banking modes, the separate A/B CHR register sets used with 8x16 sprites, upper CHR address bits and both CHR-ROM and CHR-RAM memory devices;
-- the chip's 1 KiB ExRAM with its four CPU/PPU access modes;
-- independent two-bit source selection for every nametable quadrant: CIRAM page 0, CIRAM page 1, ExRAM or fill mode;
-- fill tile/color generation, extended-attribute palette/4 KiB CHR substitution and vertical-split nametable/attribute/CHR substitution derived from live PPU bus traffic;
-- PPU-read-based in-frame/scanline detection, programmable scanline IRQ and open-drain IRQ output;
-- the `$5205/$5206` 8x8 hardware multiplier;
-- two chip-local pulse generators with MMC5's fixed ~240 Hz envelope/length clock plus 8-bit PCM direct/read-mode state. Expansion-audio generation remains inside the cartridge; audible mixing waits for the generic physical analog connector/net path.
-
-Konami VRC7 mapper 85 includes:
-
-- three independently switchable 8 KiB PRG windows plus the fixed final 8 KiB bank;
-- eight independently switchable 1 KiB CHR windows backed by either CHR ROM or writable CHR RAM according to cartridge topology;
-- vertical, horizontal and both single-screen CIRAM routes;
-- control-bit-gated 8 KiB SRAM and FM-write mute behavior;
-- the shared Konami VRC full-byte reload cycle/scanline IRQ circuitry;
-- register normalization for the VRC7 x008/x010 address aliases while preserving the dedicated $9010/$9030 FM address/data ports;
-- six chip-local two-operator FM channels, one writable custom instrument, fifteen VRC7 mask-ROM instruments, key/phase/envelope/operator state and the physical OPLL output cadence of one FM sample per 36 CPU cycles. Expansion-audio generation remains inside the cartridge and is not mixed through a mapper-specific host shortcut.
+The `AxetosOS.Products.NES.DesktopHost` project in this repository is a reference/diagnostic host used for hardware validation. It is not the AxetosOS product shell.
 
 ## Build and test
 
-Requirements:
+The hardware libraries and tests target .NET 8.
 
-- .NET 8 SDK
-- Windows for the current native desktop host
-
-Run the complete Release test suite:
+Run the NES test project directly:
 
 ```powershell
-dotnet test -c Release
+dotnet test .\tests\AxetosOS.Products.NES.Tests\AxetosOS.Products.NES.Tests.csproj -c Release
 ```
 
-## Run a ROM
+The repository contains automated coverage for the electrical model, motherboard/chip boundaries, CPU/APU/PPU behavior, controllers, ROM loading, compiled execution and supported cartridge hardware.
 
-Launch with a ROM path:
+## Reference host
+
+When this repository is checked out inside the full AxetosOS source workspace, the Windows diagnostic host can be launched with a ROM path:
 
 ```powershell
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- "C:\ROMs\game.nes" --board famicom
 ```
 
-Or launch without a path to use the native ROM picker:
+Or without a path to use its ROM picker:
 
 ```powershell
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost
 ```
 
-Controller 1 keyboard bindings:
+Diagnostic execution switches include:
 
-- arrows — D-pad
-- Z — A
-- X — B
-- Enter — Start
-- Right Shift — Select
-- Escape — exit
-
-## Diagnostic execution modes
-
-The production path automatically uses compiled physical execution when supported by the assembled machine.
-
-Force the generic whole-circuit compiler:
-
-```powershell
-dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- "C:\ROMs\game.nes" --board famicom --compiled-lab
+```text
+--compiled-lab       force generic compiled physical execution
+--raw-hardware       use the uncompiled physical-propagation reference path
+--reference-runtime  alias for the raw diagnostic path
+--uncapped           remove normal presentation pacing for throughput/profiling
 ```
 
-Run the uncompiled physical propagation reference path:
-
-```powershell
-dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- "C:\ROMs\game.nes" --board famicom --raw-hardware
-```
-
-`--reference-runtime` remains an alias for the raw diagnostic path.
-
-`--uncapped` remains available for throughput/profiling diagnostics. It does not change emulated hardware semantics and should not be confused with normal hardware-paced gameplay.
-
-## Runtime diagnostics
-
-When the desktop host exits it reports reproducible hardware state such as:
-
-- master clock and CPU instruction counts;
-- CPU state and bus address;
-- boot/reset/vblank/NMI checks;
-- APU cycle and DAC activity;
-- PPU raster, pipeline and fetch counters;
-- controller latch/shift activity;
-- mapper registers, bank state, IRQ state and cartridge bus counters where applicable.
-
-These diagnostics are intended to expose hardware behavior without moving semantics into the motherboard or compiler.
+These switches change the execution or diagnostic path, not the emulated hardware semantics.
 
 ## Repository layout
 
 ```text
+hardware/
+  boards/                 cartridge-board definitions
+  schemas/                board/catalog schemas
+  mapper-catalog.json     supported mapper catalog
+
+product/                  product metadata
+samples/                  synthetic test/sample ROMs and related assets
+
 src/Products/NES/
   AxetosOS.Products.NES.Abstractions/
   AxetosOS.Products.NES.Cartridges/
-  AxetosOS.Products.NES.DesktopHost/
   AxetosOS.Products.NES.VirtualHardware/
-
-hardware/
-  boards/
-  schemas/
-
-samples/
+  AxetosOS.Products.NES.DesktopHost/    reference/diagnostic host
 
 tests/
   AxetosOS.Products.NES.Tests/
 ```
 
-`AxetosOS.Products.NES.VirtualHardware` contains the electrical/runtime infrastructure together with the current motherboard, chip and cartridge models. Generic compiler/electrical functionality should remain independent of NES product semantics.
+`AxetosOS.Products.NES.VirtualHardware` contains the electrical/runtime infrastructure together with the current motherboard, chip and cartridge models. Generic electrical/compiler infrastructure must remain independent of NES product semantics.
 
-## Development principles
+## Extending the hardware
 
-1. **Physical boundaries are authoritative.** Chips communicate through package interfaces unless communication is genuinely internal to one chip.
-2. **Motherboards transport signals; chips own semantics.** No receiver-aware motherboard shortcuts.
-3. **Compile topology, not product knowledge.** Optimizations must be derivable from generic hardware facets and connections.
-4. **External hardware stays replaceable.** Cartridge hardware is not silently absorbed into motherboard logic.
-5. **Validate hardware changes.** New cartridge families receive conformance tests plus real-ROM validation where practical.
-6. **Host features stay outside the simulated motherboard.** ROM selection, UI, save states and settings operate around the machine rather than becoming NES circuitry.
+When adding a mapper or other device:
 
-## Direction
-
-The current major-mapper completion tranche reaches its final family with MMC5 in v2.51.0. After Mapper-5 validation, development emphasis returns to the desktop product surface, compatibility testing, diagnostics/debugging, save/load state, controller/audio/video options and further generic compiler/performance work. Obscure mapper families can then be added when real cartridges require them.
-
-After that tranche, development returns to the desktop product shell and broader system features, including:
-
-- in-window ROM loading;
-- pause/reset/power-cycle controls;
-- save state / load state;
-- native menus and settings;
-- controller configuration;
-- broader compatibility testing and targeted mapper additions where real software requires them.
+1. model the device as cartridge or package-owned hardware;
+2. connect it through the same physical boundaries used by the real machine;
+3. keep motherboard and generic compiler code free of mapper-specific semantics;
+4. add conformance coverage for the new hardware behavior;
+5. validate against real software where practical.
 
 ## License
 

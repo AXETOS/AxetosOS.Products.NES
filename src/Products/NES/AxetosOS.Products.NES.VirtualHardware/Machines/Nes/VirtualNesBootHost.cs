@@ -1,6 +1,7 @@
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
+using AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
@@ -51,6 +52,8 @@ public interface IVirtualNesVideoSink
 public interface IVirtualNesAudioSink
 {
     void AcceptLevelChange(ulong masterCycle, byte dacLevel);
+
+    void ResetTimeline(ulong masterCycle, byte dacLevel) => AcceptLevelChange(masterCycle, dacLevel);
 
     void AcceptLevelChanges(ReadOnlySpan<RicohAudioDacSample> samples)
     {
@@ -128,7 +131,12 @@ public sealed class VirtualNesPcmBuffer : IVirtualNesAudioSink
 /// </summary>
 public sealed class VirtualNesBootHost
 {
+    private const int PortableStateFormatVersion = 1;
+    private const int MaximumPortableStateBytes = 64 * 1024 * 1024;
+    private static readonly byte[] PortableStateMagic = "AXNESST1"u8.ToArray();
     private readonly RegionalNesVirtualMachine _machine = new();
+    private readonly Guid _stateOwnerId = Guid.NewGuid();
+    private ulong _cartridgeGeneration;
     private ulong _masterCycles;
     private bool _resetVectorObserved;
     private bool _firstOpcodeObserved;
@@ -199,6 +207,7 @@ public sealed class VirtualNesBootHost
         PalCicVariant palCicVariant = PalCicVariant.PalA3195)
     {
         ResetDiagnostics();
+        _cartridgeGeneration++;
         _machine.InsertRom(image, sourceName, regionSelection, palCicVariant);
         PrepareAutomaticCompiledExecution();
         AttachOutputPins();
@@ -253,6 +262,179 @@ public sealed class VirtualNesBootHost
                 _observedCpu.AudioDacOutput.CurrentValue.DacLevel);
         }
     }
+
+    public VirtualNesMachineState CaptureState()
+    {
+        if (!_machine.IsPowered || _machine.Slot.InsertedImage is null)
+            throw new InvalidOperationException("Power on a loaded NES before capturing machine state.");
+
+        return new VirtualNesMachineState(
+            _stateOwnerId,
+            _cartridgeGeneration,
+            _machine.ActiveMotherboard,
+            _machine.Slot.InsertedImage.MapperNumber,
+            _masterCycles,
+            _resetVectorObserved,
+            _firstOpcodeObserved,
+            _firstVblankObserved,
+            _firstNmiObserved,
+            _bootChecksComplete,
+            InMemoryHardwareState.Capture(_machine));
+    }
+
+    public void RestoreState(VirtualNesMachineState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        if (state.OwnerId != _stateOwnerId)
+            throw new InvalidOperationException("This NES machine state belongs to a different host instance.");
+        if (state.CartridgeGeneration != _cartridgeGeneration)
+            throw new InvalidOperationException("This NES machine state belongs to a cartridge that is no longer loaded.");
+        if (_machine.Slot.InsertedImage is null ||
+            state.MapperNumber != _machine.Slot.InsertedImage.MapperNumber ||
+            state.Motherboard != _machine.ActiveMotherboard)
+            throw new InvalidOperationException("The loaded NES hardware does not match this machine state.");
+
+        var controller1 = _machine.InspectControllerButtons(0);
+        var controller2 = _machine.InspectControllerButtons(1);
+
+        state.Hardware.Restore();
+        RestoreControllerContacts(0, controller1);
+        RestoreControllerContacts(1, controller2);
+
+        _masterCycles = state.MasterCycles;
+        _resetVectorObserved = state.ResetVectorObserved;
+        _firstOpcodeObserved = state.FirstOpcodeObserved;
+        _firstVblankObserved = state.FirstVblankObserved;
+        _firstNmiObserved = state.FirstNmiObserved;
+        _bootChecksComplete = state.BootChecksComplete;
+
+        if (_audioSink is not null)
+        {
+            _audioSink.ResetTimeline(_masterCycles, GetCurrentAudioDacLevel());
+        }
+    }
+
+    /// <summary>
+    /// Captures a versioned cross-process state payload for the currently loaded
+    /// physical NES. Unlike <see cref="CaptureState"/>, this payload contains no
+    /// live object references and may be persisted by a host application.
+    /// ROM bytes are deliberately excluded; the host must identify and reload
+    /// the exact cartridge image before restoring the payload.
+    /// </summary>
+    public byte[] CapturePortableState()
+    {
+        if (!_machine.IsPowered || _machine.Slot.InsertedImage is null)
+            throw new InvalidOperationException("Power on a loaded NES before capturing portable machine state.");
+
+        var hardware = VirtualNesPortableState.Capture(_machine);
+        if (hardware.Length > MaximumPortableStateBytes)
+            throw new InvalidDataException("NES portable hardware state is too large to capture safely.");
+
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+        writer.Write(PortableStateMagic);
+        writer.Write(PortableStateFormatVersion);
+        writer.Write((int)_machine.ActiveMotherboard);
+        writer.Write(_machine.Slot.InsertedImage.MapperNumber);
+        writer.Write(_masterCycles);
+
+        byte flags = 0;
+        if (_resetVectorObserved) flags |= 1 << 0;
+        if (_firstOpcodeObserved) flags |= 1 << 1;
+        if (_firstVblankObserved) flags |= 1 << 2;
+        if (_firstNmiObserved) flags |= 1 << 3;
+        if (_bootChecksComplete) flags |= 1 << 4;
+        writer.Write(flags);
+
+        writer.Write(hardware.Length);
+        writer.Write(hardware);
+        writer.Flush();
+        return stream.ToArray();
+    }
+
+    /// <summary>
+    /// Restores a cross-process state payload into an already loaded and powered
+    /// NES whose motherboard and mapper match the machine that created it.
+    /// Current external controller contacts remain live rather than being rewound.
+    /// </summary>
+    public void RestorePortableState(ReadOnlySpan<byte> state)
+    {
+        if (!_machine.IsPowered || _machine.Slot.InsertedImage is null)
+            throw new InvalidOperationException("Load and power the matching NES cartridge before restoring portable machine state.");
+        if (state.Length == 0 || state.Length > MaximumPortableStateBytes)
+            throw new InvalidDataException("NES portable machine state has an invalid size.");
+
+        using var stream = new MemoryStream(state.ToArray(), writable: false);
+        using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+        var magic = reader.ReadBytes(PortableStateMagic.Length);
+        if (!magic.AsSpan().SequenceEqual(PortableStateMagic))
+            throw new InvalidDataException("The NES portable machine state has an invalid signature.");
+
+        var version = reader.ReadInt32();
+        if (version != PortableStateFormatVersion)
+        {
+            throw new NotSupportedException(
+                $"NES portable machine-state format {version} is not supported by this engine (expected {PortableStateFormatVersion}).");
+        }
+
+        var motherboardValue = reader.ReadInt32();
+        if (!Enum.IsDefined(typeof(ActiveNesMotherboard), motherboardValue))
+            throw new InvalidDataException("NES portable machine state contains an invalid motherboard identifier.");
+        var motherboard = (ActiveNesMotherboard)motherboardValue;
+        var mapper = reader.ReadInt32();
+        var masterCycles = reader.ReadUInt64();
+        var flags = reader.ReadByte();
+        var hardwareLength = reader.ReadInt32();
+        if (hardwareLength < 0 || hardwareLength > MaximumPortableStateBytes || hardwareLength > stream.Length - stream.Position)
+            throw new InvalidDataException("NES portable machine state contains an invalid hardware payload length.");
+        var hardware = reader.ReadBytes(hardwareLength);
+        if (hardware.Length != hardwareLength)
+            throw new EndOfStreamException("NES portable machine state ended unexpectedly.");
+        if (stream.Position != stream.Length)
+            throw new InvalidDataException("NES portable machine state contains trailing data.");
+
+        if (motherboard != _machine.ActiveMotherboard || mapper != _machine.Slot.InsertedImage.MapperNumber)
+        {
+            throw new InvalidOperationException(
+                $"The loaded NES hardware does not match this state. Save requires {motherboard}, mapper {mapper}; " +
+                $"loaded machine is {_machine.ActiveMotherboard}, mapper {_machine.Slot.InsertedImage.MapperNumber}.");
+        }
+
+        var controller1 = _machine.InspectControllerButtons(0);
+        var controller2 = _machine.InspectControllerButtons(1);
+
+        VirtualNesPortableState.Restore(_machine, hardware);
+        RestoreControllerContacts(0, controller1);
+        RestoreControllerContacts(1, controller2);
+
+        _masterCycles = masterCycles;
+        _resetVectorObserved = (flags & (1 << 0)) != 0;
+        _firstOpcodeObserved = (flags & (1 << 1)) != 0;
+        _firstVblankObserved = (flags & (1 << 2)) != 0;
+        _firstNmiObserved = (flags & (1 << 3)) != 0;
+        _bootChecksComplete = (flags & (1 << 4)) != 0;
+
+        if (_audioSink is not null)
+        {
+            _audioSink.ResetTimeline(_masterCycles, GetCurrentAudioDacLevel());
+        }
+    }
+
+    private void RestoreControllerContacts(int port, byte buttons)
+    {
+        for (var bit = 0; bit < 8; bit++)
+        {
+            _machine.SetControllerButton(port, (NesControllerButton)bit, (buttons & (1 << bit)) != 0);
+        }
+    }
+
+    private byte GetCurrentAudioDacLevel() => _machine.ActiveMotherboard switch
+    {
+        ActiveNesMotherboard.Famicom => _machine.Famicom.Cpu.AudioDacOutput.CurrentValue.DacLevel,
+        ActiveNesMotherboard.NtscNes => _machine.NtscNes.Cpu.AudioDacOutput.CurrentValue.DacLevel,
+        ActiveNesMotherboard.PalNes => _machine.PalNes.Cpu.AudioDacOutput.CurrentValue.DacLevel,
+        _ => 0
+    };
 
     public VirtualNesBootDiagnostics RunUntil(
         Func<VirtualNesBootDiagnostics, bool> stop,
