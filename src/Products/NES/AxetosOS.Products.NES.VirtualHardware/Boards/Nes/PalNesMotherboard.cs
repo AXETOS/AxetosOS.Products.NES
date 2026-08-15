@@ -30,6 +30,7 @@ public sealed class PalNesMotherboard
 
     private CompiledClockExecutionPlan _masterExecutionPlan = null!;
     private CompiledClockExecutionPlan _cicExecutionPlan = null!;
+    private CompiledLabMotherboardExecutionPlan? _compiledLabMotherboardExecutionPlan;
 
     public PalNesMotherboard(PalCicVariant cicVariant = PalCicVariant.PalA3195)
     {
@@ -125,27 +126,83 @@ public sealed class PalNesMotherboard
     public void PowerOn()
     {
         Board.PowerOn();
+        _compiledLabMotherboardExecutionPlan?.SynchronizePowerOn();
     }
 
     public void ReleaseReset()
     {
         ResetSource.Set(DigitalLevel.High);
+        _compiledLabMotherboardExecutionPlan?.RefreshExternalSource(CicHostResetBar);
     }
 
     public void AssertReset()
     {
         ResetSource.Set(DigitalLevel.Low);
+        _compiledLabMotherboardExecutionPlan?.RefreshExternalSource(CicHostResetBar);
     }
 
-    public void AdvanceMasterHalfCycle() => _masterExecutionPlan.AdvanceHalfCycle();
+    public bool CompiledLabMotherboardEnabled => _compiledLabMotherboardExecutionPlan is not null;
+    public int CompiledLabRuntimeUnitCount => _compiledLabMotherboardExecutionPlan?.RuntimeUnits ?? 0;
+    public int CompiledLabInternalComponentCount => _compiledLabMotherboardExecutionPlan?.InternalComponentCount ?? 0;
+    public int CompiledLabFoldedInternalTraceCount => _compiledLabMotherboardExecutionPlan?.FoldedInternalTraceCount ?? 0;
+    public int CompiledLabBoundaryTraceCount => _compiledLabMotherboardExecutionPlan?.BoundaryTraceCount ?? 0;
+    public Guid? CompiledLabCompilationId => _compiledLabMotherboardExecutionPlan?.CompilationId;
 
-    public void AdvanceCicHalfCycle() => _cicExecutionPlan.AdvanceHalfCycle();
+    public void SetCompiledLabMotherboardEnabled(bool enabled)
+    {
+        if (!enabled)
+        {
+            _compiledLabMotherboardExecutionPlan?.Dispose();
+            _compiledLabMotherboardExecutionPlan = null;
+            return;
+        }
 
-    public void AdvanceCicCycles(int cycles) => _cicExecutionPlan.AdvanceCycles(cycles);
+        if (_compiledLabMotherboardExecutionPlan is not null) return;
 
-    public void AdvanceMasterCycles(int cycles) => _masterExecutionPlan.AdvanceCycles(cycles);
+        _compiledLabMotherboardExecutionPlan = new CompiledLabMotherboardExecutionPlan(
+            Board,
+            (ICompiledClockSource)MasterClock);
+    }
+
+    public void AdvanceMasterHalfCycle()
+    {
+        if (_compiledLabMotherboardExecutionPlan is { } compiled)
+            compiled.AdvanceHalfCycle();
+        else
+            _masterExecutionPlan.AdvanceHalfCycle();
+    }
+
+    public void AdvanceCicHalfCycle()
+    {
+        _cicExecutionPlan.AdvanceHalfCycle();
+        _compiledLabMotherboardExecutionPlan?.RefreshExternalSource(CicHostResetBar);
+    }
+
+    public void AdvanceCicCycles(int cycles)
+    {
+        if (cycles < 0) throw new ArgumentOutOfRangeException(nameof(cycles));
+        for (var cycle = 0; cycle < cycles; cycle++)
+        {
+            AdvanceCicHalfCycle();
+            AdvanceCicHalfCycle();
+        }
+    }
+
+    public void AdvanceMasterCycles(int cycles)
+    {
+        if (_compiledLabMotherboardExecutionPlan is { } compiled)
+            compiled.AdvanceCycles(cycles);
+        else
+            _masterExecutionPlan.AdvanceCycles(cycles);
+    }
 
     internal void RecompileTopology() => _masterExecutionPlan.RecompileTopology();
+
+    internal void AttachCompiledExternalDevice(ICompiledExternalDevice device) =>
+        _compiledLabMotherboardExecutionPlan?.AttachExternalDevice(device);
+
+    internal void DetachCompiledExternalDevice(ICompiledExternalDevice device) =>
+        _compiledLabMotherboardExecutionPlan?.DetachExternalDevice(device);
 
 
     private void TiePackagePower()

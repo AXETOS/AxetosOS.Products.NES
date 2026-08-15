@@ -16,7 +16,7 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
 
         fixture.PulseClock(342);
 
-        Assert.Equal(342UL, fixture.Chip.MasterClockRisingEdgeCount);
+        Assert.Equal(1_710UL, fixture.Chip.MasterClockRisingEdgeCount);
         Assert.Equal(1, fixture.Chip.Scanline);
         Assert.Equal(1, fixture.Chip.Dot);
         Assert.Equal(0UL, fixture.Chip.Frame);
@@ -591,10 +591,16 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
 
         public void PulseClock(int count)
         {
-            for (var cycle = 0; cycle < count; cycle++)
+            // RP2C07 receives the PAL console master clock and advances one PPU
+            // dot for every five rising edges internally. Keep the helper in
+            // PPU-dot units so the behavioural tests remain chip-centric.
+            for (var dot = 0; dot < count; dot++)
             {
-                _clock.Set(DigitalLevel.High); _sim.Settle();
-                _clock.Set(DigitalLevel.Low); _sim.Settle();
+                for (var divider = 0; divider < 5; divider++)
+                {
+                    _clock.Set(DigitalLevel.High); _sim.Settle();
+                    _clock.Set(DigitalLevel.Low); _sim.Settle();
+                }
             }
         }
 
@@ -603,29 +609,38 @@ public sealed class VirtualHardwareRp2C07StandaloneTests
             var addresses = new List<ushort>();
             ushort latchedAddress = 0;
 
-            for (var cycle = 0; cycle < count; cycle++)
+            for (var dot = 0; dot < count; dot++)
             {
-                _clock.Set(DigitalLevel.High);
-                _sim.Settle();
-
-                if (Chip.AddressLatchEnable.DriveLevel == DigitalLevel.High)
+                for (var divider = 0; divider < 5; divider++)
                 {
-                    Release(_externalAd);
+                    _clock.Set(DigitalLevel.High);
                     _sim.Settle();
-                    Assert.True(Chip.MultiplexedAddressData.TrySample(out var low));
-                    Assert.True(Chip.HighAddress.TrySample(out var high));
-                    latchedAddress = (ushort)(((high & 0x3F) << 8) | low);
-                    addresses.Add(latchedAddress);
-                }
 
-                if (Chip.VramReadBar.DriveLevel == DigitalLevel.Low)
-                {
-                    Set(_externalAd, readMemory(latchedAddress));
+                    // The fifth PAL master-clock edge is the RP2C07 dot
+                    // activation. Observe/respond to the VRAM package bus at
+                    // that physical phase, matching the RP2C02 test fixture.
+                    if (divider == 4)
+                    {
+                        if (Chip.AddressLatchEnable.DriveLevel == DigitalLevel.High)
+                        {
+                            Release(_externalAd);
+                            _sim.Settle();
+                            Assert.True(Chip.MultiplexedAddressData.TrySample(out var low));
+                            Assert.True(Chip.HighAddress.TrySample(out var high));
+                            latchedAddress = (ushort)(((high & 0x3F) << 8) | low);
+                            addresses.Add(latchedAddress);
+                        }
+
+                        if (Chip.VramReadBar.DriveLevel == DigitalLevel.Low)
+                        {
+                            Set(_externalAd, readMemory(latchedAddress));
+                            _sim.Settle();
+                        }
+                    }
+
+                    _clock.Set(DigitalLevel.Low);
                     _sim.Settle();
                 }
-
-                _clock.Set(DigitalLevel.Low);
-                _sim.Settle();
             }
 
             Release(_externalAd);

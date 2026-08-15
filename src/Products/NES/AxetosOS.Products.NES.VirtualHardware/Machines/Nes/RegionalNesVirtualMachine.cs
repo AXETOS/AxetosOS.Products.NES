@@ -74,8 +74,8 @@ public sealed class RegionalNesVirtualMachine
         // In compiled-lab mode the fixed motherboard is compiled before ROM
         // metadata constructs mapper/cartridge hardware. Cartridge hardware is
         // then inserted and bound as a separate replaceable unit.
-        if (CompiledLabExecutionRequested && ActiveMotherboard == ActiveNesMotherboard.Famicom)
-            Famicom.SetCompiledLabMotherboardEnabled(true);
+        if (CompiledLabExecutionRequested)
+            SetActiveCompiledLabMotherboardEnabled(true);
 
         Slot.Insert(image, sourceName, regionSelection, palCicVariant);
         AttachInsertedCartridge();
@@ -167,11 +167,12 @@ public sealed class RegionalNesVirtualMachine
         if (!enabled)
         {
             Famicom.SetCompiledLabMotherboardEnabled(false);
+            NtscNes.SetCompiledLabMotherboardEnabled(false);
+            PalNes.SetCompiledLabMotherboardEnabled(false);
             return;
         }
 
-        if (ActiveMotherboard == ActiveNesMotherboard.Famicom)
-            Famicom.SetCompiledLabMotherboardEnabled(true);
+        SetActiveCompiledLabMotherboardEnabled(true);
     }
 
     private void SelectResolvedMotherboard(NesResolvedRegion resolved, PalCicVariant palCicVariant)
@@ -209,10 +210,12 @@ public sealed class RegionalNesVirtualMachine
             case ActiveNesMotherboard.NtscNes:
                 Slot.AttachTo(NtscNes);
                 NtscNes.RecompileTopology();
+                NtscNes.AttachCompiledExternalDevice(cartridge);
                 break;
             case ActiveNesMotherboard.PalNes:
                 Slot.AttachTo(PalNes);
                 PalNes.RecompileTopology();
+                PalNes.AttachCompiledExternalDevice(cartridge);
                 break;
         }
     }
@@ -235,11 +238,33 @@ public sealed class RegionalNesVirtualMachine
             case ActiveNesMotherboard.NtscNes:
                 NtscNes.Board.Remove(cartridge);
                 NtscNes.RecompileTopology();
+                NtscNes.DetachCompiledExternalDevice(cartridge);
                 break;
             case ActiveNesMotherboard.PalNes:
                 PalNes.Board.Remove(cartridge);
                 PalNes.RecompileTopology();
+                PalNes.DetachCompiledExternalDevice(cartridge);
                 break;
+        }
+    }
+
+    private void SetActiveCompiledLabMotherboardEnabled(bool enabled)
+    {
+        switch (ActiveMotherboard)
+        {
+            case ActiveNesMotherboard.None:
+                return;
+            case ActiveNesMotherboard.Famicom:
+                Famicom.SetCompiledLabMotherboardEnabled(enabled);
+                return;
+            case ActiveNesMotherboard.NtscNes:
+                NtscNes.SetCompiledLabMotherboardEnabled(enabled);
+                return;
+            case ActiveNesMotherboard.PalNes:
+                PalNes.SetCompiledLabMotherboardEnabled(enabled);
+                return;
+            default:
+                throw new ArgumentOutOfRangeException();
         }
     }
 

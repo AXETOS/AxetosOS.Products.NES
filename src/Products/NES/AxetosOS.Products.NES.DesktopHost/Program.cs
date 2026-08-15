@@ -15,7 +15,7 @@ const int ScreenHeight = 240;
 const int AudioSampleRate = 44_100;
 
 string? romArgument = null;
-var boardSelection = NesRegionSelection.NtscJapan;
+var boardSelection = NesRegionSelection.Auto;
 var palCic = PalCicVariant.PalA3195;
 var profileSimulation = false;
 var ppuSplitTrace = false;
@@ -191,18 +191,11 @@ catch (NotSupportedException exception)
 var startupLoadTime = loadingTimer.Elapsed;
 presenter.SetTitle($"AxetosOS Virtual NES — {Path.GetFileNameWithoutExtension(romPath)}");
 
-var rawHardwareRuntimeActive = rawHardwareRuntime
-    && host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom;
+var rawHardwareRuntimeActive = rawHardwareRuntime;
 if (rawHardwareRuntimeActive)
 {
     host.Machine.SetCompiledLabExecutionEnabled(false);
     host.Machine.Famicom.SetCompiledPhysicalMachineEnabled(false);
-}
-
-if (host.Machine.ActiveMotherboard == ActiveNesMotherboard.PalNes)
-{
-    Console.Error.WriteLine("PAL desktop presentation will be enabled after the PAL boot diagnostics path is exposed.");
-    return 5;
 }
 
 var videoSink = new NativeFrameVideoSink();
@@ -210,8 +203,10 @@ host.VideoSink = videoSink;
 
 var masterClockHz = host.Machine.ActiveMotherboard switch
 {
-    ActiveNesMotherboard.Famicom or ActiveNesMotherboard.NtscNes => 21_477_272.0,
-    _ => 21_477_272.0
+    ActiveNesMotherboard.Famicom => FamicomMotherboard.MasterClockHertz,
+    ActiveNesMotherboard.NtscNes => NtscNesMotherboard.MasterClockHertz,
+    ActiveNesMotherboard.PalNes => PalNesMotherboard.MasterClockHertz,
+    _ => throw new InvalidOperationException("No active motherboard clock.")
 };
 using var audio = new Win32WaveOutAudioSink(AudioSampleRate);
 var audioSink = new NativePcmAudioSink(masterClockHz, AudioSampleRate);
@@ -275,18 +270,42 @@ Console.WriteLine($"Header:     {image.HeaderFormat}{(image.SubmapperNumber.HasV
 Console.WriteLine($"Cart RAM:   PRG-RAM={Math.Max(0, image.PrgRamSizeBytes):N0}; PRG-NVRAM={Math.Max(0, image.PrgNvRamSizeBytes):N0}; CHR-RAM={Math.Max(0, image.ChrRamSizeBytes):N0}; CHR-NVRAM={Math.Max(0, image.ChrNvRamSizeBytes):N0} bytes");
 var compiledFamicom = host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom
     && host.Machine.Famicom.CompiledPhysicalMachineEnabled;
-var compiledLab = host.Machine.ActiveMotherboard == ActiveNesMotherboard.Famicom
-    && host.Machine.Famicom.CompiledLabMotherboardEnabled;
+var compiledLab = host.Machine.ActiveMotherboard switch
+{
+    ActiveNesMotherboard.Famicom => host.Machine.Famicom.CompiledLabMotherboardEnabled,
+    ActiveNesMotherboard.NtscNes => host.Machine.NtscNes.CompiledLabMotherboardEnabled,
+    ActiveNesMotherboard.PalNes => host.Machine.PalNes.CompiledLabMotherboardEnabled,
+    _ => false
+};
+var compiledLabMetrics = host.Machine.ActiveMotherboard switch
+{
+    ActiveNesMotherboard.Famicom => (
+        host.Machine.Famicom.CompiledLabRuntimeUnitCount,
+        host.Machine.Famicom.CompiledLabInternalComponentCount,
+        host.Machine.Famicom.CompiledLabFoldedInternalTraceCount,
+        host.Machine.Famicom.CompiledLabBoundaryTraceCount),
+    ActiveNesMotherboard.NtscNes => (
+        host.Machine.NtscNes.CompiledLabRuntimeUnitCount,
+        host.Machine.NtscNes.CompiledLabInternalComponentCount,
+        host.Machine.NtscNes.CompiledLabFoldedInternalTraceCount,
+        host.Machine.NtscNes.CompiledLabBoundaryTraceCount),
+    ActiveNesMotherboard.PalNes => (
+        host.Machine.PalNes.CompiledLabRuntimeUnitCount,
+        host.Machine.PalNes.CompiledLabInternalComponentCount,
+        host.Machine.PalNes.CompiledLabFoldedInternalTraceCount,
+        host.Machine.PalNes.CompiledLabBoundaryTraceCount),
+    _ => (0, 0, 0, 0)
+};
 Console.WriteLine(compiledLab
-    ? "Execution:   startup-compiled physical Famicom motherboard + replaceable cartridge unit"
+    ? "Execution:   startup-compiled physical regional motherboard + replaceable cartridge unit"
     : compiledFamicom
         ? "Execution:   startup-compiled fused physical Famicom/NROM machine"
         : "Execution:   diagnostic raw physical virtual-hardware buses and master clock only");
-Console.WriteLine("Video:       RP2C02 color output -> AxetosOS native framebuffer presenter");
-Console.WriteLine($"Audio:       RP2A03 DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
+Console.WriteLine("Video:       RP2C0x color output -> AxetosOS native framebuffer presenter");
+Console.WriteLine($"Audio:       RP2A0x DAC output -> AxetosOS native PCM output ({AudioSampleRate:N0} Hz mono)");
 Console.WriteLine("Controls:    Arrows=D-pad, Z=A, X=B, Enter=Start, Right Shift=Select, Esc=Exit");
 Console.WriteLine(compiledLab
-    ? $"Kernel:      whole-circuit compiler ({host.Machine.Famicom.CompiledLabRuntimeUnitCount} runtime units; {host.Machine.Famicom.CompiledLabInternalComponentCount} fixed-board components; {host.Machine.Famicom.CompiledLabFoldedInternalTraceCount} internal traces folded; {host.Machine.Famicom.CompiledLabBoundaryTraceCount} cartridge-boundary traces)"
+    ? $"Kernel:      whole-circuit compiler ({compiledLabMetrics.Item1} runtime units; {compiledLabMetrics.Item2} fixed-board components; {compiledLabMetrics.Item3} internal traces folded; {compiledLabMetrics.Item4} cartridge-boundary traces)"
     : compiledFamicom
         ? $"Kernel:      fused compiled circuit ({host.Machine.Famicom.CompiledRuntimeUnitCount} runtime unit; {host.Machine.Famicom.CompiledFoldedPhysicalTraceCount} fixed traces folded; no signal queue)"
         : "Kernel:      chip-owned pin-gated direct propagation (no signal queue)");

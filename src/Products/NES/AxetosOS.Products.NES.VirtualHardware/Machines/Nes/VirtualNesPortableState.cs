@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Text;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 
 namespace AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
@@ -12,7 +13,8 @@ namespace AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
 /// </summary>
 internal static class VirtualNesPortableState
 {
-    private const int HardwareFormatVersion = 1;
+    private const int HardwareFormatVersion = 2;
+    private const int LegacyHardwareFormatVersion = 1;
     private const int MaximumMemberCount = 200_000;
     private const int MaximumMemberPayloadBytes = 64 * 1024 * 1024;
     private static readonly byte[] HardwareMagic = "AXNESHW1"u8.ToArray();
@@ -20,9 +22,15 @@ internal static class VirtualNesPortableState
     public static byte[] Capture(RegionalNesVirtualMachine machine)
     {
         ArgumentNullException.ThrowIfNull(machine);
+        EnsureActiveHardware(machine);
 
+        // Format 2 deliberately captures only the active physical machine.
+        // Inactive regional boards are not gameplay state and must not make a
+        // Famicom save incompatible merely because PAL or NTSC-U evolves later.
+        // The active board's compiled runtime remains part of the snapshot because
+        // it can contain in-flight bus state required for cycle-exact continuation.
         var capture = new CaptureContext(machine.Slot.InsertedImage);
-        capture.Visit(machine);
+        VisitActiveHardware(capture, machine);
 
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
@@ -43,25 +51,38 @@ internal static class VirtualNesPortableState
     public static void Restore(RegionalNesVirtualMachine machine, ReadOnlySpan<byte> payload)
     {
         ArgumentNullException.ThrowIfNull(machine);
+        EnsureActiveHardware(machine);
         if (payload.Length == 0 || payload.Length > MaximumMemberPayloadBytes)
             throw new InvalidDataException("NES portable hardware state has an invalid size.");
 
-        var savedMembers = ReadMembers(payload);
-        var targets = new RestoreContext(machine.Slot.InsertedImage);
-        targets.Visit(machine);
-
-        if (targets.Members.Count != savedMembers.Length)
+        var saved = ReadMembers(payload);
+        if (saved.FormatVersion == LegacyHardwareFormatVersion)
         {
-            throw new InvalidDataException(
-                $"NES portable hardware-state schema mismatch: save has {savedMembers.Length:N0} members, " +
-                $"loaded hardware has {targets.Members.Count:N0}.");
+            RestoreLegacyV1(machine, saved.Members);
+            return;
         }
 
-        for (var index = 0; index < savedMembers.Length; index++)
+        var targets = new RestoreContext(machine.Slot.InsertedImage);
+        VisitActiveHardware(targets, machine);
+        RestoreExact(saved.Members, targets.Members);
+    }
+
+    private static void RestoreExact(
+        IReadOnlyList<PortableMember> savedMembers,
+        IReadOnlyList<PortableTargetMember> targetMembers)
+    {
+        if (targetMembers.Count != savedMembers.Count)
+        {
+            throw new InvalidDataException(
+                $"NES portable hardware-state schema mismatch: save has {savedMembers.Count:N0} members, " +
+                $"loaded hardware has {targetMembers.Count:N0}.");
+        }
+
+        for (var index = 0; index < savedMembers.Count; index++)
         {
             var saved = savedMembers[index];
-            var target = targets.Members[index];
-            if (saved.Kind != target.Kind || !string.Equals(saved.Signature, target.Signature, StringComparison.Ordinal))
+            var target = targetMembers[index];
+            if (!MembersMatch(saved, target))
             {
                 throw new InvalidDataException(
                     $"NES portable hardware-state schema mismatch at member {index:N0}. " +
@@ -69,15 +90,129 @@ internal static class VirtualNesPortableState
             }
         }
 
-        // Validate the complete schema before mutating the machine. Only after
-        // every member matches do we apply the saved values in deterministic order.
-        for (var index = 0; index < savedMembers.Length; index++)
+        // Validate the complete schema before mutating the machine.
+        for (var index = 0; index < savedMembers.Count; index++)
         {
-            targets.Members[index].Restore(savedMembers[index].Payload);
+            targetMembers[index].Restore(savedMembers[index].Payload);
         }
     }
 
-    private static PortableMember[] ReadMembers(ReadOnlySpan<byte> payload)
+    private static void RestoreLegacyV1(
+        RegionalNesVirtualMachine machine,
+        IReadOnlyList<PortableMember> savedMembers)
+    {
+        // Format 1 traversed the complete three-board RegionalNesVirtualMachine,
+        // including inactive boards and compiler/runtime objects. That meant adding
+        // compiler infrastructure to an inactive board changed the member count of
+        // an otherwise compatible save. Keep format-1 development saves usable by
+        // accepting only additive members in the current graph.
+        var targets = new RestoreContext(machine.Slot.InsertedImage);
+        targets.Visit(machine);
+
+        var matchedTargets = new List<PortableTargetMember>(savedMembers.Count);
+        var targetIndex = 0;
+
+        for (var savedIndex = 0; savedIndex < savedMembers.Count; savedIndex++)
+        {
+            var saved = savedMembers[savedIndex];
+            while (targetIndex < targets.Members.Count && !MembersMatch(saved, targets.Members[targetIndex]))
+            {
+                targetIndex++;
+            }
+
+            if (targetIndex >= targets.Members.Count)
+            {
+                throw new InvalidDataException(
+                    $"NES legacy portable hardware-state schema mismatch at saved member {savedIndex:N0}. " +
+                    "The current hardware is not an additive-compatible evolution of the saved layout.");
+            }
+
+            matchedTargets.Add(targets.Members[targetIndex]);
+            targetIndex++;
+        }
+
+        // All legacy members were matched in original order before any mutation.
+        // Newly-added current members keep their freshly initialized values.
+        for (var index = 0; index < savedMembers.Count; index++)
+        {
+            matchedTargets[index].Restore(savedMembers[index].Payload);
+        }
+    }
+
+    private static bool MembersMatch(PortableMember saved, PortableTargetMember target) =>
+        saved.Kind == target.Kind &&
+        string.Equals(
+            NormalizeSignature(saved.Signature),
+            NormalizeSignature(target.Signature),
+            StringComparison.Ordinal);
+
+    private static string NormalizeSignature(string signature)
+    {
+        // Closed generic Type.FullName values embed the assembly identity of their
+        // generic arguments, including the public package/assembly version. A normal
+        // package version bump must not make an otherwise identical hardware-state
+        // schema incompatible. Keep the assembly simple name, but remove volatile
+        // assembly metadata from both legacy and current signatures.
+        return StripAssemblyAttribute(
+            StripAssemblyAttribute(
+                StripAssemblyAttribute(signature, "Version"),
+                "Culture"),
+            "PublicKeyToken");
+    }
+
+    private static string StripAssemblyAttribute(string value, string attributeName)
+    {
+        var marker = $", {attributeName}=";
+        var searchFrom = 0;
+        StringBuilder? builder = null;
+
+        while (true)
+        {
+            var start = value.IndexOf(marker, searchFrom, StringComparison.Ordinal);
+            if (start < 0) break;
+
+            var valueStart = start + marker.Length;
+            var comma = value.IndexOf(',', valueStart);
+            var bracket = value.IndexOf(']', valueStart);
+
+            int end;
+            if (comma < 0)
+                end = bracket;
+            else if (bracket < 0)
+                end = comma;
+            else
+                end = Math.Min(comma, bracket);
+
+            if (end < 0) break;
+
+            builder ??= new StringBuilder(value.Length);
+            builder.Append(value, searchFrom, start - searchFrom);
+            searchFrom = end;
+        }
+
+        if (builder is null) return value;
+        builder.Append(value, searchFrom, value.Length - searchFrom);
+        return builder.ToString();
+    }
+
+    private static void VisitActiveHardware(TraversalContext context, RegionalNesVirtualMachine machine)
+    {
+        context.Visit(machine.ActiveBoard);
+        context.Visit(machine.Slot.Cartridge);
+    }
+
+    private static void EnsureActiveHardware(RegionalNesVirtualMachine machine)
+    {
+        if (machine.ActiveMotherboard == ActiveNesMotherboard.None ||
+            machine.ActiveBoard is null ||
+            machine.Slot.Cartridge is null)
+        {
+            throw new InvalidOperationException(
+                "Load an NES cartridge and select its physical motherboard before using portable state.");
+        }
+    }
+
+    private static PortableStateDocument ReadMembers(ReadOnlySpan<byte> payload)
     {
         using var stream = new MemoryStream(payload.ToArray(), writable: false);
         using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
@@ -87,10 +222,11 @@ internal static class VirtualNesPortableState
             throw new InvalidDataException("The NES portable hardware state has an invalid signature.");
 
         var version = reader.ReadInt32();
-        if (version != HardwareFormatVersion)
+        if (version is not (LegacyHardwareFormatVersion or HardwareFormatVersion))
         {
             throw new NotSupportedException(
-                $"NES portable hardware-state format {version} is not supported by this engine (expected {HardwareFormatVersion}).");
+                $"NES portable hardware-state format {version} is not supported by this engine " +
+                $"(supported: {LegacyHardwareFormatVersion}-{HardwareFormatVersion}).");
         }
 
         var count = reader.ReadInt32();
@@ -119,7 +255,7 @@ internal static class VirtualNesPortableState
         if (stream.Position != stream.Length)
             throw new InvalidDataException("NES portable hardware state contains trailing data.");
 
-        return members;
+        return new PortableStateDocument(version, members);
     }
 
     private abstract class TraversalContext
@@ -361,6 +497,8 @@ internal static class VirtualNesPortableState
             field.SetValue(target, restored);
         }
     }
+
+    private sealed record PortableStateDocument(int FormatVersion, PortableMember[] Members);
 
     private sealed record PortableMember(PortableMemberKind Kind, string Signature, byte[] Payload);
 

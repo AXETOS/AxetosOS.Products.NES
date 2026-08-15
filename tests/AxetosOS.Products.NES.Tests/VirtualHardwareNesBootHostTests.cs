@@ -2,6 +2,7 @@ using Xunit;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 using AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
+using AxetosOS.Products.NES.VirtualHardware.Electrical;
 using AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
 
 namespace AxetosOS.Products.NES.Tests;
@@ -37,6 +38,56 @@ public sealed class VirtualHardwareNesBootHostTests
         Assert.Equal((ushort)0x8000, result.ProgramCounter);
         Assert.NotEmpty(audio.Samples);
         Assert.True(video.WrittenPixelCount > 0);
+    }
+
+    [Fact]
+    public void Pal_boot_host_streams_video_and_audio_through_region_neutral_output_contracts()
+    {
+        var image = CreateImage(0);
+        var video = new VirtualNesFrameBuffer();
+        var audio = new VirtualNesPcmBuffer();
+        var host = new VirtualNesBootHost { VideoSink = video, AudioSink = audio };
+
+        host.LoadRom(image, "output-test (Europe).nes", NesRegionSelection.Pal);
+        host.PowerAndReleaseReset();
+        host.AdvanceMasterCycles(50_000);
+
+        Assert.Equal(ActiveNesMotherboard.PalNes, host.Machine.ActiveMotherboard);
+        Assert.True(host.Machine.PalNes.CompiledLabMotherboardEnabled);
+        Assert.Equal(2, host.Machine.PalNes.CompiledLabRuntimeUnitCount);
+        Assert.Equal(DigitalLevel.High, host.Machine.PalNes.Cpu.ResetBar.SampledLevel);
+        Assert.Equal(DigitalLevel.High, host.Machine.PalNes.Ppu.ResetBar.SampledLevel);
+        Assert.True(video.WrittenPixelCount > 0);
+        Assert.NotEmpty(audio.Samples);
+
+        var diagnostics = host.Snapshot();
+        Assert.Equal(ActiveNesMotherboard.PalNes, diagnostics.Motherboard);
+        Assert.True(diagnostics.CpuInstructions > 0);
+    }
+
+    [Fact]
+    public void Ntsc_u_boot_host_clocks_cic_startup_and_releases_processor_reset()
+    {
+        var image = CreateImage(0);
+        var video = new VirtualNesFrameBuffer();
+        var audio = new VirtualNesPcmBuffer();
+        var host = new VirtualNesBootHost { VideoSink = video, AudioSink = audio };
+
+        host.LoadRom(image, "output-test (USA).nes", NesRegionSelection.NtscNorthAmerica);
+        host.PowerAndReleaseReset();
+        host.AdvanceMasterCycles(50_000);
+
+        Assert.Equal(ActiveNesMotherboard.NtscNes, host.Machine.ActiveMotherboard);
+        Assert.True(host.Machine.NtscNes.CompiledLabMotherboardEnabled);
+        Assert.Equal(2, host.Machine.NtscNes.CompiledLabRuntimeUnitCount);
+        Assert.Equal(DigitalLevel.High, host.Machine.NtscNes.Cpu.ResetBar.SampledLevel);
+        Assert.Equal(DigitalLevel.High, host.Machine.NtscNes.Ppu.ResetBar.SampledLevel);
+        Assert.True(video.WrittenPixelCount > 0);
+        Assert.NotEmpty(audio.Samples);
+
+        var diagnostics = host.Snapshot();
+        Assert.Equal(ActiveNesMotherboard.NtscNes, diagnostics.Motherboard);
+        Assert.True(diagnostics.CpuInstructions > 0);
     }
 
     [Fact]
@@ -297,6 +348,65 @@ public sealed class VirtualHardwareNesBootHostTests
         Assert.Equal(futurePpu, second.Machine.Famicom.Ppu.InspectDiagnosticState());
         Assert.Equal(futureCpuRam, second.Machine.Famicom.CpuRam.InspectStateHash());
         Assert.Equal(futureCiram, second.Machine.Famicom.Ciram.InspectStateHash());
+    }
+
+    [Fact]
+    public void Boot_host_portable_machine_state_contains_only_active_regional_hardware()
+    {
+        var image = CreateImage(1);
+        var host = new VirtualNesBootHost();
+        host.LoadRom(image, "portable-active-only (Japan).nes", NesRegionSelection.NtscJapan);
+        host.PowerAndReleaseReset();
+        host.AdvanceMasterCycles(5_000);
+
+        var state = host.CapturePortableState();
+        var stateText = System.Text.Encoding.UTF8.GetString(state);
+
+        Assert.DoesNotContain("NtscNesMotherboard", stateText);
+        Assert.DoesNotContain("PalNesMotherboard", stateText);
+    }
+
+    [Fact]
+    public void Boot_host_portable_machine_state_ignores_assembly_version_metadata_in_generic_schema_signatures()
+    {
+        var image = CreateImage(1);
+        var first = new VirtualNesBootHost();
+        first.LoadRom(image, "portable-version-compat (Japan).nes", NesRegionSelection.NtscJapan);
+        first.PowerAndReleaseReset();
+        first.AdvanceMasterCycles(5_000);
+
+        var state = first.CapturePortableState();
+        var currentVersion = typeof(VirtualNesBootHost).Assembly.GetName().Version?.ToString();
+        Assert.False(string.IsNullOrWhiteSpace(currentVersion));
+
+        var alternateChars = currentVersion!.ToCharArray();
+        var digitIndex = Array.FindIndex(alternateChars, char.IsDigit);
+        Assert.True(digitIndex >= 0);
+        alternateChars[digitIndex] = alternateChars[digitIndex] == '9' ? '8' : '9';
+        var alternateVersion = new string(alternateChars);
+
+        var currentMarker = System.Text.Encoding.UTF8.GetBytes($", Version={currentVersion},");
+        var alternateMarker = System.Text.Encoding.UTF8.GetBytes($", Version={alternateVersion},");
+        Assert.Equal(currentMarker.Length, alternateMarker.Length);
+
+        var changedState = (byte[])state.Clone();
+        var replacements = 0;
+        for (var index = 0; index <= changedState.Length - currentMarker.Length; index++)
+        {
+            if (!changedState.AsSpan(index, currentMarker.Length).SequenceEqual(currentMarker)) continue;
+            alternateMarker.CopyTo(changedState.AsSpan(index, alternateMarker.Length));
+            replacements++;
+            index += currentMarker.Length - 1;
+        }
+
+        Assert.True(replacements > 0);
+
+        var second = new VirtualNesBootHost();
+        second.LoadRom(image, "portable-version-compat (Japan).nes", NesRegionSelection.NtscJapan);
+        second.PowerAndReleaseReset();
+        second.RestorePortableState(changedState);
+
+        Assert.Equal(first.Snapshot().MasterCycles, second.Snapshot().MasterCycles);
     }
 
     [Fact]

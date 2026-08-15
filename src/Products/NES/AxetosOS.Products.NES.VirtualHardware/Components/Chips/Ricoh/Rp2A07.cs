@@ -9,7 +9,7 @@ namespace AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 /// the integrated 6502-derived execution section. It has no motherboard, RAM,
 /// cartridge, PPU, or other component references.
 /// </summary>
-public sealed class Rp2A07 : VirtualHardwareComponent
+public sealed class Rp2A07 : VirtualHardwareComponent, ICompiledBusMasterProvider, ICompiledClockedComponent, ICompiledSignalSinkProvider
 {
     private const byte CarryFlag = 1 << 0;
     private const byte ZeroFlag = 1 << 1;
@@ -120,6 +120,11 @@ public sealed class Rp2A07 : VirtualHardwareComponent
     private readonly ulong _controller1InputMask;
     private readonly ulong _controller2InputMask;
     private readonly ulong _controllerInputMask;
+    private ICompiledBusFabric? _compiledBusFabric;
+    private bool _compiledResetAsserted;
+    private byte _compiledDataBusValue;
+    private bool _compiledDataBusKnown;
+    private bool _compiledWritePending;
 
     public Rp2A07(string componentId) : base(componentId)
     {
@@ -196,11 +201,33 @@ public sealed class Rp2A07 : VirtualHardwareComponent
     public byte X { get; private set; }
     public byte Y { get; private set; }
     public byte CurrentOpcode { get; private set; }
+    public string CurrentCycleState => _state.ToString();
+    public ushort CurrentBusAddress => _busAddress;
+    public bool CurrentBusIsRead => _busRead;
+    public DigitalLevel CurrentM2Level => _compiledBusFabric is not null ? _m2Level : M2.DriveLevel;
+    public bool TryInspectDataBus(out byte value)
+    {
+        if (_compiledBusFabric is not null)
+        {
+            value = _compiledDataBusValue;
+            return _compiledDataBusKnown;
+        }
+
+        if (Data.TrySample(out var raw))
+        {
+            value = (byte)raw;
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
     public bool IsHalted => _state == CycleState.Halted;
     public bool InterruptDisable => IsFlagSet(InterruptDisableFlag);
     public bool NmiPending => _nmiPending;
     public bool SyncState => _sync;
-    public ulong MasterClockRisingEdgeCount => MasterClock.InputActivationEdgeCount;
+    public ulong MasterClockRisingEdgeCount => _compiledBusFabric?.ClockRisingEdges ?? MasterClock.InputActivationEdgeCount;
     public ulong RisingEdgeCount { get; private set; }
     public ulong CompletedInstructionCount { get; private set; }
     public ulong CompletedInterruptCount { get; private set; }
@@ -300,6 +327,83 @@ public sealed class Rp2A07 : VirtualHardwareComponent
         AudioOut.Drive(DigitalLevel.Low);
         AudioDacOutput.Drive(new RicohAudioDacSample(0, 0));
         BeginResetSequence();
+    }
+
+    internal void AttachCompiledBusFabric(ICompiledBusFabric fabric)
+    {
+        _compiledBusFabric = fabric ?? throw new ArgumentNullException(nameof(fabric));
+        _compiledResetAsserted = ResetBar.SampledLevel == DigitalLevel.Low;
+        _compiledDataBusKnown = false;
+        _compiledWritePending = false;
+    }
+
+    internal void DetachCompiledBusFabric()
+    {
+        _compiledBusFabric = null;
+        _compiledDataBusKnown = false;
+        _compiledWritePending = false;
+    }
+
+    internal void SetCompiledResetAsserted(bool asserted)
+    {
+        _compiledResetAsserted = asserted;
+        if (asserted && !_resetAsserted)
+        {
+            BeginResetSequence();
+            _resetAsserted = true;
+        }
+        else if (!asserted && _resetAsserted)
+        {
+            _resetAsserted = false;
+        }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal void ExecuteCompiledM2HalfCycle()
+    {
+        if (!_packagePowered) return;
+
+        if (_m2Level == DigitalLevel.High)
+        {
+            CaptureCompletedReadData();
+            _m2Level = DigitalLevel.Low;
+
+            var compiled = _compiledBusFabric;
+            var writeCycle = _compiledWritePending;
+
+            if (compiled?.HasCompleteBusCycleObservers == true)
+                compiled.ObserveCompleteBusCycle(writeCycle);
+
+            if (writeCycle)
+            {
+                _compiledWritePending = false;
+                compiled?.CompleteCycle();
+            }
+            return;
+        }
+
+        _m2Level = DigitalLevel.High;
+
+        if (_compiledResetAsserted)
+        {
+            if (!_resetAsserted) BeginResetSequence();
+            _resetAsserted = true;
+            return;
+        }
+
+        _resetAsserted = false;
+        RisingEdgeCount++;
+        ClockApuCpuCycle();
+        ExecuteBusCycle();
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal void PresentCompiledNmi(bool assertedLow)
+    {
+        var level = assertedLow ? DigitalLevel.Low : DigitalLevel.High;
+        if (_previousNmi == DigitalLevel.High && level == DigitalLevel.Low)
+            _nmiPending = true;
+        _previousNmi = level;
     }
 
     protected override void OnInputChanges(ulong changedInputMask)
@@ -1261,7 +1365,7 @@ public sealed class Rp2A07 : VirtualHardwareComponent
             return;
         }
 
-        var externalIrqLow = IrqBar.SampledLevel == DigitalLevel.Low;
+        var externalIrqLow = _compiledBusFabric?.InterruptRequestLow ?? (IrqBar.SampledLevel == DigitalLevel.Low);
         if ((externalIrqLow || (_frameIrqPending && !_frameIrqInhibit) || _dmc.IrqPending) && !InterruptDisable)
             _polledInterrupt = InterruptKind.Irq;
     }
@@ -1285,18 +1389,25 @@ public sealed class Rp2A07 : VirtualHardwareComponent
     private void BeginOpcodeFetch() { _operation = Operation.None; _addressingMode = AddressingMode.None; _state = CycleState.FetchOpcode; BeginRead(ProgramCounter, true); }
     private void BeginRead(ushort address, bool sync = false)
     {
-        Data.Release();
-        ReadWrite.Drive(DigitalLevel.High);
         _sync = sync;
-        Address.Drive(address);
         _busAddress = address;
         _busRead = true;
         _completedReadDataValid = false;
+        _compiledDataBusKnown = false;
 
-        // The RP2A03 controller output-enable pins are bus-cycle signals.
-        // Assert the selected line for the full $4016/$4017 read cycle so an
-        // external controller shift register has time to place its serial bit
-        // on IN0/IN1 before the CPU samples it.
+        var compiled = _compiledBusFabric;
+        if (compiled is not null)
+        {
+            compiled.BeginRead(address);
+            if (address == 0x4016) _controllerRead1Valid = false;
+            if (address == 0x4017) _controllerRead2Valid = false;
+            return;
+        }
+
+        Data.Release();
+        ReadWrite.Drive(DigitalLevel.High);
+        Address.Drive(address);
+
         var readController1 = address == 0x4016;
         var readController2 = address == 0x4017;
         if (readController1) _controllerRead1Valid = false;
@@ -1305,23 +1416,36 @@ public sealed class Rp2A07 : VirtualHardwareComponent
         ControllerRead2Bar.Drive(readController2 ? DigitalLevel.Low : DigitalLevel.High);
         RefreshControllerInputWakeState();
     }
+
     private void BeginWrite(ushort address, byte value)
     {
-        ControllerRead1Bar.Drive(DigitalLevel.High);
-        ControllerRead2Bar.Drive(DigitalLevel.High);
-        RefreshControllerInputWakeState();
         _sync = false;
-        Address.Drive(address);
-        Data.Drive(value);
-        ReadWrite.Drive(DigitalLevel.Low);
         _busAddress = address;
         _busWriteValue = value;
         _busRead = false;
         _completedReadDataValid = false;
         _internalDataBusLatch = value;
         _externalDataBusLatch = value;
+        _compiledDataBusValue = value;
+        _compiledDataBusKnown = _compiledBusFabric is not null;
+
+        var compiled = _compiledBusFabric;
+        if (compiled is not null)
+        {
+            _compiledWritePending = true;
+            compiled.Write(address, value);
+            return;
+        }
+
+        ControllerRead1Bar.Drive(DigitalLevel.High);
+        ControllerRead2Bar.Drive(DigitalLevel.High);
+        RefreshControllerInputWakeState();
+        Address.Drive(address);
+        Data.Drive(value);
+        ReadWrite.Drive(DigitalLevel.Low);
     }
-    private bool IsReadCycle() => ReadWrite.DriveLevel != DigitalLevel.Low;
+
+    private bool IsReadCycle() => _compiledBusFabric is not null ? _busRead : ReadWrite.DriveLevel != DigitalLevel.Low;
     private ushort StackAddress => (ushort)(0x0100 | StackPointer);
     private ushort VectorAddress => _activeInterrupt == InterruptKind.Nmi ? (ushort)0xFFFA : (ushort)0xFFFE;
     private byte StatusForBrk => (byte)(Status | BreakFlag | UnusedFlag);
@@ -1372,11 +1496,26 @@ public sealed class Rp2A07 : VirtualHardwareComponent
     {
         if (!_busRead || _busAddress is 0x4015 or 0x4016 or 0x4017) return;
 
-        if (Data.TrySample(out var raw))
-            _externalDataBusLatch = (byte)raw;
+        byte value;
+        if (_compiledBusFabric is not null)
+        {
+            if (!_compiledBusFabric.CompleteRead(_busAddress, out value))
+                value = _externalDataBusLatch;
+            else
+                _externalDataBusLatch = value;
 
-        _internalDataBusLatch = _externalDataBusLatch;
-        _completedReadData = _externalDataBusLatch;
+            _compiledDataBusValue = value;
+            _compiledDataBusKnown = true;
+        }
+        else
+        {
+            if (Data.TrySample(out var raw))
+                _externalDataBusLatch = (byte)raw;
+            value = _externalDataBusLatch;
+        }
+
+        _internalDataBusLatch = value;
+        _completedReadData = value;
         _completedReadDataValid = true;
     }
 
@@ -1385,7 +1524,7 @@ public sealed class Rp2A07 : VirtualHardwareComponent
         if (_busRead && _busAddress == 0x4015)
         {
             // $4015 is generated inside the RP2A0x. It updates the CPU's
-            // internal DB but does not drive the external D0-D7 package pins.
+            // internal DB but never drives the external D0-D7 package pins.
             // Bit 5 has no status source and therefore retains internal open bus.
             value = (byte)((_pulse1.LengthCounter > 0 ? 0x01 : 0) |
                            (_pulse2.LengthCounter > 0 ? 0x02 : 0) |
@@ -1402,33 +1541,50 @@ public sealed class Rp2A07 : VirtualHardwareComponent
 
         if (_busRead && _busAddress == 0x4016)
         {
-            if (!TrySampleControllerInput(
-                    ControllerData1,
-                    ref _controllerRead1Latch,
-                    ref _controllerRead1Valid,
-                    out var serial))
+            byte serial;
+            if (_compiledBusFabric is not null)
+            {
+                serial = _compiledBusFabric.ReadSerialInput(0);
+            }
+            else if (!TrySampleControllerInput(
+                         ControllerData1,
+                         ref _controllerRead1Latch,
+                         ref _controllerRead1Valid,
+                         out serial))
             {
                 serial = 0;
             }
 
+            // Only the controller serial bit is newly generated here. D5-D7
+            // retain the CPU's internal open-bus state. D1-D4 are low on the
+            // RP2A03/RP2A07 controller readback path used by the NES boards.
             value = (byte)((_internalDataBusLatch & 0xE0) | (serial & 0x01));
             _internalDataBusLatch = value;
+            _compiledDataBusValue = value;
+            _compiledDataBusKnown = _compiledBusFabric is not null;
             return true;
         }
 
         if (_busRead && _busAddress == 0x4017)
         {
-            if (!TrySampleControllerInput(
-                    ControllerData2,
-                    ref _controllerRead2Latch,
-                    ref _controllerRead2Valid,
-                    out var serial))
+            byte serial;
+            if (_compiledBusFabric is not null)
+            {
+                serial = _compiledBusFabric.ReadSerialInput(1);
+            }
+            else if (!TrySampleControllerInput(
+                         ControllerData2,
+                         ref _controllerRead2Latch,
+                         ref _controllerRead2Valid,
+                         out serial))
             {
                 serial = 0;
             }
 
             value = (byte)((_internalDataBusLatch & 0xE0) | (serial & 0x01));
             _internalDataBusLatch = value;
+            _compiledDataBusValue = value;
+            _compiledDataBusKnown = _compiledBusFabric is not null;
             return true;
         }
 
@@ -1436,6 +1592,34 @@ public sealed class Rp2A07 : VirtualHardwareComponent
         {
             value = _completedReadData;
             _internalDataBusLatch = value;
+            if (_compiledBusFabric is not null)
+            {
+                _compiledDataBusValue = value;
+                _compiledDataBusKnown = true;
+            }
+            return true;
+        }
+
+        // Fallback for direct chip-level harnesses that do not advance through
+        // an M2 falling edge before asking the core to consume a read. Normal
+        // motherboard execution uses the completed-read latch above.
+        if (_compiledBusFabric is not null)
+        {
+            if (_compiledBusFabric.CompleteRead(_busAddress, out value))
+            {
+                _externalDataBusLatch = value;
+                _internalDataBusLatch = value;
+                _compiledDataBusValue = value;
+                _compiledDataBusKnown = true;
+                return true;
+            }
+
+            // No external device drove this read. The package sees the retained
+            // external bus value rather than inventing zero or stalling the CPU.
+            value = _externalDataBusLatch;
+            _internalDataBusLatch = value;
+            _compiledDataBusValue = value;
+            _compiledDataBusKnown = true;
             return true;
         }
 
@@ -1447,8 +1631,6 @@ public sealed class Rp2A07 : VirtualHardwareComponent
             return true;
         }
 
-        // If no package device drives D0-D7, the CPU sees the retained charge
-        // from the previous external bus transfer rather than a fabricated zero.
         value = _externalDataBusLatch;
         _internalDataBusLatch = value;
         return true;
@@ -1481,9 +1663,16 @@ public sealed class Rp2A07 : VirtualHardwareComponent
         if (_busAddress == 0x4016)
         {
             _controllerOutputLatch = (byte)(_busWriteValue & 0x07);
-            ControllerOut0.Drive((_controllerOutputLatch & 0x01) != 0 ? DigitalLevel.High : DigitalLevel.Low);
-            ControllerOut1.Drive((_controllerOutputLatch & 0x02) != 0 ? DigitalLevel.High : DigitalLevel.Low);
-            ControllerOut2.Drive((_controllerOutputLatch & 0x04) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+            if (_compiledBusFabric is not null)
+            {
+                _compiledBusFabric.WriteParallelOutputs(_controllerOutputLatch);
+            }
+            else
+            {
+                ControllerOut0.Drive((_controllerOutputLatch & 0x01) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+                ControllerOut1.Drive((_controllerOutputLatch & 0x02) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+                ControllerOut2.Drive((_controllerOutputLatch & 0x04) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+            }
         }
         else if (_busAddress == 0x4014)
         {
@@ -1665,7 +1854,7 @@ public sealed class Rp2A07 : VirtualHardwareComponent
                     mixedDacLevel));
 
                 var digitalLevel = mixedDacLevel == 0 ? DigitalLevel.Low : DigitalLevel.High;
-                if (digitalLevel != previousDigitalLevel) AudioOut.Drive(digitalLevel);
+                if (_compiledBusFabric is null && digitalLevel != previousDigitalLevel) AudioOut.Drive(digitalLevel);
             }
         }
     }
@@ -2268,6 +2457,54 @@ public sealed class Rp2A07 : VirtualHardwareComponent
             CurrentAddress = _sampleAddress;
             BytesRemaining = _sampleLength;
         }
+    }
+
+
+
+    IEnumerable<CompiledBusMasterDescriptor> ICompiledBusMasterProvider.GetCompiledBusMasters()
+    {
+        yield return new CompiledBusMasterDescriptor(
+            this,
+            Address.Pins,
+            Data.Pins,
+            EvaluateCompiledBusDriver,
+            AttachCompiledBusFabric,
+            DetachCompiledBusFabric,
+            new[] { ControllerData1, ControllerData2 },
+            new[] { ControllerRead1Bar, ControllerRead2Bar },
+            new[] { ControllerOut0, ControllerOut1, ControllerOut2 },
+            IrqBar);
+    }
+
+    private CompiledDriveState? EvaluateCompiledBusDriver(DigitalPin pin, uint address, bool readCycle)
+    {
+        for (var bit = 0; bit < Address.Width; bit++)
+        {
+            if (ReferenceEquals(pin, Address.Pins[bit]))
+            {
+                return new CompiledDriveState(
+                    (address & (1u << bit)) != 0 ? DigitalLevel.High : DigitalLevel.Low);
+            }
+        }
+
+        if (ReferenceEquals(pin, ReadWrite))
+            return new CompiledDriveState(readCycle ? DigitalLevel.High : DigitalLevel.Low);
+        if (ReferenceEquals(pin, M2))
+            return new CompiledDriveState(DigitalLevel.High);
+        return null;
+    }
+
+    DigitalPin ICompiledClockedComponent.CompiledClockInput => MasterClock;
+    DigitalPin? ICompiledClockedComponent.CompiledResetInput => ResetBar;
+    DigitalLevel ICompiledClockedComponent.CompiledResetAssertedLevel => DigitalLevel.Low;
+    void ICompiledClockedComponent.ExecuteCompiledClockActivation() => ExecuteCompiledM2HalfCycle();
+    void ICompiledClockedComponent.SetCompiledResetAsserted(bool asserted) => SetCompiledResetAsserted(asserted);
+
+    IEnumerable<CompiledSignalSinkDescriptor> ICompiledSignalSinkProvider.GetCompiledSignalSinks()
+    {
+        yield return new CompiledSignalSinkDescriptor(
+            NmiBar,
+            level => PresentCompiledNmi(level == DigitalLevel.Low));
     }
 
 

@@ -22,6 +22,8 @@ public sealed class NtscNesMotherboard
     public const long CicClockHertz = 4_000_000;
 
     private CompiledClockExecutionPlan _executionPlan = null!;
+    private CompiledClockExecutionPlan _cicExecutionPlan = null!;
+    private CompiledLabMotherboardExecutionPlan? _compiledLabMotherboardExecutionPlan;
 
     public NtscNesMotherboard()
     {
@@ -57,6 +59,7 @@ public sealed class NtscNesMotherboard
 
         Simulator = new VirtualHardwareSimulator(Board);
         _executionPlan = new CompiledClockExecutionPlan(MasterClock, Simulator);
+        _cicExecutionPlan = new CompiledClockExecutionPlan(CicClock, Simulator);
     }
 
     public VirtualHardwareBoard Board { get; }
@@ -105,23 +108,56 @@ public sealed class NtscNesMotherboard
     public void PowerOn()
     {
         Board.PowerOn();
+        _compiledLabMotherboardExecutionPlan?.SynchronizePowerOn();
     }
 
     public void ReleaseReset()
     {
         ResetSource.Set(DigitalLevel.High);
+        _compiledLabMotherboardExecutionPlan?.RefreshExternalSource(Cic.HostResetBar);
     }
 
     public void AssertReset()
     {
         ResetSource.Set(DigitalLevel.Low);
+        _compiledLabMotherboardExecutionPlan?.RefreshExternalSource(Cic.HostResetBar);
     }
 
-    public void AdvanceMasterHalfCycle() => _executionPlan.AdvanceHalfCycle();
+    public bool CompiledLabMotherboardEnabled => _compiledLabMotherboardExecutionPlan is not null;
+    public int CompiledLabRuntimeUnitCount => _compiledLabMotherboardExecutionPlan?.RuntimeUnits ?? 0;
+    public int CompiledLabInternalComponentCount => _compiledLabMotherboardExecutionPlan?.InternalComponentCount ?? 0;
+    public int CompiledLabFoldedInternalTraceCount => _compiledLabMotherboardExecutionPlan?.FoldedInternalTraceCount ?? 0;
+    public int CompiledLabBoundaryTraceCount => _compiledLabMotherboardExecutionPlan?.BoundaryTraceCount ?? 0;
+    public Guid? CompiledLabCompilationId => _compiledLabMotherboardExecutionPlan?.CompilationId;
+
+    public void SetCompiledLabMotherboardEnabled(bool enabled)
+    {
+        if (!enabled)
+        {
+            _compiledLabMotherboardExecutionPlan?.Dispose();
+            _compiledLabMotherboardExecutionPlan = null;
+            return;
+        }
+
+        if (_compiledLabMotherboardExecutionPlan is not null) return;
+
+        _compiledLabMotherboardExecutionPlan = new CompiledLabMotherboardExecutionPlan(
+            Board,
+            (ICompiledClockSource)MasterClock);
+    }
+
+    public void AdvanceMasterHalfCycle()
+    {
+        if (_compiledLabMotherboardExecutionPlan is { } compiled)
+            compiled.AdvanceHalfCycle();
+        else
+            _executionPlan.AdvanceHalfCycle();
+    }
 
     public void AdvanceCicHalfCycle()
     {
-        CicClock.AdvanceHalfCycle();
+        _cicExecutionPlan.AdvanceHalfCycle();
+        _compiledLabMotherboardExecutionPlan?.RefreshExternalSource(Cic.HostResetBar);
     }
 
     public void AdvanceCicCycles(int cycles)
@@ -134,9 +170,21 @@ public sealed class NtscNesMotherboard
         }
     }
 
-    public void AdvanceMasterCycles(int cycles) => _executionPlan.AdvanceCycles(cycles);
+    public void AdvanceMasterCycles(int cycles)
+    {
+        if (_compiledLabMotherboardExecutionPlan is { } compiled)
+            compiled.AdvanceCycles(cycles);
+        else
+            _executionPlan.AdvanceCycles(cycles);
+    }
 
     internal void RecompileTopology() => _executionPlan.RecompileTopology();
+
+    internal void AttachCompiledExternalDevice(ICompiledExternalDevice device) =>
+        _compiledLabMotherboardExecutionPlan?.AttachExternalDevice(device);
+
+    internal void DetachCompiledExternalDevice(ICompiledExternalDevice device) =>
+        _compiledLabMotherboardExecutionPlan?.DetachExternalDevice(device);
 
 
     private void TiePackagePower()
