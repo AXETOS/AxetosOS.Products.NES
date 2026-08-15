@@ -3,7 +3,7 @@
   "productId": "axetosos.products.nes",
   "name": "NES Emulator",
   "productPath": "Products/NES",
-  "version": "0.23.0",
+  "version": "2.54.0",
   "status": "development",
   "defaultHost": "desktop",
   "hosts": [
@@ -12,7 +12,7 @@
     "web",
     "headless"
   ],
-  "requiresAxetosOSCore": true,
+  "requiresAxetosOSCore": false,
   "capabilities": [
     "product-composition",
     "runtime-scheduling",

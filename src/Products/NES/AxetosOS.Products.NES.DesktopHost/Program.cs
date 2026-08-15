@@ -1,14 +1,12 @@
 using System.Runtime.CompilerServices;
 using System.Diagnostics;
-using AxetosOS.Audio.Windows;
+using AxetosOS.Products.NES.Host.Windows;
 using AxetosOS.Products.NES.VirtualHardware.Boards.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Components.Cartridges;
 using AxetosOS.Products.NES.VirtualHardware.Components.Chips.Ricoh;
 using AxetosOS.Products.NES.VirtualHardware.Components.Nes;
 using AxetosOS.Products.NES.VirtualHardware.Loading;
 using AxetosOS.Products.NES.VirtualHardware.Machines.Nes;
-using AxetosOS.Rendering.Abstractions;
-using AxetosOS.Rendering.Windows;
 
 const int ScreenWidth = 256;
 const int ScreenHeight = 240;

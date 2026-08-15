@@ -1,6 +1,6 @@
 # AxetosOS.Products.NES
 
-`AxetosOS.Products.NES` is a reusable NES/Famicom virtual-hardware implementation for .NET 8.
+`AxetosOS.Products.NES` is a reusable NES/Famicom virtual-hardware implementation for .NET 8, with a self-contained Windows desktop emulator for running the hardware directly.
 
 The project models the machine as physical hardware: motherboards, chip packages, package pins, buses, traces, clocks, cartridge connectors and replaceable cartridge hardware. The assembled circuit can then be compiled into a faster executable representation without teaching the compiler what an NES, CPU, PPU or mapper is.
 
@@ -100,24 +100,27 @@ Portable state intentionally does not embed the ROM image. A host that persists 
 
 External controller contacts remain host input rather than becoming frozen controller presses when a machine state is restored.
 
-## Application boundary
+## Standalone desktop emulator
 
-This repository is the public NES hardware engine, not the AxetosOS desktop application.
+The repository includes `AxetosOS.Products.NES.Desktop`, a self-contained Windows desktop application built directly on the public virtual-hardware engine. It does not require the private AxetosOS Workbench or AxetosOS product runtime.
 
-Application features belong to the host around the machine, including:
+The desktop application provides:
 
-- menus and window chrome;
-- fullscreen behavior;
-- ROM-library UX and file dialogs;
-- pause/reset hotkeys;
-- quick-save/load UI;
-- persistent save-state files and save-state management;
-- recording/export controls;
-- application status bars and dialogs.
+- native ROM open/save dialogs and application menus;
+- automatic Famicom / NTSC-U / PAL hardware selection from ROM metadata;
+- compiled virtual-hardware execution;
+- native video presentation and WaveOut audio playback;
+- keyboard controller input;
+- pause, physical reset and borderless fullscreen;
+- F5/F7 in-memory quick save/load;
+- portable `.axnesstate` persistent save files with ROM SHA-256 verification;
+- loading/status UI outside the NES framebuffer.
 
-The NES framebuffer remains game output only. Hosts should consume the framebuffer/audio output directly for recording or export so application chrome is never part of captured game output.
+The NES framebuffer remains game output only. Menus, status UI and dialogs are presented outside that surface, so future recording/export can consume the framebuffer/audio streams without capturing application chrome.
 
-The `AxetosOS.Products.NES.DesktopHost` project in this repository is a reference/diagnostic host used for hardware validation. It is not the AxetosOS product shell.
+AxetosOS Workbench/project integration remains a separate host concern. The private AxetosOS project host should reuse the same public virtual-hardware/runtime contracts rather than contain a second emulator implementation.
+
+`AxetosOS.Products.NES.DesktopHost` remains the lower-level diagnostic/profiling host used for hardware validation. Both public hosts share the repository-local `AxetosOS.Products.NES.Host.Windows` presentation/audio support and no longer depend on projects from a full AxetosOS checkout.
 
 ## Build and test
 
@@ -131,9 +134,43 @@ dotnet test .\tests\AxetosOS.Products.NES.Tests\AxetosOS.Products.NES.Tests.cspr
 
 The repository contains automated coverage for the electrical model, motherboard/chip boundaries, CPU/APU/PPU behavior, controllers, ROM loading, compiled execution and supported cartridge hardware.
 
-## Reference host
+## Run the desktop emulator
 
-When this repository is checked out inside the full AxetosOS source workspace, the Windows diagnostic host can be launched with a ROM path:
+On Windows, launch the standalone emulator without a ROM path to use the native ROM picker:
+
+```powershell
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop
+```
+
+Or start it with a ROM or persistent save-state file:
+
+```powershell
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop -- "C:\ROMs\game.nes"
+dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.Desktop -- "C:\Saves\game.axnesstate"
+```
+
+Default controls:
+
+| Input | Action |
+|---|---|
+| Arrow keys | D-pad |
+| Z | A |
+| X | B |
+| Enter | Start |
+| Right Shift | Select |
+| Ctrl+O | Open ROM |
+| Ctrl+R | Physical reset |
+| Space | Pause/resume |
+| F5 | Quick save |
+| F7 | Quick load |
+| F11 | Fullscreen toggle |
+| Esc | Leave fullscreen |
+
+Persistent states default to `Documents\AxetosOS\NES\Save States` and intentionally do not embed copyrighted ROM data. The matching ROM is located and verified by SHA-256 when a state is restored.
+
+## Diagnostic host
+
+The lower-level Windows diagnostic host is also self-contained and can be launched with a ROM path:
 
 ```powershell
 dotnet run -c Release --project .\src\Products\NES\AxetosOS.Products.NES.DesktopHost -- "C:\ROMs\game.nes" --board famicom
@@ -171,6 +208,8 @@ src/Products/NES/
   AxetosOS.Products.NES.Abstractions/
   AxetosOS.Products.NES.Cartridges/
   AxetosOS.Products.NES.VirtualHardware/
+  AxetosOS.Products.NES.Host.Windows/   public Windows presentation/audio support
+  AxetosOS.Products.NES.Desktop/        standalone playable Windows emulator
   AxetosOS.Products.NES.DesktopHost/    reference/diagnostic host
 
 tests/
